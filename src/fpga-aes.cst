@@ -1,0 +1,19 @@
+//Copyright (C)2014-2026 Gowin Semiconductor Corporation.
+//All rights reserved. 
+//File Title: Physical Constraints file
+//Tool Version: V1.9.12.02 (64-bit)
+//Part Number: GW5AST-LV138PG484AC1/I0
+//Device: GW5AST-138
+//Device Version: C
+//Created Time: Sat 04 18 23:46:50 2026
+
+IO_LOC "debug_LEDs[1]" G11;
+IO_PORT "debug_LEDs[1]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
+IO_LOC "debug_LEDs[0]" U12;
+IO_PORT "debug_LEDs[0]" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
+IO_LOC "TX" U15;
+IO_PORT "TX" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=8 BANK_VCCIO=3.3;
+IO_LOC "clk" V22;
+IO_PORT "clk" IO_TYPE=LVCMOS33 PULL_MODE=NONE BANK_VCCIO=3.3;
+IO_LOC "RX" V14;
+IO_PORT "RX" IO_TYPE=LVCMOS33 PULL_MODE=NONE BANK_VCCIO=3.3;

@@ -1,0 +1,4 @@
+impl/fpga-aes_process_config.json	text eol=lf
+fpga-aes.gprj						text eol=lf
+src/fpga-aes.cst					text eol=lf
+src/fpga-aes.sdc					text eol=lf

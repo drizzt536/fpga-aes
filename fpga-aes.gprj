@@ -1,0 +1,30 @@
+<?xml version="1" encoding="UTF-8"?>
+<!DOCTYPE gowin-fpga-project>
+<Project>
+    <Template>FPGA</Template>
+    <Version>5</Version>
+    <Device name="GW5AST-138C" pn="GW5AST-LV138PG484AC1/I0">gw5ast138c-007</Device>
+    <FileList>
+        <File path="src/AES.vhd" type="file.vhdl" enable="1"/>
+        <File path="src/AESIO.vhd" type="file.vhdl" enable="1"/>
+        <File path="src/AddRoundKey.vhd" type="file.vhdl" enable="1"/>
+        <File path="src/KeyExpansion.vhd" type="file.vhdl" enable="1"/>
+        <File path="src/UARTControllerCBC.vhd" type="file.vhdl" enable="1"/>
+        <File path="src/UARTControllerCTR.vhd" type="file.vhdl" enable="1"/>
+        <File path="src/UARTControllerECB.vhd" type="file.vhdl" enable="1"/>
+        <File path="src/decrypt/DecryptBlock.vhd" type="file.vhdl" enable="1"/>
+        <File path="src/decrypt/DecryptionRound.vhd" type="file.vhdl" enable="1"/>
+        <File path="src/decrypt/InvMixColumns.vhd" type="file.vhdl" enable="1"/>
+        <File path="src/decrypt/InvSBox.vhd" type="file.vhdl" enable="1"/>
+        <File path="src/decrypt/InvShiftRows.vhd" type="file.vhdl" enable="1"/>
+        <File path="src/decrypt/InvSubBytes.vhd" type="file.vhdl" enable="1"/>
+        <File path="src/encrypt/EncryptBlock.vhd" type="file.vhdl" enable="1"/>
+        <File path="src/encrypt/EncryptionRound.vhd" type="file.vhdl" enable="1"/>
+        <File path="src/encrypt/MixColumns.vhd" type="file.vhdl" enable="1"/>
+        <File path="src/encrypt/SBox.vhd" type="file.vhdl" enable="1"/>
+        <File path="src/encrypt/ShiftRows.vhd" type="file.vhdl" enable="1"/>
+        <File path="src/encrypt/SubBytes.vhd" type="file.vhdl" enable="1"/>
+        <File path="src/fpga-aes.cst" type="file.cst" enable="1"/>
+        <File path="src/fpga-aes.sdc" type="file.sdc" enable="1"/>
+    </FileList>
+</Project>
