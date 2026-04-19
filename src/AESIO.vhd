@@ -47,7 +47,6 @@ package AESIO is
 		);
 	end component;
 
-	
 	component UARTControllerCBC is
 		port (
 			RX, clk    : in  lbit;
@@ -56,7 +55,6 @@ package AESIO is
 		);
 	end component;
 	
-
 	component UARTControllerCTR is
 		port (
 			RX, clk    : in  lbit;
@@ -65,7 +63,6 @@ package AESIO is
 		);
 	end component;
 
-	/*
 	component UARTControllerGCM is
 		port (
 			RX, clk    : in  lbit;
@@ -73,7 +70,6 @@ package AESIO is
 			debug_LEDs : out std_logic_vector(1 downto 0)
 		);
 	end component;
-	*/
 
 	-- TODO: CCM
 
@@ -109,16 +105,16 @@ package AESIO is
 end package;
 
 package body AESIO is
+	function ascii_to_byte(c : character) return byte is
+	begin return byte(to_unsigned(character'pos(c), 8));
+	end function;
+
 	function hex_to_nibble(x : byte) return nibble is
 	begin return hex_to_nibble_a( to_integer(ubyte(x)) );
 	end function;
 
 	function nibble_to_hex(x : nibble) return byte is
 	begin return nibble_to_hex_a( to_integer(unsigned(x)) );
-	end function;
-
-	function ascii_to_byte(c : character) return byte is
-	begin return byte(to_unsigned(character'pos(c), 8));
 	end function;
 
 	function block_eq(X, Y : AESBlock) return boolean is

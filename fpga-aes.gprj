@@ -12,6 +12,7 @@
         <File path="src/UARTControllerCBC.vhd" type="file.vhdl" enable="1"/>
         <File path="src/UARTControllerCTR.vhd" type="file.vhdl" enable="1"/>
         <File path="src/UARTControllerECB.vhd" type="file.vhdl" enable="1"/>
+        <File path="src/UARTControllerGCM.vhd" type="file.vhdl" enable="1"/>
         <File path="src/decrypt/DecryptBlock.vhd" type="file.vhdl" enable="1"/>
         <File path="src/decrypt/DecryptionRound.vhd" type="file.vhdl" enable="1"/>
         <File path="src/decrypt/InvMixColumns.vhd" type="file.vhdl" enable="1"/>

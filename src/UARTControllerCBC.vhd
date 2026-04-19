@@ -44,7 +44,8 @@ architecture UARTControllerCBC_arch of UARTControllerCBC is
 	signal oblk           : AESBlock; -- output block (multiplexed from the other two outputs)
 	signal encrypt_output : AESBlock;
 	signal decrypt_output : AESBlock;
-	signal encrypt_iblk   : AESBlock;
+	signal encrypt_iblk   : AESBlock; -- input block XOR IV
+	signal decrypt_oblk   : AESBlock; -- decrypt output block XOR IV
 begin
 	ff0: process (clk)
 		-- NOTE: RX and TX are not in the sensitivity list.

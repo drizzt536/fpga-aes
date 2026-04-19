@@ -20,7 +20,7 @@ package AES is
 
 	-- idx 0 => MSB
 	type byte_array			is array(natural range <>) of byte;
-	subtype RawUDWord		is unsigned(63 downto 0);
+	subtype RawUQWord		is unsigned(63 downto 0);
 	subtype Word			is byte_array(0 to 3);
 	subtype AESBlock		is byte_array(0 to FINAL_BLOCK);
 	subtype RawAESBlock		is bit_array (0 to FINAL_BIT);
@@ -244,6 +244,8 @@ package AES is
 	function times14 (x : ubyte) return ubyte;
 	function SBoxf   (x :  byte) return byte;
 	function InvSBoxf(x :  byte) return byte;
+
+	function WrapRawAESBlock(input : RawAESBlock) return AESBlock;
 end package;
 
 package body AES is
@@ -289,5 +291,15 @@ package body AES is
 
 	function InvSBoxf(x : byte) return byte is
 	begin return InvSBox_a( to_integer(ubyte(x)) );
+	end function;
+
+	function WrapRawAESBlock(input : RawAESBlock) return AESBlock is
+		variable output : AESblock;
+	begin
+		iter: for i in 0 to 15 loop
+			output(i) := byte(input(FINAL_BIT - 8*i downto FINAL_BIT - 8*i - 7));
+		end loop;
+
+		return output;
 	end function;
 end package body;
