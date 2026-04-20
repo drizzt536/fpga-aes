@@ -53,7 +53,7 @@ architecture UARTControllerGCM_arch of UARTControllerGCM is
 	signal mode          : mode_t      := ENCRYPT; -- write mode. encrypt by default
 	signal copy_to       : copy_to_t   := TO_NOWHERE;
 	signal copy_from     : copy_from_t := FROM_OBLK;
-	signal key           : MasterKey   := ZERO_BLOCK;
+	signal key           : MasterKey   := (others => x"00");
 	signal IV            : AESBlock    := ZERO_BLOCK;
 	signal iblk          : AESBlock    := ZERO_BLOCK; -- input block
 	signal T             : AESBlock    := ZERO_BLOCK;
