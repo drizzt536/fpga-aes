@@ -23,7 +23,7 @@ package AESIO is
 
 	-- If I don't double the frequency, then the fuckass board debugger
 	-- CPU will send the wrong frequency, and PuTTY will spam garbage.
-	-- the 2x multiplier is probably specific to the firmware version.
+	-- the 2x multiplier is probably specific to the firmware version (the latest one).
 	constant UART_WRAP : integer := CLK_FREQ / (2*UART_FREQ) - 1;
 
 	constant hex_to_nibble_a: byte_to_nibble_t := (
@@ -32,11 +32,14 @@ package AESIO is
 		57 => x"9", 65 => x"A", 66 => x"B", 67 => x"C",
 		68 => x"D", 69 => x"E", 70 => x"F", others => x"0"
 	);
+
+	function ascii_to_byte(c : character) return byte;
+
 	constant nibble_to_hex_a: nibble_to_byte_t := (
-		x"30", x"31", x"32", x"33",
-		x"34", x"35", x"36", x"37",
-		x"38", x"39", x"41", x"42",
-		x"43", x"44", x"45", x"46"
+		ascii_to_byte('0'), ascii_to_byte('1'), ascii_to_byte('2'), ascii_to_byte('3'),
+		ascii_to_byte('4'), ascii_to_byte('5'), ascii_to_byte('6'), ascii_to_byte('7'),
+		ascii_to_byte('8'), ascii_to_byte('9'), ascii_to_byte('A'), ascii_to_byte('B'),
+		ascii_to_byte('C'), ascii_to_byte('D'), ascii_to_byte('E'), ascii_to_byte('F')
 	);
 
 	component UARTControllerECB is
@@ -75,9 +78,9 @@ package AESIO is
 
 	-- functions and procedures that are used by modes and not the core algorithm
 
-	function ascii_to_byte(c : character)   return byte;
 	function hex_to_nibble(x : byte)        return nibble;
 	function nibble_to_hex(x : nibble)      return byte;
+	function is_valid_hex(x : byte)         return boolean;
 	function block_eq(X, Y : AESBlock)      return boolean;
 	function ghash_iter(T, C, H : AESBlock) return AESBlock;
 
@@ -115,6 +118,16 @@ package body AESIO is
 
 	function nibble_to_hex(x : nibble) return byte is
 	begin return nibble_to_hex_a( to_integer(unsigned(x)) );
+	end function;
+
+	function is_valid_hex(x : byte) return boolean is
+	begin
+		for i in nibble_to_hex_a'range loop
+			if x = nibble_to_hex_a(i) then
+				return true;
+			end if;
+		end loop;
+		return false;
 	end function;
 
 	function block_eq(X, Y : AESBlock) return boolean is

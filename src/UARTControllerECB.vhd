@@ -65,7 +65,9 @@ begin
 			else
 				clk_cycle <= clk_cycle + 1;
 			end if;
-		elsif clk_cycle = UART_WRAP then
+		elsif clk_cycle /= UART_WRAP then
+			clk_cycle <= clk_cycle + 1;
+		else
 			-- only do stuff if it is on a UART cycle.
 			clk_cycle <= 0;
 
@@ -123,23 +125,29 @@ begin
 								end case;
 							when TO_KEY =>
 								state <= IDLE;
-								set_nibble(key, data_ofs, hex_to_nibble(local_frame_data));
 
-								if data_ofs = KEY_SIZE/4 - 1 then
-									copy_to  <= TO_NOWHERE;
-									data_ofs <= 0; -- not required
-								else
-									data_ofs <= data_ofs + 1;
+								if is_valid_hex(local_frame_data) then
+									set_nibble(key, data_ofs, hex_to_nibble(local_frame_data));
+
+									if data_ofs = KEY_SIZE/4 - 1 then
+										copy_to  <= TO_NOWHERE;
+										data_ofs <= 0; -- not required
+									else
+										data_ofs <= data_ofs + 1;
+									end if;
 								end if;
 							when TO_BLOCK =>
 								state <= IDLE;
-								set_nibble(iblk, data_ofs, hex_to_nibble(local_frame_data));
 
-								if data_ofs = FINAL_NIBBLE then
-									copy_to  <= TO_NOWHERE;
-									data_ofs <= 0; -- not required
-								else
-									data_ofs <= data_ofs + 1;
+								if is_valid_hex(local_frame_data) then
+									set_nibble(iblk, data_ofs, hex_to_nibble(local_frame_data));
+
+									if data_ofs = FINAL_NIBBLE then
+										copy_to  <= TO_NOWHERE;
+										data_ofs <= 0; -- not required
+									else
+										data_ofs <= data_ofs + 1;
+									end if;
 								end if;
 							when others =>
 								-- there are no other locations
@@ -172,8 +180,6 @@ begin
 					-- IDLE is already taken care of, and there aren't any other states
 					null;
 			end case;
-		else
-			clk_cycle <= clk_cycle + 1;
 		end if; -- if state = IDLE, clk_cycle = UART_WRAP
 	end if; -- if clk rising edge
 	end process;
@@ -206,11 +212,11 @@ begin
 	oblk <= decrypt_output when mode = DECRYPT else encrypt_output;
 	TX   <= local_TX;
 
-	with state select
+	-- interpret the lights as the inverse of what they show as
 	debug_LEDs <=
-		"00" when WRITING,		-- not done | not ready
-		"10" when FINALIZING,	-- done     | not ready
-		"01" when READING,		-- not done | ready
-		"11" when IDLE,			-- done     | ready
-		"10" when others;		-- ECB doesn't have FINALIZING
+		"11" when state = WRITING		else	-- not done, not ready
+		"01" when state = FINALIZING	else	-- done    , not ready
+		"10" when copy_to /= TO_NOWHERE	else	-- not done, ready (READING)
+		"00" when state = IDLE			else	-- done, ready
+		"01";									-- ECB doesn't have FINALIZING
 end architecture;
