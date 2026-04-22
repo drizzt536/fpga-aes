@@ -11,3 +11,5 @@ The UART controllers send data using UART 100kbaud 8N1. They can properly interp
 The board is fairly new, so it requires a fairly new version of Gowin FPGA Designer, namely V1.9.9 for the regular version and V1.9.11.03 for the commercial version. However, other than the pin assignments and the 0.5x UART speed workaround, nothing used is specific to Gowin, so the code should work on boards and IDEs from other companies with minimal to no changes.
 
 Depending on the firmware version, you might need to change the code in `./src/AESIO.vhd` that gets the value for `UART_WRAP`. I make it multiply `UART_FREQ` by 2, but if your debugger firmware works, then you might not need that, or I've heard that sometimes the debugger sends at 4x the frequency, so you would need to divide by 4.
+
+I have only tested CTR, so idk if the other mode of operations work or not. ECB and CBC at least compile though. I will fix this at some point.
