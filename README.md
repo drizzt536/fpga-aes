@@ -1,4 +1,4 @@
-The test pictures are all simulator screenshots using Questa from before I ported the project Quartus Prime.
+The test pictures are all simulator screenshots using Questa from before I ported the project from Quartus Prime.
 
 "clocked" summaries use RAM for the S-Boxes, and unclocked ones are fully combinational and only use lookup tables. `KeyExpansion` is fully combinational either way, so it only effects `SubBytes`.
 
