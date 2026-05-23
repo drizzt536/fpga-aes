@@ -19,7 +19,7 @@
 #include <errno.h>				// errno, EAGAIN
 #include <termios.h>			// struct termios, tc[gs]etattr, TCSANOW, ECHO, ICANON
 #include <unistd.h>				// close
-#include <sys/socket.h>			// socket, sendto, recvfrom, AF_PACKET, SOCK_RAW
+#include <sys/socket.h>			// socket, sendto, recv, AF_PACKET, SOCK_RAW
 #include <sys/ioctl.h>			// ioctl, SIOCGIFINDEX, SIOCGIFHWADDR
 #include <net/if.h>				// struct ifreq
 #include <linux/if_packet.h>	// struct sockaddr_ll, struct sockaddr
@@ -175,7 +175,7 @@ static u8 send_packet(bool debug) {
 static u8 recv_packet(bool debug) {
 	// 0 => success, 1 => no packet available, 2 => FPGA bypass attempt, 3 => EtherType mismatch, 4 => some other error
 
-	const bool success = -1ll != recvfrom(sockfd, in_packet.raw, PACKET_LEN, MSG_DONTWAIT, NULL, NULL);
+	const bool success = -1ll != recv(sockfd, in_packet.raw, PACKET_LEN, MSG_DONTWAIT);
 
 	if (success) {
 		if (memcmp(in_packet.src_mac, out_packet.dst_mac, 6) != 0 || memcmp(in_packet.dst_mac, out_packet.src_mac, 6) != 0) {
