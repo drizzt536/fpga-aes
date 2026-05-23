@@ -1,0 +1,12 @@
+https://man7.org/linux/man-pages/man2/recv.2.html
+https://man7.org/linux/man-pages/man2/fcntl.2.html
+https://man7.org/linux/man-pages/man2/ioctl.2.html
+https://man7.org/linux/man-pages/man2/socket.2.html
+https://man7.org/linux/man-pages/man2/sendto.2.html
+
+https://man7.org/linux/man-pages/man3/recv.3p.html
+https://man7.org/linux/man-pages/man3/socket.3p.html
+https://man7.org/linux/man-pages/man3/sendto.3p.html
+
+https://man7.org/linux/man-pages/man7/packet.7.html
+https://man7.org/linux/man-pages/man7/netdevice.7.html
