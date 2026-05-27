@@ -3,14 +3,16 @@ import argparse
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--data-len", type=int, default=60, help="bytes length of checksum input data. default is 60")
-parser.add_argument("--in-port",  type=str, default="data", help="VHDL input port name. default is 'data'")
-parser.add_argument("--out-port", type=str, default="crc", help="VHDL output port name. default is 'crc'")
+parser.add_argument("--in-port",  type=str, default="data", help="input port/variable name. default is 'data'")
+parser.add_argument("--out-port", type=str, default="crc", help="output port/variable name. default is 'crc'")
+parser.add_argument("--syntax", type=str, default="vhdl", help="output language. default is vhdl")
 args = parser.parse_args()
 
 data_len = args.data_len
 sum_len  = 4 # 32 bits
 in_port  = args.in_port
 out_port = args.out_port
+syntax   = args.syntax.lower()
 
 cols = [crc32((1 << n).to_bytes(data_len, byteorder='big')) for n in range(8*data_len)]
 
@@ -25,29 +27,67 @@ max_pad = 1 + max(len(in_port), len(out_port))
 in_pad  = " "*(max_pad - len(in_port))
 out_pad = " "*(max_pad - len(out_port))
 
-print(f"""\
--- Generated with tools/crc32-gen.py
-library ieee;
-use ieee.std_logic_1164;
+match syntax:
+	case "vhdl" | "vhd":
+		print(
+			f"-- Generated with tools/crc32-gen.py"
+			f"\nlibrary ieee;"
+			f"\nuse ieee.std_logic_1164.all;"
+			f"\n"
+			f"\nentity crc32_{data_len} is"
+			f"\n\tport ("
+			f"\n\t\t{in_port}{in_pad}: in  std_logic_vector({8*data_len - 1} downto 0);"
+			f"\n\t\t{out_port}{out_pad}: out std_logic_vector({8*sum_len - 1} downto 0)"
+			f"\n\t);"
+			f"\nend entity;"
+			f"\n"
+			f"\narchitecture crc32_{data_len}_arch of crc32_{data_len} is"
+			f"\n\t-- polynomial: 0x04C11DB7"
+			f"\n\t-- CRC32( 0 ): 0x{K:08x}"
+			f"\nbegin"
+		)
 
-entity crc32_{data_len} is
-\tport (
-\t\t{in_port}{in_pad}: in  std_logic_vector({8*data_len - 1} downto 0);
-\t\t{out_port}{out_pad}: out std_logic_vector({8*sum_len - 1} downto 0);
-\t);
-end entity;
+		for bit in range(8*sum_len):
+			terms = " xor ".join(f"{in_port}({n})" for n in rows[bit])
+			print(f"\t{out_port}({bit:2d}) <= '{(K >> bit) & 1}' xor {terms};")
 
-architecture crc32_{data_len}_arch of crc32_{data_len} is
-	-- polynomial: 0x04C11DB7
-	-- CRC32( 0 ): 0x04128908
-begin\
-""")
+		print("end architecture;")
 
-for bit in range(8*sum_len):
-	terms = " xor ".join(f"{in_port}({n})" for n in rows[bit])
-	print(f"\t{out_port}({bit:2d}) <= '{(K >> bit) & 1}' xor {terms};")
+	case "verilog" | "v":
+		print(
+			f"// Generated with tools/crc32-gen.py"
+			f"\n// polynomial: 0x04C11DB7"
+			f"\n// CRC32( 0 ): 0x{K:08x}"
+			f"\n"
+			f"\nmodule crc32_{data_len} ("
+			f"\n\tinput  [{8*data_len -1}:0] {in_port},"
+			f"\n\toutput [{8*sum_len - 1}:0] {out_port}"
+			f"\n);"
+			f"\n"
+		)
 
-print("end architecture;")
+		for bit in range(8*sum_len):
+			terms = " ^ ".join(f"{in_port}[{n}]" for n in rows[bit])
+			print(f"assign {out_port}[{bit:2d}] = 1'b{(K >> bit) & 1} ^ {terms};")
+
+		print("\nendmodule")
+
+	case "python" | "py":
+		# for testing
+		print(f"{out_port} = [")
+
+		for bit in range(8*sum_len):
+			terms = " ^ ".join(f"{in_port}[{n}]" for n in rows[bit])
+			print(f"\t{(K >> bit) & 1} ^ {terms},")
+
+		print("]")
+
+	case _:
+		raise NotImplementedError(
+			f"unknown syntax '{syntax}'.\n"
+			"valid syntaxes: 'vhdl', 'vhd', 'verilog', 'v', 'python', 'py'"
+		)
+
 
 
 """
