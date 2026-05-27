@@ -1,11 +1,13 @@
 from zlib import crc32
 import argparse
 
+syntaxes = "vhdl", "vhd", "verilog", "v", "python", "py"
+
 parser = argparse.ArgumentParser()
-parser.add_argument("--data-len", type=int, default=60, help="bytes length of checksum input data. default is 60")
-parser.add_argument("--in-port",  type=str, default="data", help="input port/variable name. default is 'data'")
-parser.add_argument("--out-port", type=str, default="crc", help="output port/variable name. default is 'crc'")
-parser.add_argument("--syntax", type=str, default="vhdl", help="output language. default is vhdl")
+parser.add_argument("--data-len", "-l", type=int, default=60, help="bytes length of checksum input data. default is 60")
+parser.add_argument("--in-port", "-i",  type=str, default="data", help="input port/variable name. default is 'data'")
+parser.add_argument("--out-port", "-o", type=str, default="crc", help="output port/variable name. default is 'crc'")
+parser.add_argument("--syntax", "-s", type=str, choices=syntaxes, default=syntaxes[0], help=f"output language. default is '{syntaxes[0]}'")
 args = parser.parse_args()
 
 data_len = args.data_len
@@ -52,7 +54,6 @@ match syntax:
 			print(f"\t{out_port}({bit:2d}) <= '{(K >> bit) & 1}' xor {terms};")
 
 		print("end architecture;")
-
 	case "verilog" | "v":
 		print(
 			f"// Generated with tools/crc32-gen.py"
@@ -71,7 +72,6 @@ match syntax:
 			print(f"assign {out_port}[{bit:2d}] = 1'b{(K >> bit) & 1} ^ {terms};")
 
 		print("\nendmodule")
-
 	case "python" | "py":
 		# for testing
 		print(f"{out_port} = [")
@@ -81,14 +81,11 @@ match syntax:
 			print(f"\t{(K >> bit) & 1} ^ {terms},")
 
 		print("]")
-
 	case _:
 		raise NotImplementedError(
 			f"unknown syntax '{syntax}'.\n"
-			"valid syntaxes: 'vhdl', 'vhd', 'verilog', 'v', 'python', 'py'"
+			f"supported syntaxes: {repr(syntaxes)[1:-1]}"
 		)
-
-
 
 """
 ## test code
