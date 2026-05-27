@@ -25,6 +25,9 @@ rows = [
 
 K = crc32(bytes(data_len))
 
+reversed_polynomial = crc32(b'\x80') ^ crc32(b'\x00')
+polynomial = int(f"{reversed_polynomial:032b}"[::-1], 2)
+
 max_pad = 1 + max(len(in_port), len(out_port))
 in_pad  = " "*(max_pad - len(in_port))
 out_pad = " "*(max_pad - len(out_port))
@@ -44,8 +47,8 @@ match syntax:
 			f"\nend entity;"
 			f"\n"
 			f"\narchitecture crc32_{data_len}_arch of crc32_{data_len} is"
-			f"\n\t-- polynomial: 0x04C11DB7"
-			f"\n\t-- CRC32( 0 ): 0x{K:08x}"
+			f"\n\t-- polynomial: 0x{polynomial:08X}"
+			f"\n\t-- CRC32( 0 ): 0x{K:08X}"
 			f"\nbegin"
 		)
 
@@ -57,8 +60,8 @@ match syntax:
 	case "verilog" | "v":
 		print(
 			f"// Generated with tools/crc32-gen.py"
-			f"\n// polynomial: 0x04C11DB7"
-			f"\n// CRC32( 0 ): 0x{K:08x}"
+			f"\n// polynomial: 0x{polynomial:08X}"
+			f"\n// CRC32( 0 ): 0x{K:08X}"
 			f"\n"
 			f"\nmodule crc32_{data_len} ("
 			f"\n\tinput  [{8*data_len -1}:0] {in_port},"
