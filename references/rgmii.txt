@@ -72,6 +72,8 @@ The transfers are DDR.
   |     ^                         ^
    transfer start            transfer end
 
+If TXEN on the falling edge differs from the value of TXEN on the previous rising edge, this indicates an error occurred, and the PHY will invalidate the packet.
+
 TXEN has the same offset as TXD.
 Once TXEN is lowered back to 0, it signals that the previous transfer ha the final nibble in the packet.
 raise TXEN 2ns before TXCK transfer edge 1, and lower it 2ns after TXCK transfer edge 128.
