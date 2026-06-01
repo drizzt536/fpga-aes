@@ -14,17 +14,17 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-// I don't think these usage lists are exhaustive anymore
-#include <fcntl.h>				// fcntl
+// these usage lists aren't exhaustive anymore
+#include <fcntl.h>				// fcntl, F_SETFL, F_GETFL, O_NONBLOCK
 #include <errno.h>				// errno, EAGAIN
 #include <termios.h>			// struct termios, tc[gs]etattr, TCSANOW, ECHO, ICANON
-#include <unistd.h>				// close
+#include <unistd.h>				// read, close
 #include <sys/socket.h>			// socket, sendto, recv, AF_PACKET, SOCK_RAW
 #include <sys/ioctl.h>			// ioctl, SIOCGIFINDEX, SIOCGIFHWADDR
 #include <net/if.h>				// struct ifreq
 #include <linux/if_packet.h>	// struct sockaddr_ll, struct sockaddr
-#include <linux/ethtool.h>		// struct ethtool_value, ETHTOOL_GLINK
-#include <linux/sockios.h>		// SIOCETHTOOL
+#include <linux/ethtool.h>		// struct ethtool_(value|cmd), ETHTOOL_G(LINK|SET), DUPLEX_FULL
+#include <linux/sockios.h>		// SIOCETHTOOL, SIOCGIFFLAGS
 
 #if __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
 	#error "byte order must be little endian"
@@ -41,10 +41,8 @@
 #define PACKET_LEN		(PAYLOAD_LEN + 2*6 + 2)
 #define NS_ETH_TYPE		0xb588 // htons(0x88b5)
 
-#define UP_S			"\e[32mUP\e[m"
-#define DOWN_S			"\e[31mDOWN\e[m"
-#define OFF_S			"\e[32mOFF\e[m"
-#define ON_S			"\e[31mON\e[m"
+#define RED(s)			"\e[31m" s "\e[m"
+#define GREEN(s)		"\e[32m" s "\e[m"
 
 #ifndef IFACE
 	#ifdef PREDICTABLE  // predictable network interface names
@@ -79,6 +77,7 @@
 typedef uint8_t  u8;
 typedef uint16_t u16;
 typedef  int32_t i32;
+typedef uint32_t u32;
 typedef  int64_t i64;
 
 static char hex_chars[16] = {
@@ -165,7 +164,7 @@ static u8 send_packet(bool debug) {
 	if (debug) {
 		putchar('.');
 		putchar(' ');
-		printf(failure ? "fail" : "pass");
+		printf(failure ? RED("fail") : "pass");
 		putchar('\n');
 	}
 
@@ -233,8 +232,9 @@ int main(void) {
 		memcpy(out_packet.src_mac, ifr.ifr_hwaddr.sa_data, 6);
 
 		// link status lookup
-		struct ethtool_value edata = {.cmd = ETHTOOL_GLINK};
-		ifr.ifr_data = (void *) &edata;
+		struct ethtool_value ethval;
+		ethval.cmd = ETHTOOL_GLINK;
+		ifr.ifr_data = (void *) &ethval;
 
 		if (ioctl(sockfd, SIOCETHTOOL, &ifr) < 0) {
 			printf(ERR_STT "link status lookup failed. errno=%d\e[m\n", errno);
@@ -247,10 +247,32 @@ int main(void) {
 			return 1;
 		}
 
-		printf("interface %s, link %s, ARP %s\n",
-			!!(ifr.ifr_flags & IFF_UP) ? UP_S : DOWN_S,
-			edata.data ? UP_S : DOWN_S,
-			!(ifr.ifr_flags & IFF_NOARP) ? ON_S : OFF_S
+		printf("interface %s, link %s, ARP %s, promisc %s\n",
+			!!(ifr.ifr_flags & IFF_UP)      ? GREEN("UP")  : RED("DOWN"),
+			ethval.data                     ? GREEN("UP")  : RED("DOWN"),
+			!!(ifr.ifr_flags & IFF_NOARP)   ? GREEN("OFF") : RED("ON"),
+			!!(ifr.ifr_flags & IFF_PROMISC) ? RED("ON")    : GREEN("OFF")
+		);
+
+		// link details lookup
+		struct ethtool_cmd ethcmd;
+		ethcmd.cmd = ETHTOOL_GSET;
+		ifr.ifr_data = (void *) &ethcmd;
+
+		if (ioctl(sockfd, SIOCETHTOOL, &ifr) < 0) {
+			printf(ERR_STT "link details lookup failed. errno=%d\e[m\n", errno);
+			return 1;
+		}
+
+		const u32 link_speed = ethtool_cmd_speed(&ethcmd);
+
+		printf("%uMbps%s, %s duplex, autoneg %s\n",
+			link_speed,
+			link_speed < 1000 && (ethcmd.supported & (
+				SUPPORTED_1000baseT_Full | SUPPORTED_1000baseT_Half
+			)) ? ", local supports gigabit" : "",
+			ethcmd.duplex  == DUPLEX_FULL    ? GREEN("full") : RED("half"),
+			ethcmd.autoneg == AUTONEG_ENABLE ? GREEN("ON")   : RED("OFF")
 		);
 	}
 
@@ -360,6 +382,5 @@ int main(void) {
 			putchar(hex_chars[ out_packet.payload[nib_idx >> 1] >> 4 ]);
 	} // while true
 
-	// close(sockfd);
 	return 0;
 }
