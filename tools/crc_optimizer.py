@@ -20,7 +20,8 @@ Whenever `set` is in a type annotation for a function, it is implicitly `set[int
 
 Python 3.10 is probably the minimum that works for this.
 
-NOTE: sometimes, increasing depth or n max can make the overall solution worse
+NOTE: sometimes, increasing depth or n max can make the overall solution worse.
+      if you increase it enough, it should get better again
 """
 
 from copy   import deepcopy
@@ -35,7 +36,6 @@ def eprint(*args, **kwargs) -> None:
 		print(args[0].replace("\x1b[K", ''), *args[1:], **kwargs, file=stderr)
 	else:
 		print(*args, **kwargs, file=stderr)
-
 
 def get_rng(seed: int | None):
 	# 1. random.Random() uses MT, which has pretty good avalanche (~50% flip) when incrementing the seed

@@ -15,7 +15,7 @@ import crc_optimizer
 
 # NOTE: zlib implements the same CRC32 standard as Ethernet uses.
 
-syntaxes = "systemverilog", "sv", "verilog", "v", "vhdl", "vhd", "python", "py", "python-first", "py1", "c", "plain", "p", "json", "j", "raw", "r"
+syntaxes = "systemverilog", "sv", "verilog", "v", "vhdl", "vhd", "python", "py", "python-first", "py1", "graphviz", "dot", "gv", "c", "plain", "p", "json", "j", "raw", "r"
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--data-len", "-l", type=int, default=4, help="bytes length of checksum input data. default is 4")
@@ -36,7 +36,7 @@ optimize_group = parser.add_argument_group(
 	"optimization settings (optimizes gate count)",
 	"defaults: optimize off, lookahead depth 0, n max 2, beam size 1, lookahead weight 1, prefer low n, LNS: off, 1 trial, window size 3, unseeded"
 )
-optimize_group.add_argument("--optimize", "-C", action="store_true", help="enable optimization without touching settings")
+optimize_group.add_argument("--optimize", "-c", action="store_true", help="enable optimization without touching settings")
 optimize_group.add_argument("--optimize-depth", "-d"     , type=int    , help="enable optimization and set search lookahead depth.")
 optimize_group.add_argument("--optimize-nmax", "-n"      , type=int    , help="enable optimization and set n max.")
 optimize_group.add_argument("--optimize-beam", "-b"      , type=int    , help="enable optimization and set beam size.")
@@ -276,6 +276,19 @@ syntax_data = {
 		"comment"     : "//",
 		"begin_logic" : '',
 		"wire_type"   : lambda name, size: f"\tuint8_t {name.lstrip()}[{size}];",
+	}, "gv": {
+		"xor"         : "\",\"",
+		'1'           : '1',
+		'0'           : '0',
+		'='           : None,
+		'['           : '[',
+		']'           : ']',
+		'^'           : None,
+		'$'           : None,
+		"footer"      : '}',
+		"comment"     : "//",
+		"begin_logic" : None,
+		"wire_type"   : None,
 	}
 }
 
@@ -288,6 +301,8 @@ syntax = {
 	"python"        : "py",
 	"python-first"  : "py1",
 	"plain"         : "p",
+	"graphviz"      : "gv",
+	"dot"           : "gv",
 }.get(syntax, syntax)
 
 tokens = syntax_data.get(syntax, {})
@@ -594,6 +609,7 @@ match syntax:
 
 		print(footer)
 	case "p":
+		# plain
 		print(
 			"CRC Summary:"
 			f"\ncustom     = {str(poly is not None).lower()}"
@@ -636,7 +652,87 @@ match syntax:
 		seps   = (", ", ": ") if syntax == "json" else (',', ':')
 
 		print(json.dumps(report, indent=indent, separators=seps))
+	case "gv":
+		# Graphviz is so different from the other syntaxes that most of the syntax_data attributes don't make sense.
+
+		in_idx_max_pad = 0
+		in_port_i = "in"
+
+		starting_gates = crc_optimizer.count_gates(rows)
+		if optimize:
+			tmp_defs, outputs = optimize_gates(rows)
+		else:
+			tmp_defs = {}
+			outputs  = rows
+
+		print(
+			f"{comment} Generated with tools/crc-gen.py"
+			f"\ndigraph Graph_crc{crc_name}_{data_len} {{"
+		)
+
+		print(
+			"\tlayout = dot;"
+			"\n\tranksep = 5;"
+			"\n"
+			"\n\t{"
+			"\n\t\trank = same;"
+		)
+
+		decls    = []
+		decl_len = 0
+		for i in range(8*data_len):
+			decl = f'"in[{i}]";'
+
+			if decl_len + len(decl) + len(decls) >= 100:
+				print("\t\t" + " ".join(decls))
+				decls.clear()
+				decl_len = 0
+
+			decls.append(decl)
+			decl_len += len(decl)
+
+		if decls:
+			print("\t\t" + " ".join(decls))
+
+		print("\t}\n")
+
+		if optimize:
+			print("\t// tmp declarations:")
+
+		for i in range(len(tmp_defs)):
+			terms = get_terms(tmp_defs[1 + i]).replace(' ', '').replace(',', ', ')
+			print(f"\t{{\"{terms}\"}} -> \"tmp[{i}]\";")
+
+		print(end='\n' if optimize else '')
+
+		print("\t{\n\t\trank = same;")
+
+		decls    = []
+		decl_len = 0
+		for i in range(8*sum_len):
+			decl = f'"out[{i}]";'
+
+			if decl_len + len(decl) + len(decls) >= 100:
+				print("\t\t" + " ".join(decls))
+				decls.clear()
+				decl_len = 0
+
+			decls.append(decl)
+			decl_len += len(decl)
+
+		if decls:
+			print("\t\t" + " ".join(decls))
+
+		print("\t}\n")
+
+		print("\t// outputs:")
+		for i in range(8*sum_len):
+			terms = get_terms(outputs[i]).replace(' ', '').replace(',', ', ')
+			print(f"\t{{\"{terms}\"}} -> \"out[{i}]\";")
+
+		print(footer)
 	case "raw" | "r":
+		# NOTE: the output for this is NOT JSON. It uses set syntax, which is why it is called raw and not json
 		starting_gates = crc_optimizer.count_gates(rows)
 		if optimize:
 			tmp_defs, outputs = optimize_gates(rows)
