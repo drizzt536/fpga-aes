@@ -2,17 +2,20 @@
 fully-combinational HDL code generator for CRC functions given a fixed-length byte-aligned input.
 
 requires Python >=3.12.
-requires crcmod-plus if a CRC function other than the default is used.
+requires crcmod-plus if a CRC function other than CRC32 is used.
+
+"json" and "plain" formats are more about the CRC function itself, and "raw" is about the actual equations.
 """
 
 if __name__ != "__main__":
 	raise Exception("crc-gen.py should only be used at the top level.")
 
 import argparse
+import crc_optimizer
 
 # NOTE: zlib implements the same CRC32 standard as Ethernet uses.
 
-syntaxes = "systemverilog", "sv", "verilog", "v", "vhdl", "vhd", "python", "py", "python-first", "py1", "plain", "p", "json", "j", "raw"
+syntaxes = "systemverilog", "sv", "verilog", "v", "vhdl", "vhd", "python", "py", "python-first", "py1", "c", "plain", "p", "json", "j", "raw", "r"
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--data-len", "-l", type=int, default=4, help="bytes length of checksum input data. default is 4")
@@ -21,7 +24,7 @@ parser.add_argument("--out-port", "--out-var", "-O", type=str, default="crc", he
 parser.add_argument("--syntax", "-s", type=str.lower, choices=syntaxes, default=syntaxes[0], help=f"output language. default is '{syntaxes[0]}'")
 parser.add_argument("--algorithm", "--alg", "-a", type=lambda s: None if s is None else str.lower(s).strip(), default=None, help=f"CRC name. overrides other options. default is 'crc32'")
 parser.add_argument("--output", "--out", "-o", type=str, default="-", help=f"output file. default is '-'")
-parser.add_argument("--list-algorithms", "-L", action="store_true", help="list available algorithms and exit")
+parser.add_argument("--list-algorithms", "-A", action="store_true", help="list available algorithms and exit")
 
 custom_crc_group = parser.add_argument_group("custom CRC overrides (triggers custom mode if --polynomial is set)")
 custom_crc_group.add_argument("--polynomial", "--poly", "-p", type=int, help="polynomial. don't omit the uppermost bit")
@@ -30,53 +33,64 @@ custom_crc_group.add_argument("--xor-out", "-x", type=int, default=0, help="fina
 custom_crc_group.add_argument("--reflect", "-r", action="store_true", help="enable reflection. default is off")
 
 optimize_group = parser.add_argument_group(
-	"optimization settings (gate count)",
-	"defaults: optimize off, lookahead depth 0, n max 2, beam size 1, LNS: off, 1 trial, window size 3, unseeded"
+	"optimization settings (optimizes gate count)",
+	"defaults: optimize off, lookahead depth 0, n max 2, beam size 1, lookahead weight 1, prefer low n, LNS: off, 1 trial, window size 3, unseeded"
 )
-optimize_group.add_argument("--optimize"    , action="store_true", help="enable optimization without touching settings")
-optimize_group.add_argument("--optimize-depth"     , type=int    , help="enable optimization and set search lookahead depth.")
-optimize_group.add_argument("--optimize-nmax"      , type=int    , help="enable optimization and set n max.")
-optimize_group.add_argument("--optimize-beam"      , type=int    , help="enable optimization and set beam size.")
-optimize_group.add_argument("--optimize-lns", action="store_true", help="enable optimization+LNS without touching settings")
-optimize_group.add_argument("--optimize-lns-trials", type=int    , help="enable LNS and set the count.")
-optimize_group.add_argument("--optimize-lns-window", type=int    , help="enable LNS and set the window size.")
-optimize_group.add_argument("--optimize-lns-seed"  , type=int    , help="enable LNS, switch to predictable mode, and set the seed")
-optimize_group.add_argument("--verbose"            , type=int    , help="set optimization verbosity level")
+optimize_group.add_argument("--optimize", "-C", action="store_true", help="enable optimization without touching settings")
+optimize_group.add_argument("--optimize-depth", "-d"     , type=int    , help="enable optimization and set search lookahead depth.")
+optimize_group.add_argument("--optimize-nmax", "-n"      , type=int    , help="enable optimization and set n max.")
+optimize_group.add_argument("--optimize-beam", "-b"      , type=int    , help="enable optimization and set beam size.")
+optimize_group.add_argument("--optimize-weight", "-w"    , type=float  , help="enable optimization and set the lookahead weighting")
+optimize_group.add_argument("--optimize-seed", "-S"      , type=int    , help="enable optimization, switch to predictable mode, and set the MT19977 seed")
+optimize_group.add_argument("--optimize-n-prefer", "-P"  , type=str    , help="enable optimization and set tie break preference", choices=("l", "lo", "low", "h", "hi", "high", "m", "mid", "r", "rand", "random"))
+optimize_group.add_argument("--optimize-lns", "-L", action="store_true", help="enable optimization+LNS without touching settings")
+optimize_group.add_argument("--optimize-lns-trials", "-T", type=int    , help="enable optimization+LNS and set the count.")
+optimize_group.add_argument("--optimize-lns-window", "-W", type=int    , help="enable optimization+LNS and set the window size.")
+optimize_group.add_argument("--verbose", "-v"            , type=int    , help="set optimization verbosity level")
 args = parser.parse_args()
 
 # TODO: implement the rest of the configuration logic:
 optimize = args.optimize or args.optimize_lns or       args.optimize_depth      is not None \
 			or args.optimize_nmax       is not None or args.optimize_beam       is not None \
 			or args.optimize_lns_trials is not None or args.optimize_lns_window is not None \
-			or args.optimize_lns_seed   is not None
-lns = args.optimize_lns or                         args.optimize_lns_trials is not None \
-		or args.optimize_lns_window is not None or args.optimize_lns_seed   is not None
-optimize_depth   = args.optimize_depth      if args.optimize_depth      is not None else 0
-optimize_nmax    = args.optimize_nmax       if args.optimize_nmax       is not None else 2
-optimize_beam    = args.optimize_beam       if args.optimize_beam       is not None else 1
-lns_trials       = args.optimize_lns_trials if args.optimize_lns_trials is not None else 1
-lns_window       = args.optimize_lns_window if args.optimize_lns_window is not None else 3
-lns_seed         = args.optimize_lns_seed
-optimize_verbose = args.verbose or 0
+			or args.optimize_seed       is not None or args.optimize_n_prefer   is not None \
+			or args.optimize_weight     is not None
+lns = args.optimize_lns or args.optimize_lns_trials is not None or args.optimize_lns_window is not None
+optimize_depth    = args.optimize_depth      if args.optimize_depth      is not None else 0
+optimize_nmax     = args.optimize_nmax       if args.optimize_nmax       is not None else 2
+optimize_beam     = args.optimize_beam       if args.optimize_beam       is not None else 1
+optimize_seed     = args.optimize_seed
+optimize_weight   = args.optimize_weight     if args.optimize_weight     is not None else 1
+optimize_n_prefer = args.optimize_n_prefer   if args.optimize_n_prefer   is not None else "low"
+lns_trials        = args.optimize_lns_trials if args.optimize_lns_trials is not None else 1
+lns_window        = args.optimize_lns_window if args.optimize_lns_window is not None else 3
+optimize_verbose  = args.verbose or 0
+
+if optimize_n_prefer == "l" or optimize_n_prefer == "lo"  : optimize_n_prefer = "low"
+if optimize_n_prefer == "h" or optimize_n_prefer == "hi"  : optimize_n_prefer = "high"
+if optimize_n_prefer == "m"                               : optimize_n_prefer = "mid"
+if optimize_n_prefer == "r" or optimize_n_prefer == "rand": optimize_n_prefer = "random"
+
+if abs(optimize_weight - round(optimize_weight)) < 1e-9:
+	optimize_weight = round(optimize_weight)
 
 if not lns:
 	lns_window = 0
 	lns_trials = 0
 
-if optimize:
-	from crc_optimizer import optimize_gates as _optimize_gates
-
-	def optimize_gates(eqns: list[set]) -> tuple[dict[int, set], list[set]]:
-		return _optimize_gates(
-			rows,
-			optimize_depth,
-			optimize_nmax,
-			optimize_beam,
-			lns_window,
-			lns_trials,
-			lns_seed,
-			optimize_verbose
-		)
+def optimize_gates(eqns: list[set]) -> tuple[dict[int, set], list[set]]:
+	return crc_optimizer.optimize_gates(
+		rows,
+		optimize_depth,
+		optimize_nmax,
+		optimize_beam,
+		optimize_n_prefer,
+		optimize_weight, # lookahead weight
+		lns_window,
+		lns_trials,
+		optimize_seed,
+		optimize_verbose
+	)
 
 data_len   = args.data_len
 in_port    = args.in_port
@@ -205,25 +219,12 @@ polynomial          = int(f"{reversed_polynomial:0{8*sum_len}b}"[::-1], 2)
 max_io_pad      = 1 + max(len(in_port), len(out_port))
 in_pad          = " "*(max_io_pad - len(in_port))
 out_pad         = " "*(max_io_pad - len(out_port))
-in_idx_max_pad  = len(str(8 * data_len))
-out_idx_max_pad = len(str(8 * sum_len))
+in_idx_max_pad  = len(str(8*data_len))
+out_idx_max_pad = len(str(8*sum_len))
 idx_max_pad     = max(in_idx_max_pad, out_idx_max_pad)
 
 syntax_data = {
-	"vhd": {
-		"xor"         : " xor ",
-		'1'           : "'1'",
-		'0'           : "'0'",
-		'='           : " <= ",
-		'['           : '(',
-		']'           : ')',
-		'^'           : '\t',
-		'$'           : ';',
-		"footer"      : "end architecture;",
-		"comment"     : "--",
-		"begin_logic" : "begin",
-		"wire_type"   : lambda name, size: f"\tsignal {name} : std_logic_vector({size} downto 0);",
-	}, "v": {
+	"v": {
 		"xor"         : " ^ ",
 		'1'           : '1',
 		'0'           : '0',
@@ -236,6 +237,19 @@ syntax_data = {
 		"comment"     : "//",
 		"begin_logic" : '',
 		"wire_type"   : lambda name, size: f"wire [{size} : 0] {name.strip()};",
+	}, "vhd": {
+		"xor"         : " xor ",
+		'1'           : "'1'",
+		'0'           : "'0'",
+		'='           : " <= ",
+		'['           : '(',
+		']'           : ')',
+		'^'           : '\t',
+		'$'           : ';',
+		"footer"      : "end architecture;",
+		"comment"     : "--",
+		"begin_logic" : "begin",
+		"wire_type"   : lambda name, size: f"\tsignal {name.lstrip()} : std_logic_vector({size} downto 0);",
 	}, "py": {
 		"xor"         : " ^ ",
 		'1'           : '1',
@@ -244,26 +258,37 @@ syntax_data = {
 		'['           : '[',
 		']'           : ']',
 		'^'           : "\t",
-		'$'           : ',',
-		"footer"      : None,
+		'$'           : '',
+		"footer"      : '',
 		"comment"     : "#",
 		"begin_logic" : '',
-		"wire_type"   : None,
+		"wire_type"   : lambda name, size: f"\t{name.lstrip()} = [None] * {size}",
+	}, "c": {
+		"xor"         : " ^ ",
+		'1'           : '1',
+		'0'           : '0',
+		'='           : " = ",
+		'['           : '[',
+		']'           : ']',
+		'^'           : "\t",
+		'$'           : ';',
+		"footer"      : '}',
+		"comment"     : "//",
+		"begin_logic" : '',
+		"wire_type"   : lambda name, size: f"\tuint8_t {name.lstrip()}[{size}];",
 	}
 }
 
 syntax_data["sv"] = syntax_data["v"]
 
 syntax = {
-	"vhdl"         : "vhd" , "vhd": "vhd",
-	"verilog"      : "v"   , "v"  : "v",
-	"systemverilog": "sv"  , "sv" : "sv",
-	"python"       : "py"  , "py" : "py",
-	"python-first" : "py1" , "py1": "py1",
-	"plain"        : "p"   , "p"  : "p",
-	"json"         : "json", "j"  : "j",
-	"raw": "raw"
-}[syntax]
+	"vhdl"          : "vhd",
+	"verilog"       : "v",
+	"systemverilog" : "sv",
+	"python"        : "py",
+	"python-first"  : "py1",
+	"plain"         : "p",
+}.get(syntax, syntax)
 
 tokens = syntax_data.get(syntax, {})
 
@@ -309,6 +334,15 @@ def get_terms(eqn: set) -> str:
 
 	return terms
 
+def c_type_length(count: int) -> int:
+	"returns the bit size of the smallest C integer type that can fit `count - 1`, or has >=count values."
+	bits = (count - 1).bit_length()
+
+	if bits <=  8: return  8
+	if bits <= 16: return 16
+	if bits <= 32: return 32
+	return 64
+
 match syntax:
 	case "vhd" | "v" | "sv":
 		is_sv = syntax == "sv"
@@ -353,8 +387,8 @@ match syntax:
 				f"\n\t// 1 => little endian, 0 => big endian"
 				f"\n\tparameter{" bit" if is_sv else ""} BSWAP = 1"
 				f"\n) ("
-				f"\n\tinput  [{8*data_len - 1:{idx_max_pad}}:0] {in_port},"
-				f"\n\toutput [{8*sum_len - 1:{idx_max_pad}}:0] {out_port}"
+				f"\n\tinput  [{8*data_len - 1:{idx_max_pad}} : 0] {in_port},"
+				f"\n\toutput [{8*sum_len - 1:{idx_max_pad}} : 0] {out_port}"
 				f"\n);"
 				f"\n"
 			)
@@ -407,8 +441,8 @@ match syntax:
 			print(f"\n{prefix}{out_port}{assign}{local_port}{suffix}")
 
 		print(footer)
-	case "py" | "py1":
-		# compute optimized graph
+	case "py1" | "py" | "c":
+		# compute optimized equation graph
 		if optimize:
 			tmp_defs, outputs = optimize_gates(rows)
 		else:
@@ -418,7 +452,7 @@ match syntax:
 		if syntax in {"python-first", "py1"}:
 			# also give functions for testing the functionality
 			# meant for only the first time, so you paste them to wherever
-			# it is being used, and then swithc to 'python' or 'py'
+			# it is being used, and then switch to 'python' or 'py'
 
 			print(
 				"import crcmod, zlib"
@@ -490,23 +524,42 @@ match syntax:
 		in_port_i  = in_bits
 		tmp_port_i = "tmp"
 
-		if in_port in {"_bit", "_byte"}:
-			raise Exception(f"`--in-port '{in_port}' cannot be given with `--syntax '{syntax}'`")
+		if in_port in {"bit_", "byte_"}:
+			raise Exception(f"`--in-port '{in_port}'` cannot be given with `--syntax '{syntax}'`")
 
-		if out_port in {"_bit", "_byte"}:
-			raise Exception(f"`--in-port '{out_port}' cannot be given with `--syntax '{syntax}'`")
+		if out_port in {"bit_", "byte_"}:
+			raise Exception(f"`--in-port '{out_port}'` cannot be given with `--syntax '{syntax}'`")
 
-		print(
-			f"def crc{crc_name}_{data_len}({in_port}: bytes) -> int:"
-			f"\n\t{in_bits} = []"
-			f"\n\tfor _byte in {in_port}:"
-			f"\n\t\tfor _bit in range(7, -1, -1):"
-			f"\n\t\t\t{in_bits}.append((_byte >> _bit) & 1)"
-			f"\n"
-		)
+		if syntax == "c":
+			print(
+				f"#include <stdint.h>"
+				f"\n"
+				f"\nuint{8*sum_len}_t crc{crc_name}_{data_len}(uint8_t {in_port}[{data_len}]) {{"
+				f"\n\tuint8_t {in_bits}[{8*data_len}];"
+				f"\n\tuint{c_type_length(8*data_len)}_t idx = 0;"
+				f"\n"
+				f"\n\tfor (uint{c_type_length(data_len)}_t byte_ = 0; byte_ < {data_len}; byte_++)"
+				f"\n\t\tfor (uint8_t bit_ = 8; bit_ --> 0 ;)"
+				f"\n\t\t\t{in_bits}[idx++] = ({in_port}[byte_] >> bit_) & 1;"
+				f"\n"
+			)
+		else:
+			print(
+				f"def crc{crc_name}_{data_len}({in_port}: bytes | bytearray) -> int:"
+				f"\n\tassert isinstance({in_port}, bytes | bytearray), \"input must be bytes or bytearray\""
+				f"\n\tassert len({in_port}) == {data_len}, \"input must be {data_len} bytes long\""
+				f"\n"
+				f"\n\t{in_bits} = []"
+				f"\n\tfor byte_ in {in_port}:"
+				f"\n\t\tfor bit_ in range(7, -1, -1):"
+				f"\n\t\t\t{in_bits}.append((byte_ >> bit_) & 1)"
+				f"\n"
+			)
 
 		if optimize:
-			print(f"\ttmp = [None]*{len(tmp_defs)}\n")
+			print(wire_type("tmp" if syntax == "c" else tmp_port_o, len(tmp_defs)))
+
+		print(wire_type(local_port, 8*sum_len), end="\n\n")
 
 		tmp_idx_max_pad = len(str(len(tmp_defs) - 1))
 
@@ -515,25 +568,31 @@ match syntax:
 		elif max_pad_diff > 0: tmp_port_o += ' '*max_pad_diff
 
 		for i in range(len(tmp_defs)):
-			print(f"{prefix}tmp{lbr}{i:{tmp_idx_max_pad}}{rbr}{assign}{get_terms(tmp_defs[1 + i])}")
+			print(f"{prefix}{tmp_port_o}{lbr}{i:{tmp_idx_max_pad}}{rbr}{assign}{get_terms(tmp_defs[1 + i])}{suffix}")
 
-		if optimize:
-			print()
-
-		print(f"\t{local_port}{assign}[")
+		print(end='\n' if optimize else '')
 
 		for i in range(8*sum_len):
-			print(f"\t{prefix}{get_terms(outputs[i]).lstrip()}{suffix}")
+			print(f"{prefix}{local_port}{lbr}{i:{out_idx_max_pad}}{rbr}{assign}{get_terms(outputs[i])}{suffix}")
 
-		print(
-			f"\t]"
-			f"\n"
-			f"\n\t{out_port} = 0"
-			f"\n\tfor i in range({8*sum_len}):"
-			f"\n\t\t{out_port} |= {local_port}[i] << i"
-			f"\n"
-			f"\n\treturn {out_port}"
-		)
+		if syntax == "c":
+			print(
+				f"\n\tuint{8*sum_len}_t {out_port} = 0;"
+				f"\n\tfor (uint{c_type_length(8*sum_len)}_t i_ = 0; i_ < {8*sum_len}; i_++)"
+				f"\n\t\t{out_port} |= {local_port}[i_] << i_;"
+				f"\n"
+				f"\n\treturn {out_port};"
+			)
+		else:
+			print(
+				f"\n\t{out_port} = 0"
+				f"\n\tfor i in range({8*sum_len}):"
+				f"\n\t\t{out_port} |= {local_port}[i] << i"
+				f"\n"
+				f"\n\treturn {out_port}"
+			)
+
+		print(footer)
 	case "p":
 		print(
 			"CRC Summary:"
@@ -574,10 +633,36 @@ match syntax:
 		}
 
 		indent = "\t" if syntax == "json" else None
-		seps   = (", ", ": ") if syntax == "json" else (",", ":")
+		seps   = (", ", ": ") if syntax == "json" else (',', ':')
 
 		print(json.dumps(report, indent=indent, separators=seps))
-	case "raw":
-		print(optimize_gates(rows) if optimize else ({}, rows))
+	case "raw" | "r":
+		starting_gates = crc_optimizer.count_gates(rows)
+		if optimize:
+			tmp_defs, outputs = optimize_gates(rows)
+		else:
+			tmp_defs = {}
+			outputs  = rows
+
+		ending_gates = crc_optimizer.count_gates(tmp_defs, outputs)
+		if syntax == "raw":
+			sep = "\n\t"
+			pad = ' '
+		else:
+			sep = ''
+			pad = ''
+
+		data = (
+			f'{{'
+			f'{sep}"tmp_defs":{pad}{tmp_defs},'
+			f'{sep}"outputs":{pad}{outputs},'
+			f'{sep}"starting_gates":{pad}{starting_gates},'
+			f'{sep}"ending_gates":{pad}{ending_gates},'
+			f'{sep}"gate_reduction":{pad}{starting_gates - ending_gates},'
+			f'{sep}"gate_compression":{pad}{1 - ending_gates / starting_gates}'
+			f"{'\n' if syntax == "raw" else ''}}}"
+		)
+
+		print(data if syntax == "raw" else data.replace(' ', ''))
 	case _:
 		raise Exception(f"mismatch between argparse syntax list and match/case syntax list. syntax: '{syntax}'")

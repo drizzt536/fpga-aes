@@ -1,6 +1,6 @@
 """
-optimizes the CRC HDL code generated in `crc-gen.py` using greedy selecition of n-wise intersections,
-and optionally, large neighborhood search.
+Performs common subexpression elimination the CRC HDL code generated in `crc-gen.py`.
+uses greedy selection of n-wise intersections, and optionally, large neighborhood search.
 
 The main function intended to be called is `optimize_gates`.
 
@@ -19,14 +19,23 @@ an input signal.
 Whenever `set` is in a type annotation for a function, it is implicitly `set[int | None]`
 
 Python 3.10 is probably the minimum that works for this.
+
+NOTE: sometimes, increasing depth or n max can make the overall solution worse
 """
 
 from copy   import deepcopy
 from random import Random, SystemRandom
 
-def eprint(*args, **kwargs):
+def eprint(*args, **kwargs) -> None:
+	"print to stderr"
+
 	from sys import stderr
-	print(*args, **kwargs, file=stderr)
+
+	if not stderr.isatty() and type(args[0]) is str:
+		print(args[0].replace("\x1b[K", ''), *args[1:], **kwargs, file=stderr)
+	else:
+		print(*args, **kwargs, file=stderr)
+
 
 def get_rng(seed: int | None):
 	# 1. random.Random() uses MT, which has pretty good avalanche (~50% flip) when incrementing the seed
@@ -38,14 +47,24 @@ def get_rng(seed: int | None):
 
 	return SystemRandom() if seed is None else Random(seed)
 
-gate_count = lambda s: sum(len(si) - 1 for si in s if si)
+def count_gates(x: list[set] | dict[int, set], y: list[set] | dict[int, set] | None = None) -> int:
+	if y is not None:
+		return count_gates(x) + count_gates(y)
+
+	if type(x) is list:
+		return sum(map(len, x)) - len(x)
+
+	if type(x) is dict:
+		return sum(map(len, x.values())) - len(x)
+
+	raise Exception(f"invalid type input to `count_gates: '{type(x)}'")
 
 def add_tmp_list(
 	s: list[set],
 	extraction: tuple[tuple[int, ...], set],
 	tmp_count: int
 ) -> None:
-	"tmp_count is the id of the new tmp value, and the number of tmps there are about to be in the list"
+	"tmp_count is the id of the new tmp value, and the number of tmps there are *about to be* in the list"
 	new_i, new_s = extraction
 
 	for i in new_i:
@@ -68,7 +87,7 @@ def add_tmp_dict(
 
 	for i in new_i:
 		if i < n_tmps:
-			expr = tmp_defs[sorted_keys[i]] # this might be off by 1
+			expr = tmp_defs[sorted_keys[i]]
 		else:
 			expr = outputs[i - n_tmps]
 
@@ -78,16 +97,17 @@ def add_tmp_dict(
 	tmp_defs[tmp_count] = new_s
 
 def _dfs_sets(
-	start: int,  # start index
+	start: int,            # start index
 	idxs: tuple[int, ...], # indices
-	inter: set,  # current intersection
-	s: list[set],
-	n_max: int,  # check up to and including n=n_max
-	B: int,      # return the top B (or less) results per level
+	inter: set,            # current intersection
+	s: list[set],          # equation list
+	nmax: int,             # check up to and including n=nmax
+	B: int,                # return the top B (or less) results per level
 	best_i: dict[int, list[tuple[int, ...]]],
 	best_s: dict[int, list[set]],
 	prune: bool = True
 ) -> None:
+	# from bisect import bisect_left
 	n = len(idxs)
 
 	if n >= 2:
@@ -96,41 +116,110 @@ def _dfs_sets(
 				best_i[n] = [idxs]
 				best_s[n] = [inter]
 			else:
-				best_i[n].append(idxs)
-				best_s[n].append(inter)
+				# ins_loc = bisect_left(best_s[n], -len(inter), key=lambda x: -len(x))
 
-				# sort descending by intersection size
-				best_i[n], best_s[n] = zip(*sorted(
-					zip(best_i[n], best_s[n]),
-					key=lambda x: len(x[1]),
-					reverse=True
-				))
+				inter_len = len(inter)
+				ins_loc   = len(best_s[n]) - 1
 
-				best_i[n] = list(best_i[n])[:B]
-				best_s[n] = list(best_s[n])[:B]
+				for i, v in enumerate(best_s[n]):
+					if inter_len > len(v):
+						ins_loc = i
+						break
 
-	if n == n_max:
+				best_i[n].insert(ins_loc, idxs)
+				best_s[n].insert(ins_loc, inter)
+
+				if len(best_s[n]) > B:
+					best_i[n].pop()
+					best_s[n].pop()
+
+	if n == nmax:
 		return
 
 	if prune:
+		# NOTE: these two branches are identical except for the `>` vs `>=` inside `any`.
+		#       if B == 1, then it can prune more heavily
+
+		if B == 1:
+			for i in range(start, len(s)):
+				nxt = inter & s[i] if inter is not None else s[i]
+				nxt_len = len(nxt)
+
+				if nxt_len >= 2 and any(
+					nxt_len > len(best_s[j][-1]) if best_s[j] else True
+					for j in range(max(2, n + 1), nmax + 1)
+				):
+					_dfs_sets(i + 1, idxs + (i,), nxt, s, nmax, B, best_i, best_s)
+		else:
+			for i in range(start, len(s)):
+				nxt = inter & s[i] if inter is not None else s[i]
+				nxt_len = len(nxt)
+
+				if nxt_len >= 2 and any(
+					nxt_len >= len(best_s[j][-1]) if best_s[j] else True
+					for j in range(max(2, n + 1), nmax + 1)
+				):
+					_dfs_sets(i + 1, idxs + (i,), nxt, s, nmax, B, best_i, best_s)
+	else:
+		# for brute force search
 		for i in range(start, len(s)):
 			nxt = inter & s[i] if inter is not None else s[i]
 
-			if len(nxt) >= 2 and any(len(nxt) >= len(best_s[j][-1]) if best_s[j] else True for j in range(max(2, n + 1), n_max + 1)):
-				_dfs_sets(i + 1, idxs + (i,), nxt, s, n_max, B, best_i, best_s, prune=False)
-	else:
-		for i in range(start, len(s)):
-			nxt = inter & s[i] if inter is not None else s[i]
 			if len(nxt) >= 2:
-				_dfs_sets(i + 1, idxs + (i,), nxt, s, n_max, B, best_i, best_s)
+				_dfs_sets(i + 1, idxs + (i,), nxt, s, nmax, B, best_i, best_s, prune=False)
+
+def _resolve_best(
+	scores: list[int],
+	best_i: list[tuple[int, ...]],
+	best_s: list[set],
+	prefer: str = "low",
+	rng: Random = SystemRandom()
+) -> tuple[int, tuple[tuple[int, ...], set]]:
+	"""
+	The inputs should encode the best reduction for each n value.
+	This function resolves those to the best overall reduction,
+	breaking ties based on the `prefer` argument.
+	"""
+
+	nmax      = 1 + len(best_i)
+	max_score = max(scores)
+	best      = None, None
+
+	match prefer:
+		case "high":
+			for n in range(nmax, 1, -1):
+				if scores[n - 2] == max_score:
+					best = best_i[n], best_s[n]
+					break
+		case "low":
+			for n in range(2, nmax + 1):
+				if scores[n - 2] == max_score:
+					best = best_i[n], best_s[n]
+					break
+		case "mid" | "random":
+			ties = [n for n in range(2, nmax + 1) if scores[n - 2] == max_score]
+
+			if   len(ties) == 1:     best_n = ties[0]
+			elif prefer == "mid":    best_n = ties[len(ties) >> 1]
+			elif prefer == "random": best_n = ties[rng.randint(0, len(ties) - 1)]
+
+			best = best_i[best_n], best_s[best_n]
+		case _:
+			raise Exception(f"invalid tie break preference: '{prefer}'. valid options are 'high', 'low', 'mid', 'random'")
+
+
+	return max(0, max_score), best
 
 def find_best_nwise(
 	s: list[set],
 	tmp_count: int, # number of temporary signals
 	depth: int,
-	n_max: int,
+	nmax: int,
 	B: int,
 	skip_min: int = None,
+	n_prefer: str = "low",
+	lookahead_weight: float | int = 1,
+	rng: Random = SystemRandom(),
 	verbose: bool = True,
 	orig_depth: int | None = None,
 	idx_data: tuple | None = None
@@ -142,7 +231,6 @@ def find_best_nwise(
 	best is (best_i, best_s)
 	skip_min is an integer and score is an integer
 	"""
-
 	if depth < 0:
 		depth = 0
 
@@ -152,32 +240,33 @@ def find_best_nwise(
 	if   skip_min is None: skip_min = 1 + len(s)
 	elif skip_min < 3:     skip_min = 3
 
-	if B < 1 or depth == 0:
+	if B < 1:
 		B = 1
-
-	if B == 1 and depth > 0:
-		depth = 0
 
 	if idx_data is None:
 		idx_data = (1, 1)
 
-	n_max = max(2, min(n_max, len(s), skip_min - 1))
+	nmax = max(2, min(nmax, len(s), skip_min - 1))
 
-	if n_max < 2:
+	if nmax < 2:
 		return skip_min, 0, (None, None), False
 
-	best_i = {n: [] for n in range(2, n_max + 1)}
-	best_s = {n: [] for n in range(2, n_max + 1)}
+	best_i = {n: [] for n in range(2, nmax + 1)}
+	best_s = {n: [] for n in range(2, nmax + 1)}
 
-	_dfs_sets(0, (), None, s, n_max, B, best_i, best_s)
+	_dfs_sets(0, (), None, s, nmax, B, best_i, best_s)
 
 	if depth > 0:
-		for i in range(2, n_max + 1):
+		# lookahead
+
+		# it is impossible for any score to be lower than -nmax
+		scores = [-nmax] * (nmax - 1)
+
+		for i in range(2, nmax + 1):
 			# foreach `n`
 
-			tmp_best_i     = None
-			tmp_best_s     = set()
-			tmp_best_score = -1
+			tmp_best_i = None
+			tmp_best_s = set()
 
 			for j in range(len(best_i[i])):
 				best  = best_i[i][j], best_s[i][j]
@@ -185,62 +274,68 @@ def find_best_nwise(
 
 				add_tmp_list(tmp_s, best, tmp_count)
 
-				# immediate score
-				tmp_score = (i - 1) * (len(best_s[i][j]) - 1)
-
 				# future score
-				tmp_score += find_best_nwise(
+				tmp_score = find_best_nwise(
 					tmp_s,
 					tmp_count + 1,
 					depth - 1,
-					n_max,
+					nmax,
 					B,
 					skip_min,
+					n_prefer,
+					lookahead_weight,
+					rng,
 					verbose,
 					orig_depth,
-					(i, n_max)
+					(i, nmax)
 				)[1]
 
-				if tmp_score > tmp_best_score:
-					tmp_best_score = tmp_score
-					tmp_best_i = best[0]
-					tmp_best_s = best[1]
+				if lookahead_weight != 1:
+					tmp_score = round(tmp_score * lookahead_weight)
+
+				# immediate score
+				tmp_score += (i - 1) * (len(best_s[i][j]) - 1)
+
+				if tmp_score > scores[i - 2]:
+					scores[i - 2] = tmp_score
+					tmp_best_i, tmp_best_s = best
 
 			best_i[i] = tmp_best_i
 			best_s[i] = tmp_best_s
+
+		# this makes regressions better sometimes
+		#for i in range(2, nmax + 1):
+		#	scores[i - 2] += (i - 1) * (len(best_s[i]) - 1)
 	else:
-		for i in range(2, n_max + 1):
+		# evaluate immediate scores
+		for i in range(2, nmax + 1):
 			best_i[i] = best_i[i][0] if best_i[i] else None
 			best_s[i] = best_s[i][0] if best_s[i] else set()
 
-	# Compute scores dynamically up to n_max
-	scores = tuple((n - 1) * (len(best_s[n]) - 1) for n in range(2, n_max + 1))
+		scores = [(n - 1) * (len(best_s[n]) - 1) for n in range(2, nmax + 1)]
 
 	if verbose:
+		# NOTE: `r` isn't really an incredibly helpful metric since it prints the same one multiple times
 		eprint(f"#     depth={orig_depth - depth}/{orig_depth}, r={idx_data[0]}/{idx_data[1]}, skip min={skip_min}, scores=", *scores[:skip_min - 2])
 
-	for n in range(3, n_max + 1):
-		if scores[n - 2] < 1 and skip_min > n:
+	for n in range(3, min(nmax + 1, skip_min)):
+		if scores[n - 2] < 1:
 			skip_min = n
 			break
 
 	if all(score < 1 for score in scores):
 		return skip_min, 0, (None, None), False
 
-	max_score = max(scores)
-
-	for n in range(n_max, 1, -1):
-		if scores[n - 2] == max_score:
-			best = best_i[n], best_s[n]
-			break
-
-	return skip_min, max_score, best, True
+	return skip_min, *_resolve_best(scores, best_i, best_s, n_prefer, rng), True
 
 def optimize_gates_nwise(
 	s: list[set],
 	depth: int = 0,
-	n_max: int = 2,
+	nmax: int = 2,
 	B: int = 1,
+	n_prefer: str = "low",
+	lookahead_weight: float | int = 1,
+	rng: Random = SystemRandom(), # for n_prefer="random"
 	verbose: int = 0
 ) -> tuple[dict[int, set], list[set]]:
 	"""
@@ -249,30 +344,35 @@ def optimize_gates_nwise(
 	returns (tmp vars dictionary, new outputs)
 	"""
 
-	if n_max < 2:
-		n_max = 2
+	if nmax < 2:
+		nmax = 2
 
 	s = deepcopy(s)
 
-	orig_gate_count = gate_count(s)
+	gate_count      = count_gates(s)
+	orig_gate_count = gate_count
 	gate_reduction  = 0
 	tmp_count       = 0
-	skip_min        = n_max + 1
+	skip_min        = nmax + 1
 	round           = 0
 
 	while True:
 		if verbose >= 1:
-			eprint(f"# round {(round := round + 1)}: global reduction = {gate_reduction}, gate count = {gate_count(s)}")
+			# TODO: print the previous round's gate reduction
+			# TODO: add an option to make it exit once the previous round only reduced gate count by 1.
+			eprint(f"# round {(round := round + 1)}: global reduction = {gate_reduction}, gate count = {gate_count}")
 
-		skip_min, score, best, cont = find_best_nwise(s, tmp_count, depth, n_max, B, skip_min, verbose >= 2)
+		skip_min, _, best, cont = find_best_nwise(s, tmp_count, depth, nmax, B, skip_min, n_prefer, lookahead_weight, rng, verbose >= 2)
 
 		if not cont:
 			break
 
 		tmp_count += 1
 
-		gate_reduction += score
 		add_tmp_list(s, best, tmp_count)
+
+		gate_count = count_gates(s)
+		gate_reduction = orig_gate_count - gate_count
 
 	gate_compression = gate_reduction / orig_gate_count
 	tmp_defs = {i: v for i, v in enumerate(reversed(s[0:tmp_count]), 1)}
@@ -281,25 +381,25 @@ def optimize_gates_nwise(
 	if verbose >= 2:
 		eprint(
 			f"# old gate count: {orig_gate_count}"
-			f"\n# new gate count: {orig_gate_count - gate_reduction}"
+			f"\n# new gate count: {gate_count}"
 			f"\n# gate reduction: {gate_reduction}"
 			f"\n# gate compression: {gate_compression}"
 			f"\n# number of tmp signals: {tmp_count}"
 		)
 	elif verbose == 1:
-		eprint(f"# optimized gate count = {gate_count(s)}")
+		eprint(f"# optimized gate count = {gate_count}")
 
 	return tmp_defs, outputs
 
 def find_all_reductions(tmp_defs: dict[int, set], outputs: list[set]) -> tuple[dict[int, tuple], dict[int, set]]:
 	sorted_keys = sorted(tmp_defs.keys(), reverse=True)
-	s = [tmp_defs[k] for k in sorted_keys] + outputs
+	s = [tmp_defs[key] for key in sorted_keys] + outputs
 
-	n_max = len(s)
-	best_i = {n: [] for n in range(2, n_max + 1)}
-	best_s = {n: [] for n in range(2, n_max + 1)}
+	nmax = len(s)
+	best_i = {n: [] for n in range(2, nmax + 1)}
+	best_s = {n: [] for n in range(2, nmax + 1)}
 
-	_dfs_sets(0, (), None, s, n_max, 1 << 31, best_i, best_s, prune=False)
+	_dfs_sets(0, (), None, s, nmax, 1 << 31, best_i, best_s, prune=False)
 	return best_i, best_s
 
 def brute_force(
@@ -324,7 +424,7 @@ def brute_force(
 		return tmp_defs, outputs
 
 	best_result = None
-	best_gates  = gate_count(tmp_defs.values()) + gate_count(outputs)
+	best_gates  = count_gates(tmp_defs, outputs)
 
 	for i, candidate in enumerate(candidates):
 		if verbose >= 2 and depth == 1:
@@ -335,7 +435,7 @@ def brute_force(
 
 		add_tmp_dict(td, out, candidate, len(td) + 1)
 		td, out = brute_force(td, out, max_depth, depth + 1)
-		g = gate_count(td.values()) + gate_count(out)
+		g = count_gates(td, out)
 
 		if g < best_gates:
 			best_gates  = g
@@ -405,11 +505,11 @@ def optimize_gates_lns(
 	if trials == 0:
 		trials = 1 + (len(tmp_defs) + len(outputs) + window_size - 1) // window_size
 
-	old_gate_count = gate_count(tmp_defs.values()) + gate_count(outputs)
+	old_gate_count = count_gates(tmp_defs, outputs)
 
 	for round in range(1, 1 + trials):
 		if verbose >= 1:
-			eprint(f"# LNS round {round}: gates={gate_count(tmp_defs.values()) + gate_count(outputs)}")
+			eprint(f"# LNS round {round}: gates={count_gates(tmp_defs, outputs)}")
 
 		td  = deepcopy(tmp_defs)
 		out = deepcopy(outputs)
@@ -420,14 +520,14 @@ def optimize_gates_lns(
 		# since brute force gives the true minimum, this is always at least as good as the old solution
 		td, out = brute_force(td, out, max_depth, 1, verbose)
 
-		# if gate_count(td.values()) + gate_count(out) < old_gate_count:
+		# if count_gates(td, out) < old_gate_count:
 		# 	tmp_defs, outputs = td, out
 
 		if verbose >= 2:
 			eprint("\r\x1b[K", end="", flush=True)
 
 	if verbose >= 2:
-		eprint(f"# LNS ending gates: {gate_count(tmp_defs.values()) + gate_count(outputs)}")
+		eprint(f"# LNS ending gates: {count_gates(tmp_defs, outputs)}")
 
 	return tmp_defs, outputs
 
@@ -510,12 +610,14 @@ def optimize_gates(
 	depth: int = 0,
 	nmax: int = 2,
 	beam: int = 1,
+	n_prefer: str = "low",
+	lookahead_weight: int | float = 1,
 	lns_window: int = 0,
 	lns_trials: int = 0,
 	seed: int | None = None,
 	verbose: int = 0,
 	sort: bool = True
-):
+) -> tuple[dict[int, set], list[set]]:
 	"""
 	first stage uses n-wise greedy optimization.
 	optional second stage uses brute force LNS
@@ -527,12 +629,12 @@ def optimize_gates(
 
 	rng = get_rng(seed)
 
-	tmp_defs, outputs = optimize_gates_nwise(s, depth, nmax, beam, verbose)
+	tmp_defs, outputs = optimize_gates_nwise(s, depth, nmax, beam, n_prefer, lookahead_weight, rng, verbose)
 
-	if lns_window != 0 and lns_trials != 0:
+	if lns_window != 0:
 		tmp_defs, outputs = optimize_gates_lns(tmp_defs, outputs, lns_window, lns_trials, -1, rng, verbose)
 
-	cleanup_tmps(tmp_defs, outputs)
+	cleanup_tmps(tmp_defs, outputs) # LNS seems to like adding alias tmp signals
 
 	if sort:
 		tsort(tmp_defs, outputs)
