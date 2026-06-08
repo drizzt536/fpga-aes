@@ -7,7 +7,7 @@ The main function intended to be called is `optimize_gates`.
 The input should be a list of sets, where each set contains an integer >= 0, where an element `n`
 represents `in[n]`, so `assign out[0] = in[7] ^ in[2] ^ in[0];` would become `{7, 2, 0}` for the
 set. constant terms can be anything so long as it is not an integer. `None` works well. A string
-should work well too.
+should work too, but I haven't tested it.
 
 The output is a tuple of two values: `tmp_defs` and `outputs`. `outputs` is the same as the input,
 So `outputs[2]` is just the optimized form of `out[2]` from the input. `tmp_defs` is a dictionary
@@ -21,7 +21,9 @@ Whenever `set` is in a type annotation for a function, it is implicitly `set[int
 Python 3.10 is probably the minimum that works for this.
 
 NOTE: sometimes, increasing depth or n max can make the overall solution worse.
-      if you increase it enough, it should get better again
+      if you increase it enough, it should get better again.
+
+the other external functions are `count_gates`, `expand_gates`, and `graph_depth`
 """
 
 from copy   import deepcopy
@@ -52,7 +54,8 @@ def count_gates(x: list[set] | dict[int, set], y: list[set] | dict[int, set] | N
 		return count_gates(x) + count_gates(y)
 
 	if type(x) is list:
-		return sum(map(len, x)) - len(x)
+		# ignore empty sets since they don't effect the gate count
+		return sum(map(len, x)) - sum(1 for e in x if len(e))
 
 	if type(x) is dict:
 		return sum(map(len, x.values())) - len(x)
@@ -532,6 +535,8 @@ def optimize_gates_lns(
 	return tmp_defs, outputs
 
 def tmp_swap(tmp_defs: dict[int, set], outputs: list[set], i: int, j: int) -> None:
+	"swap the IDs of two temporary signals and update all references"
+
 	tmp_defs[i], tmp_defs[j] = tmp_defs[j], tmp_defs[i]
 
 	i = -i
@@ -555,7 +560,7 @@ def tmp_swap(tmp_defs: dict[int, set], outputs: list[set], i: int, j: int) -> No
 			eqn.add(i)
 
 def _tsort_tmps(tmp_defs: dict[int, set]) -> dict[int, int]:
-	"topological sort helper to get position map"
+	"topological sort helper to get position map. Kahn's algorithm"
 
 	from collections import deque
 
@@ -589,11 +594,8 @@ def _tsort_tmps(tmp_defs: dict[int, set]) -> dict[int, int]:
 
 	return pos_map
 
-def tsort(tmp_defs: dict[int, set], outputs: list[set]) -> None:
-	"topological sort"
-
+def _tsort_swap(tmp_defs: dict[int, set], outputs: list[set], pos_map: dict[int, int]) -> None:
 	# NOTE: the last remaining element in the map will always be of the form `x: x`
-	pos_map = _tsort_tmps(tmp_defs)
 
 	while pos_map:
 		key, val = next(iter( pos_map.items() ))
@@ -604,6 +606,31 @@ def tsort(tmp_defs: dict[int, set], outputs: list[set]) -> None:
 
 		tmp_swap(tmp_defs, outputs, key, val)
 		pos_map[key] = pos_map.pop(val)
+
+def _tsort_remap(tmp_defs: dict[int, set], outputs: list[set], pos_map: dict[int, int]) -> None:
+	id_map = {-old_pos: -new_pos for old_pos, new_pos in pos_map.items()}
+
+	sorted_tmp_defs = {
+		pos_map[old_key]: {id_map.get(dep, dep) for dep in deps}
+		for old_key, deps in tmp_defs.items()
+	}
+
+	tmp_defs.clear()
+	tmp_defs.update(sorted_tmp_defs)
+
+	for i, eqn in enumerate(outputs):
+		outputs[i] = {id_map.get(dep, dep) for dep in eqn}
+
+def tsort(tmp_defs: dict[int, set], outputs: list[set]) -> None:
+	"in-place topological sort"
+
+	pos_map = _tsort_tmps(tmp_defs)
+
+	# I pulled these constraints out of my ass.
+	if len(tmp_defs) < 15 or len(tmp_defs) - sum(1 for key, val in pos_map.items() if key == val) < 5:
+		_tsort_swap(tmp_defs, outputs, pos_map)
+	else:
+		_tsort_remap(tmp_defs, outputs, pos_map)
 
 def optimize_gates(
 	s: list[set],
@@ -652,3 +679,40 @@ def expand_gates(tmp_defs: dict[int, set], outputs: list[set]) -> None:
 		delete_tmp(tmp_defs, outputs, tmp)
 
 	return outputs
+
+def graph_depth(tmp_defs: dict[int, set], outputs: list[set], *, sorted: bool = False) -> int:
+	"""
+	This assumes LUT2, which is not valid for hardware. But for graphviz rank count, this is accurate.
+	use sorted=False to topologically sort before ranking.
+	returns one less than the number of ranks in the graph
+	"""
+
+	if not tmp_defs:
+		return 1
+
+	if not sorted:
+		tmp_defs = deepcopy(tmp_defs)
+		outputs  = deepcopy(outputs)
+		tsort(tmp_defs, outputs)
+
+	tmp_depths = {}
+
+	# start off assuming it is topologically sorted, and then if it isn't, then topologically sort it and start over
+	for i in range(1, len(tmp_defs) + 1):
+		eqn = tmp_defs[i]
+
+		depth = 0
+		for v in eqn:
+			if type(v) is int and v < 0:
+				if -v not in tmp_depths:
+					# this only happens if the graph was assumed to be sorted but actually wasn't
+					# this won't go indefinitely on cyclic graphs becase _tsort_tmps throws an error for those.
+					return graph_depth(tmp_defs, outputs, sorted=False)
+
+				tmp = tmp_depths[-v]
+				if tmp > depth:
+					depth = tmp
+
+		tmp_depths[i] = 1 + depth
+
+	return 1 + max(max((tmp_depths[-v] for v in eqn if type(v) is int and v < 0), default=0) for eqn in outputs)

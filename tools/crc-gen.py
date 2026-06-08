@@ -4,7 +4,8 @@ fully-combinational HDL code generator for CRC functions given a fixed-length by
 requires Python >=3.12.
 requires crcmod-plus if a CRC function other than CRC32 is used.
 
-"json" and "plain" formats are more about the CRC function itself, and "raw" is about the actual equations.
+the "plain" format are more about the CRC function itself, and "raw" is about the actual equations.
+"raw" looks like JSON, but it isn't actually JSON since it uses Python curly bracket set notation.
 """
 
 if __name__ != "__main__":
@@ -13,9 +14,11 @@ if __name__ != "__main__":
 import argparse
 import crc_optimizer
 
+# TODO: consider changing the raw format to use actual json, and then rename it to json
+# TODO: consider renaming "plain"/"p" to something that better indicates it is just for metadata
 # NOTE: zlib implements the same CRC32 standard as Ethernet uses.
 
-syntaxes = "systemverilog", "sv", "verilog", "v", "vhdl", "vhd", "python", "py", "python-first", "py1", "graphviz", "dot", "gv", "c", "plain", "p", "json", "j", "raw", "r"
+syntaxes = "verilog", "v", "systemverilog", "sv", "vhdl", "vhd", "python", "py", "python-first", "py1", "graphviz", "dot", "gv", "c", "plain", "p", "raw", "r"
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--data-len", "-l", type=int, default=4, help="bytes length of checksum input data. default is 4")
@@ -23,7 +26,7 @@ parser.add_argument("--in-port", "--in-var", "-I", type=str, default="data", hel
 parser.add_argument("--out-port", "--out-var", "-O", type=str, default="crc", help="output port/variable name. default is 'crc'")
 parser.add_argument("--syntax", "-s", type=str.lower, choices=syntaxes, default=syntaxes[0], help=f"output language. default is '{syntaxes[0]}'")
 parser.add_argument("--algorithm", "--alg", "-a", type=lambda s: None if s is None else str.lower(s).strip(), default=None, help=f"CRC name. overrides other options. default is 'crc32'")
-parser.add_argument("--output", "--out", "-o", type=str, default="-", help=f"output file. default is '-'")
+parser.add_argument("--output", "--out", "-o", type=str, default="-", help=f"output file. use 'auto' for automatic naming. default is '-' (stdout)")
 parser.add_argument("--list-algorithms", "-A", action="store_true", help="list available algorithms and exit")
 
 custom_crc_group = parser.add_argument_group("custom CRC overrides (triggers custom mode if --polynomial is set)")
@@ -34,15 +37,15 @@ custom_crc_group.add_argument("--reflect", "-r", action="store_true", help="enab
 
 optimize_group = parser.add_argument_group(
 	"optimization settings (optimizes gate count)",
-	"defaults: optimize off, lookahead depth 0, n max 2, beam size 1, lookahead weight 1, prefer low n, LNS: off, 1 trial, window size 3, unseeded"
+	"defaults: optimize off, lookahead depth 0, n max 2, beam size 1, lookahead weight 1, prefer low n, LNS: off, 3 trials, window size 3, unseeded"
 )
-optimize_group.add_argument("--optimize", "-c", action="store_true", help="enable optimization without touching settings")
-optimize_group.add_argument("--optimize-depth", "-d"     , type=int    , help="enable optimization and set search lookahead depth.")
-optimize_group.add_argument("--optimize-nmax", "-n"      , type=int    , help="enable optimization and set n max.")
-optimize_group.add_argument("--optimize-beam", "-b"      , type=int    , help="enable optimization and set beam size.")
-optimize_group.add_argument("--optimize-weight", "-w"    , type=float  , help="enable optimization and set the lookahead weighting")
-optimize_group.add_argument("--optimize-seed", "-S"      , type=int    , help="enable optimization, switch to predictable mode, and set the MT19977 seed")
-optimize_group.add_argument("--optimize-n-prefer", "-P"  , type=str    , help="enable optimization and set tie break preference", choices=("l", "lo", "low", "h", "hi", "high", "m", "mid", "r", "rand", "random"))
+optimize_group.add_argument("--optimize",     "-c", action="store_true", help="enable optimization without touching settings")
+optimize_group.add_argument("--optimize-depth",      "-d", type=int    , help="enable optimization and set search lookahead depth.")
+optimize_group.add_argument("--optimize-nmax",       "-n", type=int    , help="enable optimization and set n max.")
+optimize_group.add_argument("--optimize-beam",       "-b", type=int    , help="enable optimization and set beam size.")
+optimize_group.add_argument("--optimize-weight",     "-w", type=float  , help="enable optimization and set the lookahead weighting")
+optimize_group.add_argument("--optimize-seed",       "-S", type=int    , help="enable optimization, switch to predictable mode, and set the MT19977 seed")
+optimize_group.add_argument("--optimize-n-prefer",   "-P", type=str    , help="enable optimization and set tie break preference", choices=("l", "lo", "low", "h", "hi", "high", "m", "mid", "r", "rand", "random"))
 optimize_group.add_argument("--optimize-lns", "-L", action="store_true", help="enable optimization+LNS without touching settings")
 optimize_group.add_argument("--optimize-lns-trials", "-T", type=int    , help="enable optimization+LNS and set the count.")
 optimize_group.add_argument("--optimize-lns-window", "-W", type=int    , help="enable optimization+LNS and set the window size.")
@@ -62,7 +65,7 @@ optimize_beam     = args.optimize_beam       if args.optimize_beam       is not 
 optimize_seed     = args.optimize_seed
 optimize_weight   = args.optimize_weight     if args.optimize_weight     is not None else 1
 optimize_n_prefer = args.optimize_n_prefer   if args.optimize_n_prefer   is not None else "low"
-lns_trials        = args.optimize_lns_trials if args.optimize_lns_trials is not None else 1
+lns_trials        = args.optimize_lns_trials if args.optimize_lns_trials is not None else 3
 lns_window        = args.optimize_lns_window if args.optimize_lns_window is not None else 3
 optimize_verbose  = args.verbose or 0
 
@@ -257,10 +260,10 @@ syntax_data = {
 		'='           : " = ",
 		'['           : '[',
 		']'           : ']',
-		'^'           : "\t",
+		'^'           : '\t',
 		'$'           : '',
 		"footer"      : '',
-		"comment"     : "#",
+		"comment"     : '#',
 		"begin_logic" : '',
 		"wire_type"   : lambda name, size: f"\t{name.lstrip()} = [None] * {size}",
 	}, "c": {
@@ -270,14 +273,14 @@ syntax_data = {
 		'='           : " = ",
 		'['           : '[',
 		']'           : ']',
-		'^'           : "\t",
+		'^'           : '\t',
 		'$'           : ';',
 		"footer"      : '}',
 		"comment"     : "//",
 		"begin_logic" : '',
 		"wire_type"   : lambda name, size: f"\tuint8_t {name.lstrip()}[{size}];",
 	}, "gv": {
-		"xor"         : "\",\"",
+		"xor"         : '","',
 		'1'           : '1',
 		'0'           : '0',
 		'='           : None,
@@ -320,11 +323,24 @@ comment     = tokens.get("comment")
 begin_logic = tokens.get("begin_logic") # begin actual logic
 wire_type   = tokens.get("wire_type")
 
+
 if output != "-":
+	if output == "auto":
+		extension = {
+			"py1" : "py",
+			"raw" : "txt",
+			"p"   : "txt",
+			"r"   : "txt",
+		}.get(syntax, syntax)
+
+		output = f"crc{crc_name}_{data_len}.{extension}"
+
 	outfile = open(output, "w") # auto closed on exit
 	_print  = print
 
 	def print(message: str) -> None:
+		"print a single string to the output file"
+
 		_print(message, file=outfile)
 
 def get_terms(eqn: set) -> str:
@@ -585,7 +601,7 @@ match syntax:
 		for i in range(len(tmp_defs)):
 			print(f"{prefix}{tmp_port_o}{lbr}{i:{tmp_idx_max_pad}}{rbr}{assign}{get_terms(tmp_defs[1 + i])}{suffix}")
 
-		print(end='\n' if optimize else '')
+		if optimize: print("")
 
 		for i in range(8*sum_len):
 			print(f"{prefix}{local_port}{lbr}{i:{out_idx_max_pad}}{rbr}{assign}{get_terms(outputs[i])}{suffix}")
@@ -608,6 +624,117 @@ match syntax:
 			)
 
 		print(footer)
+	case "gv":
+		# Graphviz is so different from the other syntaxes that most of the `syntax_data` attributes don't make sense.
+
+		GV_DECL_LINE_WRAP = 100
+
+		in_idx_max_pad = 0
+		in_port_i = "in"
+
+		starting_gates = crc_optimizer.count_gates(rows)
+		if optimize:
+			tmp_defs, outputs = optimize_gates(rows)
+		else:
+			tmp_defs = {}
+			outputs  = rows
+
+		print(
+			f"{comment} Generated with tools/crc-gen.py"
+			f"\n{comment} compile: dot -Tpdf -O crc{crc_name}_{data_len}.gv"
+			f"\ndigraph crc{crc_name}_{data_len} {{"
+		)
+
+		graph_depth = crc_optimizer.graph_depth(tmp_defs, outputs)
+
+		# NOTE: ranksep = (input_count * (width + nodesep)) / graph_depth - height
+		#               = (8*data_len * 1) / graph_depth - 0.5
+		#       I have no idea where this ^^^^ came from, but it seems to work well,
+		#       except for where it doesn't, which is when I change it.
+
+
+		# try and give a sensible default rank separation.
+		# if it is bad, then the user can just change it themselves.
+		# I only tested crc8, crc16, crc32, and crc64.
+		# I tested data lengths 1, 2, 4, 6, 16, and 32 for each
+		if sum_len == 4:
+			ranksep = 8*data_len / graph_depth - 0.5
+		else:
+			ranksep = (1 + (data_len == 1))*4*data_len / graph_depth - 0.5
+
+		print(
+			"\tlayout = dot;"
+			"\n\tconcentrate = true;"
+			"\n\tsplines = polyline;"
+			f"\n\tranksep = {ranksep};"
+			"\n"
+			"\n\t// these ones should be the default"
+			"\n\tnode [width = 0.75, height = 0.5];"
+			"\n\tnodesep = 0.25;"
+			"\n"
+			"\n\t{"
+			"\n\t\trank = same;"
+		)
+
+		decls    = []
+		decl_len = 0
+		for i in range(8*data_len):
+			decl = f'"in[{i}]";'
+
+			if decl_len + len(decl) + len(decls) >= GV_DECL_LINE_WRAP:
+				print("\t\t" + " ".join(decls))
+				decls.clear()
+				decl_len = 0
+
+			decls.append(decl)
+			decl_len += len(decl)
+
+		if decls:
+			print("\t\t" + " ".join(decls))
+
+		if any(len(eqn) == 0 for eqn in outputs):
+			print('\t\t"0";')
+
+		if any(None in eqn for eqn in tmp_defs.values()) or any(None in eqn for eqn in outputs):
+			print('\t\t"1";')
+
+		print("\t}\n")
+
+		if optimize:
+			print("\t// tmp declarations:")
+
+		for i in range(len(tmp_defs)):
+			terms = get_terms(tmp_defs[1 + i]).replace(' ', '').replace(',', ', ')
+			print(f"\t{{\"{terms}\"}} -> \"tmp[{i}]\";")
+
+		if optimize: print("")
+
+		print("\t{\n\t\trank = same;")
+
+		decls    = []
+		decl_len = 0
+		for i in range(8*sum_len):
+			decl = f'"out[{i}]";'
+
+			if decl_len + len(decl) + len(decls) >= GV_DECL_LINE_WRAP:
+				print("\t\t" + " ".join(decls))
+				decls.clear()
+				decl_len = 0
+
+			decls.append(decl)
+			decl_len += len(decl)
+
+		if decls:
+			print("\t\t" + " ".join(decls))
+
+		print("\t}\n")
+
+		print("\t// outputs:")
+		for i in range(8*sum_len):
+			terms = get_terms(outputs[i]).replace(' ', '').replace(',', ', ')
+			print(f"\t{{\"{terms}\"}} -> \"out[{i}]\";")
+
+		print(footer)
 	case "p":
 		# plain
 		print(
@@ -628,109 +755,6 @@ match syntax:
 				f"\nxor_out = 0x{args.xor_out:0{2*sum_len}X}"
 				f"\nreflect = {str(args.reflect).lower()}"
 			)
-	case "json" | "j":
-		import json
-		# "j" gives minified and "json" gives beautified
-
-		report = {
-			"custom": poly is not None,
-			"algorithm": crc_name,
-			"data_len": data_len,
-			"sum_len": sum_len,
-			"K": K,
-			"polynomial": polynomial,
-			"reversed_polynomial": reversed_polynomial,
-			"rocksoft_parameters": {
-				"polynomial": args.polynomial, # different from the other one
-				"init": None if poly is None else args.init,
-				"xor_out": None if poly is None else args.xor_out,
-				"reflect": None if poly is None else args.reflect
-			}
-		}
-
-		indent = "\t" if syntax == "json" else None
-		seps   = (", ", ": ") if syntax == "json" else (',', ':')
-
-		print(json.dumps(report, indent=indent, separators=seps))
-	case "gv":
-		# Graphviz is so different from the other syntaxes that most of the syntax_data attributes don't make sense.
-
-		in_idx_max_pad = 0
-		in_port_i = "in"
-
-		starting_gates = crc_optimizer.count_gates(rows)
-		if optimize:
-			tmp_defs, outputs = optimize_gates(rows)
-		else:
-			tmp_defs = {}
-			outputs  = rows
-
-		print(
-			f"{comment} Generated with tools/crc-gen.py"
-			f"\ndigraph Graph_crc{crc_name}_{data_len} {{"
-		)
-
-		print(
-			"\tlayout = dot;"
-			"\n\tranksep = 5;"
-			"\n"
-			"\n\t{"
-			"\n\t\trank = same;"
-		)
-
-		decls    = []
-		decl_len = 0
-		for i in range(8*data_len):
-			decl = f'"in[{i}]";'
-
-			if decl_len + len(decl) + len(decls) >= 100:
-				print("\t\t" + " ".join(decls))
-				decls.clear()
-				decl_len = 0
-
-			decls.append(decl)
-			decl_len += len(decl)
-
-		if decls:
-			print("\t\t" + " ".join(decls))
-
-		print("\t}\n")
-
-		if optimize:
-			print("\t// tmp declarations:")
-
-		for i in range(len(tmp_defs)):
-			terms = get_terms(tmp_defs[1 + i]).replace(' ', '').replace(',', ', ')
-			print(f"\t{{\"{terms}\"}} -> \"tmp[{i}]\";")
-
-		print(end='\n' if optimize else '')
-
-		print("\t{\n\t\trank = same;")
-
-		decls    = []
-		decl_len = 0
-		for i in range(8*sum_len):
-			decl = f'"out[{i}]";'
-
-			if decl_len + len(decl) + len(decls) >= 100:
-				print("\t\t" + " ".join(decls))
-				decls.clear()
-				decl_len = 0
-
-			decls.append(decl)
-			decl_len += len(decl)
-
-		if decls:
-			print("\t\t" + " ".join(decls))
-
-		print("\t}\n")
-
-		print("\t// outputs:")
-		for i in range(8*sum_len):
-			terms = get_terms(outputs[i]).replace(' ', '').replace(',', ', ')
-			print(f"\t{{\"{terms}\"}} -> \"out[{i}]\";")
-
-		print(footer)
 	case "raw" | "r":
 		# NOTE: the output for this is NOT JSON. It uses set syntax, which is why it is called raw and not json
 		starting_gates = crc_optimizer.count_gates(rows)
