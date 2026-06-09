@@ -26,6 +26,15 @@ NOTE: sometimes, increasing depth or n max can make the overall solution worse.
 the other external functions are `count_gates`, `expand_gates`, and `graph_depth`
 """
 
+# TODO: consider separating the docstring from crc-gen.py so this can be used as a standalone package.
+
+__version__ = "2026.06.09.0"
+
+__all__ = (
+	"count_gates", "optimize_gates_nwise", "brute_force", "cleanup_aliases",
+	"optimize_gates_lns", "tsort", "optimize_gates", "expand_gates", "graph_depth"
+)
+
 from copy   import deepcopy
 from random import Random, SystemRandom
 
@@ -173,8 +182,8 @@ def _dfs_sets(
 
 def _resolve_best(
 	scores: list[int],
-	best_i: list[tuple[int, ...]],
-	best_s: list[set],
+	best_i: dict[int, tuple[int, ...]],
+	best_s: dict[int, set],
 	prefer: str = "low",
 	rng: Random = SystemRandom()
 ) -> tuple[int, tuple[tuple[int, ...], set]]:
@@ -478,18 +487,40 @@ def delete_tmp(tmp_defs: dict[int, set], outputs: list[set], id: int, *, patch: 
 	if patch:
 		patch_tmp(tmp_defs, outputs, -id)
 
-def cleanup_tmps(tmp_defs: dict[int, set], outputs: list[set]) -> None:
-	"remove tmp signals that just alias another one."
-	changed = True
+def cleanup_aliases(tmp_defs: dict[int, set], outputs: list[set], strict: bool = False) -> None:
+	"""
+	remove tmp signals that just alias another one. this should be done before topological sorting.
+	strict makes it so something like outputs = [{-1}, {-1, 3}] will expand out the {-1} set into
+	the value of tmp[-1]. this can increase gate count, so it is disabled by default.
 
-	while changed:
-		changed = False
+	this is O(V^2) in theory, but probably won't actually be any higher than like O(n^1.5)
+	"""
 
-		for tmp_id in tuple(tmp_defs.keys()):
+	keys = set(tmp_defs)
+
+	# this two-layer loop is required since `delete_tmp` changes the order of the elements,
+	# so it might move one that hasn't been checked into a slot that has been checked.
+	while True:
+		for tmp_id in tuple(keys):
+			if tmp_id not in keys:
+				continue
+
 			if len(tmp_defs[tmp_id]) == 1:
 				delete_tmp(tmp_defs, outputs, tmp_id, patch=True)
-				changed = True
+				keys.discard(len(tmp_defs) + 1)
 				break
+
+			keys.discard(tmp_id)
+		else:
+			break
+
+	if strict:
+		for eqn in outputs:
+			if len(eqn) == 1:
+				dep ,= eqn
+
+				if dep < 0:
+					delete_tmp(tmp_defs, outputs, -dep, patch=True)
 
 def optimize_gates_lns(
 	tmp_defs: dict[int, set],
@@ -523,8 +554,8 @@ def optimize_gates_lns(
 		# since brute force gives the true minimum, this is always at least as good as the old solution
 		td, out = brute_force(td, out, max_depth, 1, verbose)
 
-		# if count_gates(td, out) < old_gate_count:
-		# 	tmp_defs, outputs = td, out
+		if count_gates(td, out) < old_gate_count:
+			tmp_defs, outputs = td, out
 
 		if verbose >= 2:
 			eprint("\r\x1b[K", end="", flush=True)
@@ -559,7 +590,7 @@ def tmp_swap(tmp_defs: dict[int, set], outputs: list[set], i: int, j: int) -> No
 			eqn.discard(j)
 			eqn.add(i)
 
-def _tsort_tmps(tmp_defs: dict[int, set]) -> dict[int, int]:
+def tsort__map(tmp_defs: dict[int, set]) -> dict[int, int]:
 	"topological sort helper to get position map. Kahn's algorithm"
 
 	from collections import deque
@@ -594,7 +625,9 @@ def _tsort_tmps(tmp_defs: dict[int, set]) -> dict[int, int]:
 
 	return pos_map
 
-def _tsort_swap(tmp_defs: dict[int, set], outputs: list[set], pos_map: dict[int, int]) -> None:
+def tsort_swap(tmp_defs: dict[int, set], outputs: list[set], pos_map: dict[int, int]) -> None:
+	"topological sort using swapping. O(V^2)"
+
 	# NOTE: the last remaining element in the map will always be of the form `x: x`
 
 	while pos_map:
@@ -607,7 +640,9 @@ def _tsort_swap(tmp_defs: dict[int, set], outputs: list[set], pos_map: dict[int,
 		tmp_swap(tmp_defs, outputs, key, val)
 		pos_map[key] = pos_map.pop(val)
 
-def _tsort_remap(tmp_defs: dict[int, set], outputs: list[set], pos_map: dict[int, int]) -> None:
+def tsort_remap(tmp_defs: dict[int, set], outputs: list[set], pos_map: dict[int, int]) -> None:
+	"topological sort using direct remapping. O(V + E)"
+
 	id_map = {-old_pos: -new_pos for old_pos, new_pos in pos_map.items()}
 
 	sorted_tmp_defs = {
@@ -624,13 +659,18 @@ def _tsort_remap(tmp_defs: dict[int, set], outputs: list[set], pos_map: dict[int
 def tsort(tmp_defs: dict[int, set], outputs: list[set]) -> None:
 	"in-place topological sort"
 
-	pos_map = _tsort_tmps(tmp_defs)
+	pos_map = tsort._map(tmp_defs)
 
 	# I pulled these constraints out of my ass.
-	if len(tmp_defs) < 15 or len(tmp_defs) - sum(1 for key, val in pos_map.items() if key == val) < 5:
-		_tsort_swap(tmp_defs, outputs, pos_map)
+	if len(tmp_defs) < 15 or len(tmp_defs) - sum(1 for key, val in pos_map.items() if key == val) < 10:
+		tsort.swap(tmp_defs, outputs, pos_map)
 	else:
-		_tsort_remap(tmp_defs, outputs, pos_map)
+		tsort.remap(tmp_defs, outputs, pos_map)
+
+tsort._map  = tsort__map
+tsort.swap  = tsort_swap
+tsort.remap = tsort_remap
+del tsort__map, tsort_swap, tsort_remap
 
 def optimize_gates(
 	s: list[set],
@@ -661,7 +701,8 @@ def optimize_gates(
 	if lns_window != 0:
 		tmp_defs, outputs = optimize_gates_lns(tmp_defs, outputs, lns_window, lns_trials, -1, rng, verbose)
 
-	cleanup_tmps(tmp_defs, outputs) # LNS seems to like adding alias tmp signals
+	# LNS seems to like adding alias tmp signals
+	cleanup_aliases(tmp_defs, outputs, strict=False)
 
 	if sort:
 		tsort(tmp_defs, outputs)
@@ -706,7 +747,7 @@ def graph_depth(tmp_defs: dict[int, set], outputs: list[set], *, sorted: bool = 
 			if type(v) is int and v < 0:
 				if -v not in tmp_depths:
 					# this only happens if the graph was assumed to be sorted but actually wasn't
-					# this won't go indefinitely on cyclic graphs becase _tsort_tmps throws an error for those.
+					# this won't go indefinitely on cyclic graphs becase tsort.map throws an error for those.
 					return graph_depth(tmp_defs, outputs, sorted=False)
 
 				tmp = tmp_depths[-v]
@@ -716,3 +757,7 @@ def graph_depth(tmp_defs: dict[int, set], outputs: list[set], *, sorted: bool = 
 		tmp_depths[i] = 1 + depth
 
 	return 1 + max(max((tmp_depths[-v] for v in eqn if type(v) is int and v < 0), default=0) for eqn in outputs)
+
+if __name__ == "__main__":
+	eprint(f"crc_optimizer (v{__version__}) is a library, use crc-gen.py instead")
+	exit(1)

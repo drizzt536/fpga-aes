@@ -1,12 +1,16 @@
 """
-fully-combinational HDL code generator for CRC functions given a fixed-length byte-aligned input.
+fully unrolled, fully-combinational HDL CRC code generator given a fixed-length, byte-aligned input.
 
 requires Python >=3.12.
 requires crcmod-plus if a CRC function other than CRC32 is used.
 
-the "plain" format are more about the CRC function itself, and "raw" is about the actual equations.
-"raw" looks like JSON, but it isn't actually JSON since it uses Python curly bracket set notation.
+the "info" / "i" formats output curve metadata in a human readable format
+the "raw" / "r" formats output the raw graph data as a python object string. it is not valid JSON.
+the "json" / "j" formats output the raw graph data as a JSON object string with sets replaced with lists.
+the "python-test" / "pyt" formats output the same code as "python" / "py", but with some extra functions.
 """
+
+__version__ = "2026.06.09.0"
 
 if __name__ != "__main__":
 	raise Exception("crc-gen.py should only be used at the top level.")
@@ -14,25 +18,30 @@ if __name__ != "__main__":
 import argparse
 import crc_optimizer
 
-# TODO: consider changing the raw format to use actual json, and then rename it to json
-# TODO: consider renaming "plain"/"p" to something that better indicates it is just for metadata
+if __version__ != crc_optimizer.__version__:
+	raise Exception("version mismatch with crc_optimizer.py")
+
 # NOTE: zlib implements the same CRC32 standard as Ethernet uses.
 
-syntaxes = "verilog", "v", "systemverilog", "sv", "vhdl", "vhd", "python", "py", "python-first", "py1", "graphviz", "dot", "gv", "c", "plain", "p", "raw", "r"
+syntaxes = "verilog", "v", "systemverilog", "sv", "vhdl", "vhd", "python", "py", "python-test", "pyt", "graphviz", "dot", "gv", "c", "info", "i", "raw", "r", "json", "j"
 
-parser = argparse.ArgumentParser()
+parser = argparse.ArgumentParser(
+	description=f"%(prog)s {__version__}\n{__doc__}",
+	formatter_class=argparse.RawDescriptionHelpFormatter,
+)
 parser.add_argument("--data-len", "-l", type=int, default=4, help="bytes length of checksum input data. default is 4")
 parser.add_argument("--in-port", "--in-var", "-I", type=str, default="data", help="input port/variable name. default is 'data'")
 parser.add_argument("--out-port", "--out-var", "-O", type=str, default="crc", help="output port/variable name. default is 'crc'")
 parser.add_argument("--syntax", "-s", type=str.lower, choices=syntaxes, default=syntaxes[0], help=f"output language. default is '{syntaxes[0]}'")
 parser.add_argument("--algorithm", "--alg", "-a", type=lambda s: None if s is None else str.lower(s).strip(), default=None, help=f"CRC name. overrides other options. default is 'crc32'")
-parser.add_argument("--output", "--out", "-o", type=str, default="-", help=f"output file. use 'auto' for automatic naming. default is '-' (stdout)")
+parser.add_argument("--output", "--out", "-o", type=str, default='-', help=f"output file. use 'auto' for automatic naming. default is '-' (stdout)")
 parser.add_argument("--list-algorithms", "-A", action="store_true", help="list available algorithms and exit")
+parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {__version__}")
 
 custom_crc_group = parser.add_argument_group("custom CRC overrides (triggers custom mode if --polynomial is set)")
 custom_crc_group.add_argument("--polynomial", "--poly", "-p", type=int, help="polynomial. don't omit the uppermost bit")
 custom_crc_group.add_argument("--init", "-i"   , type=int, default=0, help="initial value. default is 0")
-custom_crc_group.add_argument("--xor-out", "-x", type=int, default=0, help="final XOR mask (default: 0)")
+custom_crc_group.add_argument("--xor-out", "-x", type=int, default=0, help="final XOR mask. default is 0")
 custom_crc_group.add_argument("--reflect", "-r", action="store_true", help="enable reflection. default is off")
 
 optimize_group = parser.add_argument_group(
@@ -44,7 +53,7 @@ optimize_group.add_argument("--optimize-depth",      "-d", type=int    , help="e
 optimize_group.add_argument("--optimize-nmax",       "-n", type=int    , help="enable optimization and set n max.")
 optimize_group.add_argument("--optimize-beam",       "-b", type=int    , help="enable optimization and set beam size.")
 optimize_group.add_argument("--optimize-weight",     "-w", type=float  , help="enable optimization and set the lookahead weighting")
-optimize_group.add_argument("--optimize-seed",       "-S", type=int    , help="enable optimization, switch to predictable mode, and set the MT19977 seed")
+optimize_group.add_argument("--optimize-seed",       "-S", type=int    , help="enable optimization, switch to predictable mode, and set the MT19937 seed")
 optimize_group.add_argument("--optimize-n-prefer",   "-P", type=str    , help="enable optimization and set tie break preference", choices=("l", "lo", "low", "h", "hi", "high", "m", "mid", "r", "rand", "random"))
 optimize_group.add_argument("--optimize-lns", "-L", action="store_true", help="enable optimization+LNS without touching settings")
 optimize_group.add_argument("--optimize-lns-trials", "-T", type=int    , help="enable optimization+LNS and set the count.")
@@ -83,7 +92,7 @@ if not lns:
 
 def optimize_gates(eqns: list[set]) -> tuple[dict[int, set], list[set]]:
 	return crc_optimizer.optimize_gates(
-		rows,
+		eqns,
 		optimize_depth,
 		optimize_nmax,
 		optimize_beam,
@@ -177,7 +186,7 @@ if poly is not None:
 		raise Exception("custom CRCs require `crcmod-plus`.")
 
 	crc = crcmod.mkCrcFun(poly, args.init, args.reflect, args.xor_out)
-	crc_name = f"crc_custom_0x{poly:X}"
+	crc_name = f"_custom_0x{poly:X}"
 	sum_len = (poly.bit_length() + 6) // 8
 elif crc_name in {None, "32", "crc32", "crc-32", "crc 32"}:
 	# use zlib.crc32 if possible since it is is built-in, and probably faster,.
@@ -296,14 +305,15 @@ syntax_data = {
 }
 
 syntax_data["sv"] = syntax_data["v"]
+syntax_data["pyt"] = syntax_data["py"]
 
 syntax = {
 	"vhdl"          : "vhd",
 	"verilog"       : "v",
 	"systemverilog" : "sv",
 	"python"        : "py",
-	"python-first"  : "py1",
-	"plain"         : "p",
+	"python-test"   : "pyt",
+	"info"          : "i",
 	"graphviz"      : "gv",
 	"dot"           : "gv",
 }.get(syntax, syntax)
@@ -323,13 +333,12 @@ comment     = tokens.get("comment")
 begin_logic = tokens.get("begin_logic") # begin actual logic
 wire_type   = tokens.get("wire_type")
 
-
 if output != "-":
 	if output == "auto":
 		extension = {
-			"py1" : "py",
+			"pyt" : "py",
 			"raw" : "txt",
-			"p"   : "txt",
+			"i"   : "txt",
 			"r"   : "txt",
 		}.get(syntax, syntax)
 
@@ -459,12 +468,12 @@ match syntax:
 				)
 			else:
 				print(
+					f"{'' if is_sv else "\ngenvar i;"}"
 					f"\ngenerate"
-					f"\n\tif (BSWAP){"" if is_sv else " begin"}"
-					f"{'' if is_sv else "\n\t\tgenvar i;"}"
+					f"\n\tif (BSWAP)"
 					f"\n\t\tfor ({"genvar " if is_sv else ''}i = 0; i < {sum_len}; {"i++" if is_sv else "i = i + 1"})"
 					f"\n\t\t\tassign {out_port}[8*i + 7 : 8*i] = {local_port}[{8*sum_len - 1} - 8*i : {8*sum_len - 8} - 8*i];"
-					f"\n\t{"" if is_sv else "end "}else"
+					f"\n\telse"
 					f"\n\t\tassign {out_port} = {local_port};"
 					f"\nendgenerate"
 				)
@@ -472,7 +481,7 @@ match syntax:
 			print(f"\n{prefix}{out_port}{assign}{local_port}{suffix}")
 
 		print(footer)
-	case "py1" | "py" | "c":
+	case "pyt" | "py" | "c":
 		# compute optimized equation graph
 		if optimize:
 			tmp_defs, outputs = optimize_gates(rows)
@@ -480,7 +489,7 @@ match syntax:
 			tmp_defs = {}
 			outputs  = rows
 
-		if syntax in {"python-first", "py1"}:
+		if syntax in {"python-test", "pyt"}:
 			# also give functions for testing the functionality
 			# meant for only the first time, so you paste them to wherever
 			# it is being used, and then switch to 'python' or 'py'
@@ -488,9 +497,9 @@ match syntax:
 			print(
 				"import crcmod, zlib"
 				"\nfrom secrets import randbits"
+				"\nfrom copy import deepcopy"
 				"\n"
 				"\ndef crc_check(fn: str, size: int = 1, data: bytes | None = None) -> tuple[int, int]:"
-				"\n\tfrom secrets import randbits"
 				"\n\tif data is None:"
 				"\n\t\tdata = randbits(size * 8).to_bytes(size)"
 				"\n"
@@ -546,6 +555,16 @@ match syntax:
 				"\n\t\t\tfails.append(data)"
 				"\n"
 				"\n\treturn fails or None"
+				"\n"
+				"\ndef test_equivalence(s: list[set], tmp_defs: dict[int, set], outputs: list[set]) -> bool:"
+				"\n\t\"\"\""
+				"\n\ts is the unoptimized equation list. tmp_defs and outputs are the optimized form."
+				"\n\treturns true if they are equivalent and false if they are not equivalent."
+				"\n\t\"\"\""
+				"\n"
+				"\n\timport crc_optimizer"
+				"\n\treturn crc_optimizer.expand_gates(deepcopy(tmp_defs), deepcopy(outputs)) == s"
+				"\n"
 			)
 
 
@@ -735,16 +754,17 @@ match syntax:
 			print(f"\t{{\"{terms}\"}} -> \"out[{i}]\";")
 
 		print(footer)
-	case "p":
-		# plain
+	case "i":
+		# info
 		print(
 			"CRC Summary:"
-			f"\ncustom     = {str(poly is not None).lower()}"
-			f"\nalgorithm  = {crc_name}"
-			f"\ndata len   = {data_len}"
-			f"\nsum len    = {sum_len}"
-			f"\nCRC(empty) = 0x{K:0{2*sum_len}X}"
-			f"\npolynomial = 0x{polynomial:0{2*sum_len}X}"
+			f"\ncustom      = {str(poly is not None).lower()}"
+			f"\nalgorithm   = {crc_name}"
+			f"\ndata len    = {data_len}"
+			f"\nsum len     = {sum_len}"
+			f"\nbase #gates = {crc_optimizer.count_gates(rows)}"
+			f"\nCRC(empty)  = 0x{K:0{2*sum_len}X}"
+			f"\npolynomial  = 0x{polynomial:0{2*sum_len}X}"
 			f"\nreversed polynomial = 0x{reversed_polynomial:0{2*sum_len}X}"
 		)
 
@@ -784,5 +804,40 @@ match syntax:
 		)
 
 		print(data if syntax == "raw" else data.replace(' ', ''))
+	case "json" | "j":
+		starting_gates = crc_optimizer.count_gates(rows)
+
+		if optimize: tmp_defs, outputs = optimize_gates(rows)
+		else:        tmp_defs, outputs = {}, rows
+
+		ending_gates = crc_optimizer.count_gates(tmp_defs, outputs)
+
+		def json_dump_data(data: dict[str, any], indent: str, seps: tuple[str, str]) -> str:
+			import json, re
+
+			# sets aren't serializable, so I have do this nonsense to make them print properly
+			class Encoder(json.JSONEncoder):
+				def default(self, obj):
+					"assume it is a set"
+
+					return f"\u0000{json.dumps(list(obj), separators=seps)}\u0000"
+
+			return re.sub(
+				r'"?\\u0000"?',
+				'',
+				json.dumps(data, indent=indent, separators=seps, cls=Encoder)
+			)
+
+		indent = '\t'         if syntax == "json" else None
+		seps   = (', ', ': ') if syntax == "json" else (',', ':')
+
+		print( json_dump_data({
+			"tmp_defs": tmp_defs,
+			"outputs": outputs,
+			"starting_gates": starting_gates,
+			"ending_gates": ending_gates,
+			"gate_reduction": starting_gates - ending_gates,
+			"gate_compression": 1 - ending_gates / starting_gates
+		}, indent, seps) )
 	case _:
 		raise Exception(f"mismatch between argparse syntax list and match/case syntax list. syntax: '{syntax}'")
