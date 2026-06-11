@@ -7,10 +7,11 @@ requires crcmod-plus if a CRC function other than CRC32 is used.
 the "info" / "i" formats output curve metadata in a human readable format
 the "raw" / "r" formats output the raw graph data as a python object string. it is not valid JSON.
 the "json" / "j" formats output the raw graph data as a JSON object string with sets replaced with lists.
+the "m" format gives JSON metrics about the graph reduction without giving the reduced graph
 the "python-test" / "pyt" formats output the same code as "python" / "py", but with some extra functions.
 """
 
-__version__ = "2026.06.09.0"
+__version__ = "2026.06.10.0"
 
 if __name__ != "__main__":
 	raise Exception("crc-gen.py should only be used at the top level.")
@@ -23,7 +24,7 @@ if __version__ != crc_optimizer.__version__:
 
 # NOTE: zlib implements the same CRC32 standard as Ethernet uses.
 
-syntaxes = "verilog", "v", "systemverilog", "sv", "vhdl", "vhd", "python", "py", "python-test", "pyt", "graphviz", "dot", "gv", "c", "info", "i", "raw", "r", "json", "j"
+syntaxes = "verilog", "v", "systemverilog", "sv", "vhdl", "vhd", "python", "py", "python-test", "pyt", "graphviz", "dot", "gv", "c", "info", "i", "raw", "r", "json", "j", "m"
 
 parser = argparse.ArgumentParser(
 	description=f"%(prog)s {__version__}\n{__doc__}",
@@ -61,7 +62,6 @@ optimize_group.add_argument("--optimize-lns-window", "-W", type=int    , help="e
 optimize_group.add_argument("--verbose", "-v"            , type=int    , help="set optimization verbosity level")
 args = parser.parse_args()
 
-# TODO: implement the rest of the configuration logic:
 optimize = args.optimize or args.optimize_lns or       args.optimize_depth      is not None \
 			or args.optimize_nmax       is not None or args.optimize_beam       is not None \
 			or args.optimize_lns_trials is not None or args.optimize_lns_window is not None \
@@ -778,11 +778,18 @@ match syntax:
 	case "raw" | "r":
 		# NOTE: the output for this is NOT JSON. It uses set syntax, which is why it is called raw and not json
 		starting_gates = crc_optimizer.count_gates(rows)
+
+		from time import perf_counter_ns
+
+		time_stt = perf_counter_ns()
+
 		if optimize:
 			tmp_defs, outputs = optimize_gates(rows)
 		else:
 			tmp_defs = {}
 			outputs  = rows
+
+		time_end = perf_counter_ns()
 
 		ending_gates = crc_optimizer.count_gates(tmp_defs, outputs)
 		if syntax == "raw":
@@ -799,16 +806,22 @@ match syntax:
 			f'{sep}"starting_gates":{pad}{starting_gates},'
 			f'{sep}"ending_gates":{pad}{ending_gates},'
 			f'{sep}"gate_reduction":{pad}{starting_gates - ending_gates},'
-			f'{sep}"gate_compression":{pad}{1 - ending_gates / starting_gates}'
+			f'{sep}"gate_compression":{pad}{1 - ending_gates / starting_gates},'
+			f'{sep}"cse_time_ns":{pad}{time_end - time_stt}'
 			f"{'\n' if syntax == "raw" else ''}}}"
 		)
 
 		print(data if syntax == "raw" else data.replace(' ', ''))
-	case "json" | "j":
+	case "json" | "j" | "m":
+		from time import perf_counter_ns
 		starting_gates = crc_optimizer.count_gates(rows)
+
+		time_stt = perf_counter_ns()
 
 		if optimize: tmp_defs, outputs = optimize_gates(rows)
 		else:        tmp_defs, outputs = {}, rows
+
+		time_end = perf_counter_ns()
 
 		ending_gates = crc_optimizer.count_gates(tmp_defs, outputs)
 
@@ -831,13 +844,19 @@ match syntax:
 		indent = '\t'         if syntax == "json" else None
 		seps   = (', ', ': ') if syntax == "json" else (',', ':')
 
-		print( json_dump_data({
-			"tmp_defs": tmp_defs,
-			"outputs": outputs,
-			"starting_gates": starting_gates,
-			"ending_gates": ending_gates,
-			"gate_reduction": starting_gates - ending_gates,
-			"gate_compression": 1 - ending_gates / starting_gates
-		}, indent, seps) )
+		data = {}
+
+		if syntax != "m":
+			data["tmp_defs"] = tmp_defs
+			data["outputs"]  = outputs
+
+		# do this stuff after the other stuff for the dictionary key ordering.
+		data["starting_gates"]   = starting_gates
+		data["ending_gates"]     = ending_gates
+		data["gate_reduction"]   = starting_gates - ending_gates
+		data["gate_compression"] = 1 - ending_gates / starting_gates
+		data["cse_time_ns"]      = time_end - time_stt
+
+		print( json_dump_data(data, indent, seps) )
 	case _:
 		raise Exception(f"mismatch between argparse syntax list and match/case syntax list. syntax: '{syntax}'")

@@ -28,7 +28,7 @@ the other external functions are `count_gates`, `expand_gates`, and `graph_depth
 
 # TODO: consider separating the docstring from crc-gen.py so this can be used as a standalone package.
 
-__version__ = "2026.06.09.0"
+__version__ = "2026.06.10.0"
 
 __all__ = (
 	"count_gates", "optimize_gates_nwise", "brute_force", "cleanup_aliases",
