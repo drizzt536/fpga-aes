@@ -11,13 +11,14 @@ the "m" format gives JSON metrics about the graph reduction without giving the r
 the "python-test" / "pyt" formats output the same code as "python" / "py", but with some extra functions.
 """
 
-__version__ = "2026.06.10.0"
+__version__ = "2026.06.11.0"
 
 if __name__ != "__main__":
 	raise Exception("crc-gen.py should only be used at the top level.")
 
 import argparse
 import crc_optimizer
+from sys import stderr
 
 if __version__ != crc_optimizer.__version__:
 	raise Exception("version mismatch with crc_optimizer.py")
@@ -38,6 +39,7 @@ parser.add_argument("--algorithm", "--alg", "-a", type=lambda s: None if s is No
 parser.add_argument("--output", "--out", "-o", type=str, default='-', help=f"output file. use 'auto' for automatic naming. default is '-' (stdout)")
 parser.add_argument("--list-algorithms", "-A", action="store_true", help="list available algorithms and exit")
 parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {__version__}")
+parser.add_argument("--verbose", "-v", type=int, help="set optimization verbosity level")
 
 custom_crc_group = parser.add_argument_group("custom CRC overrides (triggers custom mode if --polynomial is set)")
 custom_crc_group.add_argument("--polynomial", "--poly", "-p", type=int, help="polynomial. don't omit the uppermost bit")
@@ -59,7 +61,6 @@ optimize_group.add_argument("--optimize-n-prefer",   "-P", type=str    , help="e
 optimize_group.add_argument("--optimize-lns", "-L", action="store_true", help="enable optimization+LNS without touching settings")
 optimize_group.add_argument("--optimize-lns-trials", "-T", type=int    , help="enable optimization+LNS and set the count.")
 optimize_group.add_argument("--optimize-lns-window", "-W", type=int    , help="enable optimization+LNS and set the window size.")
-optimize_group.add_argument("--verbose", "-v"            , type=int    , help="set optimization verbosity level")
 args = parser.parse_args()
 
 optimize = args.optimize or args.optimize_lns or       args.optimize_depth      is not None \
@@ -76,7 +77,6 @@ optimize_weight   = args.optimize_weight     if args.optimize_weight     is not 
 optimize_n_prefer = args.optimize_n_prefer   if args.optimize_n_prefer   is not None else "low"
 lns_trials        = args.optimize_lns_trials if args.optimize_lns_trials is not None else 3
 lns_window        = args.optimize_lns_window if args.optimize_lns_window is not None else 3
-optimize_verbose  = args.verbose or 0
 
 if optimize_n_prefer == "l" or optimize_n_prefer == "lo"  : optimize_n_prefer = "low"
 if optimize_n_prefer == "h" or optimize_n_prefer == "hi"  : optimize_n_prefer = "high"
@@ -90,20 +90,6 @@ if not lns:
 	lns_window = 0
 	lns_trials = 0
 
-def optimize_gates(eqns: list[set]) -> tuple[dict[int, set], list[set]]:
-	return crc_optimizer.optimize_gates(
-		eqns,
-		optimize_depth,
-		optimize_nmax,
-		optimize_beam,
-		optimize_n_prefer,
-		optimize_weight, # lookahead weight
-		lns_window,
-		lns_trials,
-		optimize_seed,
-		optimize_verbose
-	)
-
 data_len   = args.data_len
 in_port    = args.in_port
 out_port   = args.out_port
@@ -115,6 +101,21 @@ syntax     = args.syntax
 crc_name   = args.algorithm
 poly       = args.polynomial
 output     = args.output
+verbose    = args.verbose or 0
+
+def optimize_gates(eqns: list[set]) -> tuple[dict[int, set], list[set]]:
+	return crc_optimizer.optimize_gates(
+		eqns,
+		optimize_depth,
+		optimize_nmax,
+		optimize_beam,
+		optimize_n_prefer,
+		optimize_weight, # lookahead weight
+		lns_window,
+		lns_trials,
+		optimize_seed,
+		verbose
+	)
 
 # these come from crcmod.predefined._crc_definitions_table
 sum_len_map = {
@@ -211,18 +212,40 @@ else:
 	crc_name = crcmod.predefined._simplify_name(crc_name)
 	crc = crcmod.predefined.mkCrcFun(crc_name)
 
-cols = [crc((1 << n).to_bytes(data_len, byteorder='big')) for n in range(8*data_len)]
-
 K = crc(bytes(data_len)) # correction vector
 
+if verbose >= 1:
+	print("# generating curve vectors", file=stderr)
+
+# this part is still a bottleneck, but it is mostly becaue of `crc`, so I can't really make it any faster
+
+cols_helper = (1, 2, 4, 8, 16, 32, 64, 128)
+cols   = [None] * (8*data_len)
+vector = bytearray(data_len)
+
+for i in range(8*data_len):
+	if i != 0:
+		vector[data_len - 1 - (i - 1 >> 3)] = 0
+	vector[data_len - 1 - (i >> 3)] = cols_helper[i & 7]
+	cols[i] = crc(vector) ^ K
+
+del cols_helper, vector
+
+if verbose >= 1:
+	print("# generating matrix", file=stderr)
+
 rows = [
-	{8*data_len - 1 - n for n in range(8*data_len) if (cols[n] ^ K) & (1 << bit)}
+	{8*data_len - 1 - n for n in range(8*data_len) if (cols[n] >> bit) & 1}
 	for bit in range(8*sum_len)
 ]
 
 for bit, eqn in enumerate(rows):
 	if (K >> bit) & 1:
 		eqn.add(None)
+
+if verbose >= 1:
+	print("# curve generation complete", file=stderr)
+
 
 # this bit is magic
 reversed_polynomial = crc(b'\x80') ^ crc(b'\x00')
@@ -803,6 +826,8 @@ match syntax:
 			f'{{'
 			f'{sep}"tmp_defs":{pad}{tmp_defs},'
 			f'{sep}"outputs":{pad}{outputs},'
+			f'{sep}"crc_name":{pad}"{crc_name}",'
+			f'{sep}"data_len":{pad}{data_len},'
 			f'{sep}"starting_gates":{pad}{starting_gates},'
 			f'{sep}"ending_gates":{pad}{ending_gates},'
 			f'{sep}"gate_reduction":{pad}{starting_gates - ending_gates},'
@@ -851,6 +876,8 @@ match syntax:
 			data["outputs"]  = outputs
 
 		# do this stuff after the other stuff for the dictionary key ordering.
+		data["crc_name"]         = crc_name
+		data["data_len"]         = data_len
 		data["starting_gates"]   = starting_gates
 		data["ending_gates"]     = ending_gates
 		data["gate_reduction"]   = starting_gates - ending_gates
