@@ -24,7 +24,7 @@ if you increase it enough, it should get better again.
 requires Python >=3.10
 """
 
-__version__ = "2026.06.11.1"
+__version__ = "2026.06.12.0"
 
 __all__ = (
 	"count_gates", "optimize_gates_nwise", "brute_force", "cleanup_aliases",

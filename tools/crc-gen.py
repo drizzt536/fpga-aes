@@ -11,7 +11,7 @@ the "m" format gives JSON metrics about the graph reduction without giving the r
 the "python-test" / "pyt" formats output the same code as "python" / "py", but with some extra functions.
 """
 
-__version__ = "2026.06.11.1"
+__version__ = "2026.06.12.0"
 
 if __name__ != "__main__":
 	raise Exception("crc-gen.py should only be used at the top level.")
@@ -33,12 +33,13 @@ parser = argparse.ArgumentParser(
 parser.add_argument("--data-len", "-l", type=int, default=4, help="bytes length of checksum input data. default is 4")
 parser.add_argument("--in-port", "--in-var", "-I", type=str, default="data", help="input port/variable name. default is 'data'")
 parser.add_argument("--out-port", "--out-var", "-O", type=str, default="crc", help="output port/variable name. default is 'crc'")
+parser.add_argument("--tmp-name", "-t", type=str.lower, default="tmp", help="tmp signal name. default is 'tmp'. must be 3 characters long. might not work if it creates name collisions")
 parser.add_argument("--syntax", "-s", type=str.lower, choices=syntaxes, default=syntaxes[0], help=f"output language. default is '{syntaxes[0]}'")
 parser.add_argument("--algorithm", "--alg", "-a", type=lambda s: None if s is None else str.lower(s).strip(), default=None, help=f"CRC name. overrides other options. default is 'crc32'")
 parser.add_argument("--output", "--out", "-o", type=str, default='-', help=f"output file. use 'auto' for automatic naming. default is '-' (stdout)")
 parser.add_argument("--list-algorithms", "-A", action="store_true", help="list available algorithms and exit")
+parser.add_argument("--verbose", "-v", type=int, help="set verbosity level. >=3 is the same as 2. mostly for optimization")
 parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {__version__}")
-parser.add_argument("--verbose", "-v", type=int, help="set verbosity level. >=4 is the same as 3. mostly for optimization")
 
 custom_crc_group = parser.add_argument_group("custom CRC overrides (triggers custom mode if --polynomial is set)")
 custom_crc_group.add_argument("--polynomial", "--poly", "-p", type=int, help="polynomial. don't omit the uppermost bit")
@@ -89,12 +90,17 @@ if not lns:
 	lns_window = 0
 	lns_trials = 0
 
+# a lot of the logic relies on it being 3 characters, both explicitly and implicitly.
+# it might work fine, just probably not well.
+tmp_sgnl_base = args.tmp_name
+assert len(tmp_sgnl_base) == 3, "tmp port name must be 3 characters long"
+
 data_len   = args.data_len
 in_port    = args.in_port
 out_port   = args.out_port
 local_port = "local_" + out_port
-tmp_port_i = "tmp" + " "*(len(in_port) - 3)    # 3 == len("tmp")
-tmp_port_o = "tmp" + " "*(len(local_port) - 3) # 3 == len("tmp")
+tmp_port_i = tmp_sgnl_base + " "*(len(in_port) - 3)    # 3 == len(tmp_sgnl_base)
+tmp_port_o = tmp_sgnl_base + " "*(len(local_port) - 3) # 3 == len(tmp_sgnl_base)
 in_port_i  = in_port + " "*(len(tmp_port_i) - len(in_port)) if optimize else in_port
 syntax     = args.syntax
 crc_name   = args.algorithm
@@ -104,7 +110,7 @@ verbose    = args.verbose or 0
 
 def optimize_gates(eqns: list[set]) -> tuple[dict[int, set], list[set]]:
 	if verbose >= 2:
-		eprint(f"# starting optimization. gate count = {gf2_cse.count_gates(eqns)}")
+		eprint(f"# starting optimization")
 
 	return gf2_cse.optimize_gates(
 		eqns,
@@ -116,7 +122,7 @@ def optimize_gates(eqns: list[set]) -> tuple[dict[int, set], list[set]]:
 		lns_window,
 		lns_trials,
 		optimize_seed,
-		1 if verbose == 2 else verbose # use >=3 for for full verbosity
+		verbose
 	)
 
 # these come from crcmod.predefined._crc_definitions_table
@@ -188,13 +194,17 @@ if poly is not None:
 	except ImportError:
 		raise Exception("custom CRCs require `crcmod-plus`.")
 
-	crc = crcmod.mkCrcFun(poly, args.init, args.reflect, args.xor_out)
-	crc_name = f"_custom_0x{poly:X}"
-	sum_len = (poly.bit_length() + 6) // 8
+	crc        = crcmod.mkCrcFun(poly, args.init, args.reflect, args.xor_out)
+	crc_name   = f"_custom_0x{poly:X}"
+	sum_len    = (poly.bit_length() + 6) // 8
+	reflected  = args.reflect
+	polynomial = poly ^ (1 << (poly.bit_length() - 1))
 elif crc_name in {None, "32", "crc32", "crc-32", "crc 32"}:
 	# use zlib.crc32 if possible since it is is built-in, and probably faster,.
-	crc_name = '32'
-	sum_len = 4
+	crc_name   = '32'
+	sum_len    = 4
+	reflected  = True
+	polynomial = 0x04c11db7 # this can't be queried from crcmod in case it isn't installed.
 
 	from zlib import crc32 as crc
 else:
@@ -214,58 +224,58 @@ else:
 	crc_name = crcmod.predefined._simplify_name(crc_name)
 	crc = crcmod.predefined.mkCrcFun(crc_name)
 
+	reflected  = crcmod.predefined._get_definition_by_name(crc_name)["reverse"]
+	polynomial = crcmod.predefined._get_definition_by_name(crc_name)["poly"]
+	polynomial ^= 1 << (polynomial.bit_length() - 1)
+
+# sum_len is the number of bytes in the checksum
+sum_bits = sum_len << 3 # number of bits in the checksum
+sum_nibs = sum_len << 2 # number of nibbles in the checksum
+
+data_bits = data_len << 3
+
+reversed_polynomial = int(f"{polynomial:0{sum_bits}b}"[::-1], 2)
+
 eprint = gf2_cse._eprint
+
+lfsr_mask = (1 << sum_bits) - 1
+
+if reflected:
+	lfsr_step = lambda s: (s >> 1) ^ (reversed_polynomial if s & 1 else 0)
+else:
+	lfsr_step = lambda s: ((s << 1) ^ polynomial if s >> (sum_bits - 1) else s << 1) & lfsr_mask
 
 K = crc(bytes(data_len)) # correction vector
 
-if verbose >= 2:
-	eprint("# generating curve vectors")
-elif verbose >= 1:
+if verbose >= 1:
 	eprint("# generating curve vectors", end="", flush=True)
 
-# this part is still a bottleneck, but it is mostly because of `crc`, so I can't really make it any faster
-
-cols_helper = (1, 2, 4, 8, 16, 32, 64, 128)
-cols   = [None] * (8*data_len)
-vector = bytearray(data_len)
 curve_gen_time_stt = perf_counter_ns()
 
-if verbose >= 2:
-	last_logtime = 0 # always log the first one
+base_i = 7 if reflected else 0
+cols   = [None] * data_bits
+cols[base_i] = current = crc((1 << base_i).to_bytes(data_len, byteorder="big")) ^ K
 
-	for i in range(8*data_len):
-		if (i & 15) == 0: # use a prime value so it looks more responsive
-			cur_logtime = perf_counter_ns()
+del base_i
 
-			if cur_logtime - last_logtime >= 400_000_000:
-				last_logtime = cur_logtime
-				eprint(f"\r#   {25 * i/(2*data_len):.5f}%\x1b[K", end="", flush=True)
-
-		if i != 0:
-			vector[data_len - 1 - (i - 1 >> 3)] = 0
-
-		vector[data_len - 1 - (i >> 3)] = cols_helper[i & 7]
-		cols[i] = crc(vector) ^ K
-
-	del last_logtime, cur_logtime
+if reflected:
+	for k in range(data_len):
+		for j in range(6 if k == 0 else 7, -1, -1):
+			cols[(k << 3) + j] = current = lfsr_step(current)
 else:
-	for i in range(8*data_len):
-		if i != 0:
-			vector[data_len - 1 - (i - 1 >> 3)] = 0
-
-		vector[data_len - 1 - (i >> 3)] = cols_helper[i & 7]
-		cols[i] = crc(vector) ^ K
+	for i in range(1, data_bits):
+		cols[i] = current = lfsr_step(current)
 
 curve_gen_time_end = perf_counter_ns()
 
-del cols_helper, vector
+del current
 
 if verbose >= 1:
 	eprint("\r# generating matrix\x1b[K", end="", flush=True)
 
 rows = [
-	{8*data_len - 1 - n for n in range(8*data_len) if (cols[n] >> bit) & 1}
-	for bit in range(8*sum_len)
+	{data_bits - 1 - n for n in range(data_bits) if (cols[n] >> bit) & 1}
+	for bit in range(sum_bits)
 ]
 
 for bit, eqn in enumerate(rows):
@@ -275,16 +285,11 @@ for bit, eqn in enumerate(rows):
 if verbose >= 1:
 	eprint("\r# curve generation complete\x1b[K", flush=True)
 
-# this bit is magic
-reversed_polynomial = crc(b'\x80') ^ crc(b'\x00')
-polynomial          = int(f"{reversed_polynomial:0{8*sum_len}b}"[::-1], 2)
-
 max_io_pad      = 1 + max(len(in_port), len(out_port))
 in_pad          = " "*(max_io_pad - len(in_port))
 out_pad         = " "*(max_io_pad - len(out_port))
-in_idx_max_pad  = len(str(8*data_len))
-out_idx_max_pad = len(str(8*sum_len))
-idx_max_pad     = max(in_idx_max_pad, out_idx_max_pad)
+in_idx_max_pad  = len(str(data_bits))
+out_idx_max_pad = len(str(sum_bits))
 
 syntax_data = {
 	"v": {
@@ -399,10 +404,10 @@ if output != "-":
 	_print  = print
 	# NOTE: eprint isn't used past this point, so it doesn't matter that this probably breaks it.
 
-	def print(message: str) -> None:
+	def print(message: str, end: str = '\n') -> None:
 		"print a single string to the output file"
 
-		_print(message, file=outfile)
+		_print(message, end=end, file=outfile)
 
 def get_terms(eqn: set) -> str:
 	if None in eqn:
@@ -460,27 +465,27 @@ match syntax:
 				f"\n\t\tBSWAP : boolean := true"
 				f"\n\t);"
 				f"\n\tport ("
-				f"\n\t\t{in_port}{in_pad}: in  std_logic_vector({8*data_len - 1:{idx_max_pad}} downto 0);"
-				f"\n\t\t{out_port}{out_pad}: out std_logic_vector({8*sum_len - 1:{idx_max_pad}} downto 0)"
+				f"\n\t\t{in_port}{in_pad}: in  std_logic_vector({data_bits - 1:{idx_max_pad}} downto 0);"
+				f"\n\t\t{out_port}{out_pad}: out std_logic_vector({sum_bits - 1:{idx_max_pad}} downto 0)"
 				f"\n\t);"
 				f"\nend entity;"
 				f"\n"
 				f"\narchitecture crc{crc_name}_{data_len}_arch of crc{crc_name}_{data_len} is"
-				f"\n\t-- polynomial: 0x{polynomial:0{2*sum_len}X}"
-				f"\n\t-- crc{crc_name}(0): 0x{K:0{2*sum_len}X}"
+				f"\n\t-- polynomial: 0x{polynomial:0{sum_nibs}X}"
+				f"\n\t-- crc{crc_name}(0): 0x{K:0{sum_nibs}X}"
 				f"\n"
 			)
 		else:
 			print(
-				f"// polynomial: 0x{polynomial:0{2*sum_len}X}"
-				f"\n// crc{crc_name}(0): 0x{K:0{2*sum_len}X}"
+				f"// polynomial: 0x{polynomial:0{sum_nibs}X}"
+				f"\n// crc{crc_name}(0): 0x{K:0{sum_nibs}X}"
 				f"\n"
 				f"\nmodule crc{crc_name}_{data_len} #("
 				f"\n\t// 1 => little endian, 0 => big endian"
 				f"\n\tparameter{" bit" if is_sv else ""} BSWAP = 1"
 				f"\n) ("
-				f"\n\tinput  [{8*data_len - 1:{idx_max_pad}} : 0] {in_port},"
-				f"\n\toutput [{8*sum_len - 1:{idx_max_pad}} : 0] {out_port}"
+				f"\n\tinput  [{data_bits - 1:{idx_max_pad}} : 0] {in_port},"
+				f"\n\toutput [{sum_bits - 1:{idx_max_pad}} : 0] {out_port}"
 				f"\n);"
 				f"\n"
 			)
@@ -495,15 +500,15 @@ match syntax:
 		elif max_pad_diff > 0: tmp_port_o += ' '*max_pad_diff
 
 		# local signal declaration
-		print(wire_type(local_port, 8*sum_len - 1))
+		print(wire_type(local_port, sum_bits - 1))
 		print(begin_logic)
 
 		for i in range(len(tmp_defs)):
 			print(f"{prefix}{tmp_port_o}{lbr}{i:{tmp_idx_max_pad}}{rbr}{assign}{get_terms(tmp_defs[1 + i])}{suffix}")
 
-		print(end='\n' if optimize else '') # separate `tmp` from `local_crc`
+		if optimize: print("") # separate `tmp_sgnl_base` from `local_crc`
 
-		for i in range(8*sum_len):
+		for i in range(sum_bits):
 			print(f"{prefix}{local_port}{lbr}{i:{out_idx_max_pad}}{rbr}{assign}{get_terms(outputs[i])}{suffix}")
 
 		# generate
@@ -512,7 +517,7 @@ match syntax:
 				print(
 					f"\n\tendian_check: if BSWAP generate"
 					f"\n\t\tlittle_endian: for i in 0 to {sum_len - 1} generate"
-					f"\n\t\t\t{out_port}(8*i + 7 downto 8*i) <= {local_port}({8*sum_len - 1} - 8*i downto {8*sum_len - 8} - 8*i);"
+					f"\n\t\t\t{out_port}(8*i + 7 downto 8*i) <= {local_port}({sum_bits - 1} - 8*i downto {sum_bits - 8} - 8*i);"
 					f"\n\t\tend generate;"
 					f"\n\telse generate"
 					f"\n\t\t{out_port} <= {local_port};"
@@ -524,7 +529,7 @@ match syntax:
 					f"\ngenerate"
 					f"\n\tif (BSWAP)"
 					f"\n\t\tfor ({"genvar " if is_sv else ''}i = 0; i < {sum_len}; {"i++" if is_sv else "i = i + 1"})"
-					f"\n\t\t\tassign {out_port}[8*i + 7 : 8*i] = {local_port}[{8*sum_len - 1} - 8*i : {8*sum_len - 8} - 8*i];"
+					f"\n\t\t\tassign {out_port}[8*i + 7 : 8*i] = {local_port}[{sum_bits - 1} - 8*i : {sum_bits - 8} - 8*i];"
 					f"\n\telse"
 					f"\n\t\tassign {out_port} = {local_port};"
 					f"\nendgenerate"
@@ -623,7 +628,7 @@ match syntax:
 		in_bits = "inb" if in_port != "inb" else "ind"
 
 		in_port_i  = in_bits
-		tmp_port_i = "tmp"
+		tmp_port_i = tmp_sgnl_base
 
 		if in_port in {"bit_", "byte_"}:
 			raise Exception(f"`--in-port '{in_port}'` cannot be given with `--syntax '{syntax}'`")
@@ -635,9 +640,9 @@ match syntax:
 			print(
 				f"#include <stdint.h>"
 				f"\n"
-				f"\nuint{8*sum_len}_t crc{crc_name}_{data_len}(uint8_t {in_port}[{data_len}]) {{"
-				f"\n\tuint8_t {in_bits}[{8*data_len}];"
-				f"\n\tuint{c_type_length(8*data_len)}_t idx = 0;"
+				f"\nuint{sum_bits}_t crc{crc_name}_{data_len}(uint8_t {in_port}[{data_len}]) {{"
+				f"\n\tuint8_t {in_bits}[{data_bits}];"
+				f"\n\tuint{c_type_length(data_bits)}_t idx = 0;"
 				f"\n"
 				f"\n\tfor (uint{c_type_length(data_len)}_t byte_ = 0; byte_ < {data_len}; byte_++)"
 				f"\n\t\tfor (uint8_t bit_ = 8; bit_ --> 0 ;)"
@@ -658,9 +663,9 @@ match syntax:
 			)
 
 		if optimize:
-			print(wire_type("tmp" if syntax == "c" else tmp_port_o, len(tmp_defs)))
+			print(wire_type(tmp_sgnl_base if syntax == "c" else tmp_port_o, len(tmp_defs)))
 
-		print(wire_type(local_port, 8*sum_len), end="\n\n")
+		print(wire_type(local_port, sum_bits), end="\n\n")
 
 		tmp_idx_max_pad = len(str(len(tmp_defs) - 1))
 
@@ -673,13 +678,13 @@ match syntax:
 
 		if optimize: print("")
 
-		for i in range(8*sum_len):
+		for i in range(sum_bits):
 			print(f"{prefix}{local_port}{lbr}{i:{out_idx_max_pad}}{rbr}{assign}{get_terms(outputs[i])}{suffix}")
 
 		if syntax == "c":
 			print(
-				f"\n\tuint{8*sum_len}_t {out_port} = 0;"
-				f"\n\tfor (uint{c_type_length(8*sum_len)}_t i_ = 0; i_ < {8*sum_len}; i_++)"
+				f"\n\tuint{sum_bits}_t {out_port} = 0;"
+				f"\n\tfor (uint{c_type_length(sum_bits)}_t i_ = 0; i_ < {sum_bits}; i_++)"
 				f"\n\t\t{out_port} |= {local_port}[i_] << i_;"
 				f"\n"
 				f"\n\treturn {out_port};"
@@ -687,7 +692,7 @@ match syntax:
 		else:
 			print(
 				f"\n\t{out_port} = 0"
-				f"\n\tfor i in range({8*sum_len}):"
+				f"\n\tfor i in range({sum_bits}):"
 				f"\n\t\t{out_port} |= {local_port}[i] << i"
 				f"\n"
 				f"\n\treturn {out_port}"
@@ -718,16 +723,16 @@ match syntax:
 		graph_depth = gf2_cse.graph_depth(tmp_defs, outputs)
 
 		# NOTE: ranksep = (input_count * (width + nodesep)) / graph_depth - height
-		#               = (8*data_len * 1) / graph_depth - 0.5
+		#               = (data_bits * 1) / graph_depth - 0.5
 		#       I have no idea where this ^^^^ came from, but it seems to work well,
-		#       except for where it doesn't, which is when I change it.
+		#       except for when it doesn't, but then you can just change it manually
 
 		# try and give a sensible default rank separation.
 		# if it is bad, then the user can just change it themselves.
 		# I only tested crc8, crc16, crc32, and crc64.
 		# I tested data lengths 1, 2, 4, 6, 16, and 32 for each
 		if sum_len == 4:
-			ranksep = 8*data_len / graph_depth - 0.5
+			ranksep = data_bits / graph_depth - 0.5
 		else:
 			ranksep = (1 + (data_len == 1))*4*data_len / graph_depth - 0.5
 
@@ -747,7 +752,7 @@ match syntax:
 
 		decls    = []
 		decl_len = 0
-		for i in range(8*data_len):
+		for i in range(data_bits):
 			decl = f'"in[{i}]";'
 
 			if decl_len + len(decl) + len(decls) >= GV_DECL_LINE_WRAP:
@@ -770,11 +775,11 @@ match syntax:
 		print("\t}\n")
 
 		if optimize:
-			print("\t// tmp declarations:")
+			print(f"\t// {tmp_sgnl_base} declarations:")
 
 		for i in range(len(tmp_defs)):
 			terms = get_terms(tmp_defs[1 + i]).replace(' ', '').replace(',', ', ')
-			print(f"\t{{\"{terms}\"}} -> \"tmp[{i}]\";")
+			print(f"\t{{\"{terms}\"}} -> \"{tmp_sgnl_base}[{i}]\";")
 
 		if optimize: print("")
 
@@ -782,7 +787,7 @@ match syntax:
 
 		decls    = []
 		decl_len = 0
-		for i in range(8*sum_len):
+		for i in range(sum_bits):
 			decl = f'"out[{i}]";'
 
 			if decl_len + len(decl) + len(decls) >= GV_DECL_LINE_WRAP:
@@ -799,7 +804,7 @@ match syntax:
 		print("\t}\n")
 
 		print("\t// outputs:")
-		for i in range(8*sum_len):
+		for i in range(sum_bits):
 			terms = get_terms(outputs[i]).replace(' ', '').replace(',', ', ')
 			print(f"\t{{\"{terms}\"}} -> \"out[{i}]\";")
 
@@ -813,16 +818,16 @@ match syntax:
 			f"\ndata len    = {data_len}"
 			f"\nsum len     = {sum_len}"
 			f"\nbase #gates = {gf2_cse.count_gates(rows)}"
-			f"\nCRC(empty)  = 0x{K:0{2*sum_len}X}"
-			f"\npolynomial  = 0x{polynomial:0{2*sum_len}X}"
-			f"\nreversed polynomial = 0x{reversed_polynomial:0{2*sum_len}X}"
+			f"\nCRC(empty)  = 0x{K:0{sum_nibs}X}"
+			f"\npolynomial  = 0x{polynomial:0{sum_nibs}X}"
+			f"\nreversed polynomial = 0x{reversed_polynomial:0{sum_nibs}X}"
 		)
 
 		if poly is not None:
 			print(
 				"\nRocksoft Parameters:"
-				f"\ninit    = 0x{args.init:0{2*sum_len}X}"
-				f"\nxor_out = 0x{args.xor_out:0{2*sum_len}X}"
+				f"\ninit    = 0x{args.init:0{sum_nibs}X}"
+				f"\nxor_out = 0x{args.xor_out:0{sum_nibs}X}"
 				f"\nreflect = {str(args.reflect).lower()}"
 			)
 	case "raw" | "r":
@@ -847,16 +852,22 @@ match syntax:
 			sep = ''
 			pad = ''
 
+		td   = {}
+
+		# reindex so it is in ascending order
+		for i in range(1, len(tmp_defs) + 1):
+			td[i] = tmp_defs[i]
+
 		data = (
 			f'{{'
-			f'{sep}"tmp_defs":{pad}{tmp_defs},'
+			f'{sep}"tmp_defs":{pad}{td},'
 			f'{sep}"outputs":{pad}{outputs},'
 			f'{sep}"crc_name":{pad}"{crc_name}",'
 			f'{sep}"data_len":{pad}{data_len},'
 			f'{sep}"starting_gates":{pad}{starting_gates},'
 			f'{sep}"ending_gates":{pad}{ending_gates},'
 			f'{sep}"gate_reduction":{pad}{starting_gates - ending_gates},'
-			f'{sep}"gate_compression":{pad}{1 - ending_gates / starting_gates},'
+			f'{sep}"compression":{pad}{1 - ending_gates / starting_gates},'
 			f'{sep}"gen_time_ns":{pad}{curve_gen_time_end - curve_gen_time_stt},'
 			f'{sep}"cse_time_ns":{pad}{cse_time_end - cse_time_stt}'
 			f"{'\n' if syntax == "raw" else ''}}}"
@@ -876,19 +887,27 @@ match syntax:
 		ending_gates = gf2_cse.count_gates(tmp_defs, outputs)
 
 		def json_dump_data(data: dict[str, any], indent: str, seps: tuple[str, str]) -> str:
-			import json, re
+			import json
 
 			# sets aren't serializable, so I have do this nonsense to make them print properly
 			class Encoder(json.JSONEncoder):
 				def default(self, obj) -> str:
 					"assume the unknown object is a set"
 
-					return f"\u0000{json.dumps(list(obj), separators=seps)}\u0000"
+					if type(obj) is not set:
+						raise NotImplementedError("default() only implemented for sets")
 
-			return re.sub(
-				r'"?\\u0000"?',
-				'',
-				json.dumps(data, indent=indent, separators=seps, cls=Encoder)
+					lst = sorted(obj, reverse=True)
+
+					if None in obj:
+						lst.insert(0, None)
+
+					return f"\u0000{json.dumps(lst, separators=seps)}\u0000"
+
+			return (json
+				.dumps(data, indent=indent, separators=seps, cls=Encoder)
+				.replace('"\\u0000', '')
+				.replace('\\u0000"', '')
 			)
 
 		indent = '\t'         if syntax == "json" else None
@@ -897,19 +916,25 @@ match syntax:
 		data = {}
 
 		if syntax != "m":
-			data["tmp_defs"] = tmp_defs
+			td = {}
+
+			# reindex so keys are in ascending order
+			for i in range(1, len(tmp_defs) + 1):
+				td[i] = tmp_defs[i]
+
+			data["tmp_defs"] = td
 			data["outputs"]  = outputs
 
 		# do this stuff after the other stuff for the dictionary key ordering.
-		data["crc_name"]          = crc_name
-		data["data_len"]          = data_len
-		data["starting_gates"]    = starting_gates
-		data["ending_gates"]      = ending_gates
-		data["gate_reduction"]    = starting_gates - ending_gates
-		data["gate_compression"]  = 1 - ending_gates / starting_gates
-		data["gen_time_ns"]       = curve_gen_time_end - curve_gen_time_stt
-		data["cse_time_ns"]       = cse_time_end - cse_time_stt
+		data["crc_name"]       = crc_name
+		data["data_len"]       = data_len
+		data["starting_gates"] = starting_gates
+		data["ending_gates"]   = ending_gates
+		data["gate_reduction"] = starting_gates - ending_gates
+		data["compression"]    = 1 - ending_gates / starting_gates
+		data["gen_time_ns"]    = curve_gen_time_end - curve_gen_time_stt
+		data["cse_time_ns"]    = cse_time_end - cse_time_stt
 
-		print( json_dump_data(data, indent, seps) )
+		print(json_dump_data(data, indent, seps))
 	case _:
 		raise Exception(f"mismatch between argparse syntax list and match/case syntax list. syntax: '{syntax}'")
