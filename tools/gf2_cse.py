@@ -1,34 +1,30 @@
 """
-Performs common subexpression elimination the CRC HDL code generated in `crc-gen.py`.
-uses greedy selection of n-wise intersections, and optionally, large neighborhood search.
+Common subexpression elimination library for simple GF(2) equation sets.
+Uses greedy selection of n-wise intersections, and optionally, large neighborhood search.
 
-The main function intended to be called is `optimize_gates`.
+The main optimization function is `optimize_gates`. The rest of the functions are mostly helpers.
 
 The input should be a list of sets, where each set contains an integer >= 0, where an element `n`
 represents `in[n]`, so `assign out[0] = in[7] ^ in[2] ^ in[0];` would become `{7, 2, 0}` for the
-set. constant terms can be anything so long as it is not an integer. `None` works well. A string
-should work too, but I haven't tested it.
+set. Constant terms can be anything so long as it is not an integer. `None` works well. A string
+should work too, but it is not tested.
 
-The output is a tuple of two values: `tmp_defs` and `outputs`. `outputs` is the same as the input,
-So `outputs[2]` is just the optimized form of `out[2]` from the input. `tmp_defs` is a dictionary
-that maps integers to sets, so `tmp_defs[i]` gives the set for tmp signal `i`. tmp signals can
-reference each other, and are not topologically sorted. outputs cannot reference each other, but
-can reference tmp signals. A negative value in a set means it references a tmp signal instead of
-an input signal.
+The output is a tuple of two values: `tmp_defs` and `outputs`. `outputs` is the equivalent form of
+the input, so `outputs[2]` is just the optimized form of `out[2]` from the input. `tmp_defs` is a
+dictionary that maps integers to sets, so `tmp_defs[i]` gives the set for tmp signal `i`. tmp
+signals can reference each other, and are topologically sorted, so each signal can only rely on
+tmp signals with lower indices than itself. outputs cannot reference each other, but can reference
+tmp signals. A negative value in a set means it references a tmp signal instead of an input signal.
 
-Whenever `set` is in a type annotation for a function, it is implicitly `set[int | None]`
+sometimes, increasing depth or n max can make the overall solution worse.
+if you increase it enough, it should get better again.
 
-Python 3.10 is probably the minimum that works for this.
+`set` in type annotations are implicitly `set[int | None]`
 
-NOTE: sometimes, increasing depth or n max can make the overall solution worse.
-      if you increase it enough, it should get better again.
-
-the other external functions are `count_gates`, `expand_gates`, and `graph_depth`
+requires Python >=3.10
 """
 
-# TODO: consider separating the docstring from crc-gen.py so this can be used as a standalone package.
-
-__version__ = "2026.06.11.0"
+__version__ = "2026.06.11.1"
 
 __all__ = (
 	"count_gates", "optimize_gates_nwise", "brute_force", "cleanup_aliases",
@@ -38,7 +34,7 @@ __all__ = (
 from copy   import deepcopy
 from random import Random, SystemRandom
 
-def eprint(*args, **kwargs) -> None:
+def _eprint(*args, **kwargs) -> None:
 	"print to stderr"
 
 	from sys import stderr
@@ -328,7 +324,7 @@ def find_best_nwise(
 
 	if verbose:
 		# NOTE: `r` isn't really an incredibly helpful metric since it prints the same one multiple times
-		eprint(f"#     depth={orig_depth - depth}/{orig_depth}, r={idx_data[0]}/{idx_data[1]}, skip min={skip_min}, scores=", *scores[:skip_min - 2])
+		_eprint(f"#     depth={orig_depth - depth}/{orig_depth}, r={idx_data[0]}/{idx_data[1]}, skip min={skip_min}, scores=", *scores[:skip_min - 2])
 
 	for n in range(3, min(nmax + 1, skip_min)):
 		if scores[n - 2] < 1:
@@ -372,7 +368,7 @@ def optimize_gates_nwise(
 		if verbose >= 1:
 			# TODO: print the previous round's gate reduction
 			# TODO: add an option to make it exit once the previous round only reduced gate count by 1.
-			eprint(f"# round {(round := round + 1)}: global reduction = {gate_reduction}, gate count = {gate_count}")
+			_eprint(f"# round {(round := round + 1)}: global reduction = {gate_reduction}, gate count = {gate_count}")
 
 		skip_min, _, best, cont = find_best_nwise(s, tmp_count, depth, nmax, B, skip_min, n_prefer, lookahead_weight, rng, verbose >= 2)
 
@@ -391,7 +387,7 @@ def optimize_gates_nwise(
 	outputs  = s[tmp_count:]
 
 	if verbose >= 2:
-		eprint(
+		_eprint(
 			f"# old gate count: {orig_gate_count}"
 			f"\n# new gate count: {gate_count}"
 			f"\n# gate reduction: {gate_reduction}"
@@ -399,7 +395,7 @@ def optimize_gates_nwise(
 			f"\n# number of tmp signals: {tmp_count}"
 		)
 	elif verbose == 1:
-		eprint(f"# optimized gate count = {gate_count}")
+		_eprint(f"# optimized gate count = {gate_count}")
 
 	return tmp_defs, outputs
 
@@ -440,7 +436,7 @@ def brute_force(
 
 	for i, candidate in enumerate(candidates):
 		if verbose >= 2 and depth == 1:
-			eprint(f"\r# {i}/{len(candidates)}\x1b[K", end="", flush=True)
+			_eprint(f"\r# {i}/{len(candidates)}\x1b[K", end="", flush=True)
 
 		td  = deepcopy(tmp_defs)
 		out = deepcopy(outputs)
@@ -543,7 +539,7 @@ def optimize_gates_lns(
 
 	for round in range(1, 1 + trials):
 		if verbose >= 1:
-			eprint(f"# LNS round {round}: gates={count_gates(tmp_defs, outputs)}")
+			_eprint(f"# LNS round {round}: gates={count_gates(tmp_defs, outputs)}")
 
 		td  = deepcopy(tmp_defs)
 		out = deepcopy(outputs)
@@ -558,10 +554,10 @@ def optimize_gates_lns(
 			tmp_defs, outputs = td, out
 
 		if verbose >= 2:
-			eprint("\r\x1b[K", end="", flush=True)
+			_eprint("\r\x1b[K", end="", flush=True)
 
 	if verbose >= 2:
-		eprint(f"# LNS ending gates: {count_gates(tmp_defs, outputs)}")
+		_eprint(f"# LNS ending gates: {count_gates(tmp_defs, outputs)}")
 
 	return tmp_defs, outputs
 
@@ -600,7 +596,7 @@ def tsort__map(tmp_defs: dict[int, set]) -> dict[int, int]:
 
 	for node, dependencies in tmp_defs.items():
 		for dep in dependencies:
-			if isinstance(dep, int) and dep < 0:
+			if type(dep) is int and dep < 0:
 				graph[-dep].append(node)
 				indegree[node] += 1
 
@@ -759,5 +755,5 @@ def graph_depth(tmp_defs: dict[int, set], outputs: list[set], *, sorted: bool = 
 	return 1 + max(max((tmp_depths[-v] for v in eqn if type(v) is int and v < 0), default=0) for eqn in outputs)
 
 if __name__ == "__main__":
-	eprint(f"crc_optimizer (v{__version__}) is a library, use crc-gen.py instead")
+	_eprint(f"gf2_cse (v{__version__}) is not a top level program")
 	exit(1)

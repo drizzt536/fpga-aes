@@ -7,23 +7,22 @@ requires crcmod-plus if a CRC function other than CRC32 is used.
 the "info" / "i" formats output curve metadata in a human readable format
 the "raw" / "r" formats output the raw graph data as a python object string. it is not valid JSON.
 the "json" / "j" formats output the raw graph data as a JSON object string with sets replaced with lists.
-the "m" format gives JSON metrics about the graph reduction without giving the reduced graph
+the "m" format gives JSON metrics about the graph reduction without giving the reduced graph.
 the "python-test" / "pyt" formats output the same code as "python" / "py", but with some extra functions.
 """
 
-__version__ = "2026.06.11.0"
+__version__ = "2026.06.11.1"
 
 if __name__ != "__main__":
 	raise Exception("crc-gen.py should only be used at the top level.")
 
 import argparse
-import crc_optimizer
-from sys import stderr
+import gf2_cse
+from sys  import stderr
+from time import perf_counter_ns
 
-if __version__ != crc_optimizer.__version__:
-	raise Exception("version mismatch with crc_optimizer.py")
-
-# NOTE: zlib implements the same CRC32 standard as Ethernet uses.
+if __version__ != gf2_cse.__version__:
+	raise Exception("version mismatch with gf2_cse.py")
 
 syntaxes = "verilog", "v", "systemverilog", "sv", "vhdl", "vhd", "python", "py", "python-test", "pyt", "graphviz", "dot", "gv", "c", "info", "i", "raw", "r", "json", "j", "m"
 
@@ -39,7 +38,7 @@ parser.add_argument("--algorithm", "--alg", "-a", type=lambda s: None if s is No
 parser.add_argument("--output", "--out", "-o", type=str, default='-', help=f"output file. use 'auto' for automatic naming. default is '-' (stdout)")
 parser.add_argument("--list-algorithms", "-A", action="store_true", help="list available algorithms and exit")
 parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {__version__}")
-parser.add_argument("--verbose", "-v", type=int, help="set optimization verbosity level")
+parser.add_argument("--verbose", "-v", type=int, help="set verbosity level. >=4 is the same as 3. mostly for optimization")
 
 custom_crc_group = parser.add_argument_group("custom CRC overrides (triggers custom mode if --polynomial is set)")
 custom_crc_group.add_argument("--polynomial", "--poly", "-p", type=int, help="polynomial. don't omit the uppermost bit")
@@ -104,7 +103,10 @@ output     = args.output
 verbose    = args.verbose or 0
 
 def optimize_gates(eqns: list[set]) -> tuple[dict[int, set], list[set]]:
-	return crc_optimizer.optimize_gates(
+	if verbose >= 2:
+		eprint(f"# starting optimization. gate count = {gf2_cse.count_gates(eqns)}")
+
+	return gf2_cse.optimize_gates(
 		eqns,
 		optimize_depth,
 		optimize_nmax,
@@ -114,7 +116,7 @@ def optimize_gates(eqns: list[set]) -> tuple[dict[int, set], list[set]]:
 		lns_window,
 		lns_trials,
 		optimize_seed,
-		verbose
+		1 if verbose == 2 else verbose # use >=3 for for full verbosity
 	)
 
 # these come from crcmod.predefined._crc_definitions_table
@@ -212,27 +214,54 @@ else:
 	crc_name = crcmod.predefined._simplify_name(crc_name)
 	crc = crcmod.predefined.mkCrcFun(crc_name)
 
+eprint = gf2_cse._eprint
+
 K = crc(bytes(data_len)) # correction vector
 
-if verbose >= 1:
-	print("# generating curve vectors", file=stderr)
+if verbose >= 2:
+	eprint("# generating curve vectors")
+elif verbose >= 1:
+	eprint("# generating curve vectors", end="", flush=True)
 
-# this part is still a bottleneck, but it is mostly becaue of `crc`, so I can't really make it any faster
+# this part is still a bottleneck, but it is mostly because of `crc`, so I can't really make it any faster
 
 cols_helper = (1, 2, 4, 8, 16, 32, 64, 128)
 cols   = [None] * (8*data_len)
 vector = bytearray(data_len)
+curve_gen_time_stt = perf_counter_ns()
 
-for i in range(8*data_len):
-	if i != 0:
-		vector[data_len - 1 - (i - 1 >> 3)] = 0
-	vector[data_len - 1 - (i >> 3)] = cols_helper[i & 7]
-	cols[i] = crc(vector) ^ K
+if verbose >= 2:
+	last_logtime = 0 # always log the first one
+
+	for i in range(8*data_len):
+		if (i & 15) == 0: # use a prime value so it looks more responsive
+			cur_logtime = perf_counter_ns()
+
+			if cur_logtime - last_logtime >= 400_000_000:
+				last_logtime = cur_logtime
+				eprint(f"\r#   {25 * i/(2*data_len):.5f}%\x1b[K", end="", flush=True)
+
+		if i != 0:
+			vector[data_len - 1 - (i - 1 >> 3)] = 0
+
+		vector[data_len - 1 - (i >> 3)] = cols_helper[i & 7]
+		cols[i] = crc(vector) ^ K
+
+	del last_logtime, cur_logtime
+else:
+	for i in range(8*data_len):
+		if i != 0:
+			vector[data_len - 1 - (i - 1 >> 3)] = 0
+
+		vector[data_len - 1 - (i >> 3)] = cols_helper[i & 7]
+		cols[i] = crc(vector) ^ K
+
+curve_gen_time_end = perf_counter_ns()
 
 del cols_helper, vector
 
 if verbose >= 1:
-	print("# generating matrix", file=stderr)
+	eprint("\r# generating matrix\x1b[K", end="", flush=True)
 
 rows = [
 	{8*data_len - 1 - n for n in range(8*data_len) if (cols[n] >> bit) & 1}
@@ -244,8 +273,7 @@ for bit, eqn in enumerate(rows):
 		eqn.add(None)
 
 if verbose >= 1:
-	print("# curve generation complete", file=stderr)
-
+	eprint("\r# curve generation complete\x1b[K", flush=True)
 
 # this bit is magic
 reversed_polynomial = crc(b'\x80') ^ crc(b'\x00')
@@ -369,6 +397,7 @@ if output != "-":
 
 	outfile = open(output, "w") # auto closed on exit
 	_print  = print
+	# NOTE: eprint isn't used past this point, so it doesn't matter that this probably breaks it.
 
 	def print(message: str) -> None:
 		"print a single string to the output file"
@@ -585,11 +614,10 @@ match syntax:
 				"\n\treturns true if they are equivalent and false if they are not equivalent."
 				"\n\t\"\"\""
 				"\n"
-				"\n\timport crc_optimizer"
-				"\n\treturn crc_optimizer.expand_gates(deepcopy(tmp_defs), deepcopy(outputs)) == s"
+				"\n\timport gf2_cse"
+				"\n\treturn gf2_cse.expand_gates(deepcopy(tmp_defs), deepcopy(outputs)) == s"
 				"\n"
 			)
-
 
 		# "input bits" or "input data"
 		in_bits = "inb" if in_port != "inb" else "ind"
@@ -674,7 +702,7 @@ match syntax:
 		in_idx_max_pad = 0
 		in_port_i = "in"
 
-		starting_gates = crc_optimizer.count_gates(rows)
+		starting_gates = gf2_cse.count_gates(rows)
 		if optimize:
 			tmp_defs, outputs = optimize_gates(rows)
 		else:
@@ -687,13 +715,12 @@ match syntax:
 			f"\ndigraph crc{crc_name}_{data_len} {{"
 		)
 
-		graph_depth = crc_optimizer.graph_depth(tmp_defs, outputs)
+		graph_depth = gf2_cse.graph_depth(tmp_defs, outputs)
 
 		# NOTE: ranksep = (input_count * (width + nodesep)) / graph_depth - height
 		#               = (8*data_len * 1) / graph_depth - 0.5
 		#       I have no idea where this ^^^^ came from, but it seems to work well,
 		#       except for where it doesn't, which is when I change it.
-
 
 		# try and give a sensible default rank separation.
 		# if it is bad, then the user can just change it themselves.
@@ -785,7 +812,7 @@ match syntax:
 			f"\nalgorithm   = {crc_name}"
 			f"\ndata len    = {data_len}"
 			f"\nsum len     = {sum_len}"
-			f"\nbase #gates = {crc_optimizer.count_gates(rows)}"
+			f"\nbase #gates = {gf2_cse.count_gates(rows)}"
 			f"\nCRC(empty)  = 0x{K:0{2*sum_len}X}"
 			f"\npolynomial  = 0x{polynomial:0{2*sum_len}X}"
 			f"\nreversed polynomial = 0x{reversed_polynomial:0{2*sum_len}X}"
@@ -800,11 +827,9 @@ match syntax:
 			)
 	case "raw" | "r":
 		# NOTE: the output for this is NOT JSON. It uses set syntax, which is why it is called raw and not json
-		starting_gates = crc_optimizer.count_gates(rows)
+		starting_gates = gf2_cse.count_gates(rows)
 
-		from time import perf_counter_ns
-
-		time_stt = perf_counter_ns()
+		cse_time_stt = perf_counter_ns()
 
 		if optimize:
 			tmp_defs, outputs = optimize_gates(rows)
@@ -812,9 +837,9 @@ match syntax:
 			tmp_defs = {}
 			outputs  = rows
 
-		time_end = perf_counter_ns()
+		cse_time_end = perf_counter_ns()
 
-		ending_gates = crc_optimizer.count_gates(tmp_defs, outputs)
+		ending_gates = gf2_cse.count_gates(tmp_defs, outputs)
 		if syntax == "raw":
 			sep = "\n\t"
 			pad = ' '
@@ -832,31 +857,31 @@ match syntax:
 			f'{sep}"ending_gates":{pad}{ending_gates},'
 			f'{sep}"gate_reduction":{pad}{starting_gates - ending_gates},'
 			f'{sep}"gate_compression":{pad}{1 - ending_gates / starting_gates},'
-			f'{sep}"cse_time_ns":{pad}{time_end - time_stt}'
+			f'{sep}"gen_time_ns":{pad}{curve_gen_time_end - curve_gen_time_stt},'
+			f'{sep}"cse_time_ns":{pad}{cse_time_end - cse_time_stt}'
 			f"{'\n' if syntax == "raw" else ''}}}"
 		)
 
 		print(data if syntax == "raw" else data.replace(' ', ''))
 	case "json" | "j" | "m":
-		from time import perf_counter_ns
-		starting_gates = crc_optimizer.count_gates(rows)
+		starting_gates = gf2_cse.count_gates(rows)
 
-		time_stt = perf_counter_ns()
+		cse_time_stt = perf_counter_ns()
 
 		if optimize: tmp_defs, outputs = optimize_gates(rows)
 		else:        tmp_defs, outputs = {}, rows
 
-		time_end = perf_counter_ns()
+		cse_time_end = perf_counter_ns()
 
-		ending_gates = crc_optimizer.count_gates(tmp_defs, outputs)
+		ending_gates = gf2_cse.count_gates(tmp_defs, outputs)
 
 		def json_dump_data(data: dict[str, any], indent: str, seps: tuple[str, str]) -> str:
 			import json, re
 
 			# sets aren't serializable, so I have do this nonsense to make them print properly
 			class Encoder(json.JSONEncoder):
-				def default(self, obj):
-					"assume it is a set"
+				def default(self, obj) -> str:
+					"assume the unknown object is a set"
 
 					return f"\u0000{json.dumps(list(obj), separators=seps)}\u0000"
 
@@ -876,13 +901,14 @@ match syntax:
 			data["outputs"]  = outputs
 
 		# do this stuff after the other stuff for the dictionary key ordering.
-		data["crc_name"]         = crc_name
-		data["data_len"]         = data_len
-		data["starting_gates"]   = starting_gates
-		data["ending_gates"]     = ending_gates
-		data["gate_reduction"]   = starting_gates - ending_gates
-		data["gate_compression"] = 1 - ending_gates / starting_gates
-		data["cse_time_ns"]      = time_end - time_stt
+		data["crc_name"]          = crc_name
+		data["data_len"]          = data_len
+		data["starting_gates"]    = starting_gates
+		data["ending_gates"]      = ending_gates
+		data["gate_reduction"]    = starting_gates - ending_gates
+		data["gate_compression"]  = 1 - ending_gates / starting_gates
+		data["gen_time_ns"]       = curve_gen_time_end - curve_gen_time_stt
+		data["cse_time_ns"]       = cse_time_end - cse_time_stt
 
 		print( json_dump_data(data, indent, seps) )
 	case _:
