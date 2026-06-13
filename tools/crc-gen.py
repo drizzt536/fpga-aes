@@ -11,13 +11,14 @@ the "m" format gives JSON metrics about the graph reduction without giving the r
 the "python-test" / "pyt" formats output the same code as "python" / "py", but with some extra functions.
 """
 
-__version__ = "2026.06.12.0"
+__version__ = "2026.06.12.1"
 
 if __name__ != "__main__":
 	raise Exception("crc-gen.py should only be used at the top level.")
 
 import argparse
 import gf2_cse
+import gc
 from sys  import stderr
 from time import perf_counter_ns
 
@@ -42,41 +43,52 @@ parser.add_argument("--verbose", "-v", type=int, help="set verbosity level. >=3 
 parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {__version__}")
 
 custom_crc_group = parser.add_argument_group("custom CRC overrides (triggers custom mode if --polynomial is set)")
-custom_crc_group.add_argument("--polynomial", "--poly", "-p", type=int, help="polynomial. don't omit the uppermost bit")
-custom_crc_group.add_argument("--init", "-i"   , type=int, default=0, help="initial value. default is 0")
-custom_crc_group.add_argument("--xor-out", "-x", type=int, default=0, help="final XOR mask. default is 0")
-custom_crc_group.add_argument("--reflect", "-r", action="store_true", help="enable reflection. default is off")
+custom_crc_group.add_argument("--polynomial", "--poly", "-p", type=int, help="polynomial. should include the uppermost bit (e.g. bit 33, bit 65)")
+custom_crc_group.add_argument("--init"   , "-i", type=int, default=0  , help="initial value. default is 0")
+custom_crc_group.add_argument("--xor-out", "-x", type=int, default=0  , help="final XOR mask. default is 0")
+custom_crc_group.add_argument("--reflect", "-r", action="store_true"  , help="enable reflection. default is off")
 
 optimize_group = parser.add_argument_group(
 	"optimization settings (optimizes gate count)",
-	"defaults: optimize off, lookahead depth 0, n max 2, beam size 1, lookahead weight 1, prefer low n, LNS: off, 3 trials, window size 3, unseeded"
+	"defaults: optimize off, lookahead depth 0, n max 2, beam size 1, lookahead weight 1, prefer low n, no tmp max, fast exit off, LNS: off, 3 trials, window size 3, unseeded"
 )
-optimize_group.add_argument("--optimize",     "-c", action="store_true", help="enable optimization without touching settings")
-optimize_group.add_argument("--optimize-depth",      "-d", type=int    , help="enable optimization and set search lookahead depth.")
-optimize_group.add_argument("--optimize-nmax",       "-n", type=int    , help="enable optimization and set n max.")
-optimize_group.add_argument("--optimize-beam",       "-b", type=int    , help="enable optimization and set beam size.")
-optimize_group.add_argument("--optimize-weight",     "-w", type=float  , help="enable optimization and set the lookahead weighting")
-optimize_group.add_argument("--optimize-seed",       "-S", type=int    , help="enable optimization, switch to predictable mode, and set the MT19937 seed")
-optimize_group.add_argument("--optimize-n-prefer",   "-P", type=str    , help="enable optimization and set tie break preference", choices=("l", "lo", "low", "h", "hi", "high", "m", "mid", "r", "rand", "random"))
-optimize_group.add_argument("--optimize-lns", "-L", action="store_true", help="enable optimization+LNS without touching settings")
-optimize_group.add_argument("--optimize-lns-trials", "-T", type=int    , help="enable optimization+LNS and set the count.")
-optimize_group.add_argument("--optimize-lns-window", "-W", type=int    , help="enable optimization+LNS and set the window size.")
+optimize_group.add_argument("--optimize"           , "-c", action="store_true", help="enable optimization without touching settings")
+optimize_group.add_argument("--optimize-depth"     , "-d", type=int  , help="enable optimization and set search lookahead depth.")
+optimize_group.add_argument("--optimize-nmax"      , "-n", type=int  , help="enable optimization and set n max.")
+optimize_group.add_argument("--optimize-beam"      , "-b", type=int  , help="enable optimization and set beam size.")
+optimize_group.add_argument("--optimize-weight"    , "-w", type=float, help="enable optimization and set the lookahead weighting")
+optimize_group.add_argument("--optimize-seed"      , "-S", type=int  , help="enable optimization, switch to predictable mode, and set the MT19937 seed")
+optimize_group.add_argument("--optimize-n-prefer"  , "-P", type=str  , help="enable optimization and set intersection count tie break preference", choices=("l", "lo", "low", "h", "hi", "high", "m", "mid", "r", "rand", "random"))
+optimize_group.add_argument("--optimize-max-tmps"  , "-m", type=int  , help="enable optimization. set tmp signal count for when the optimizer exits early.")
+optimize_group.add_argument("--optimize-exit-fast" , "-e", action="store_true", help="enable optimization. exit optimization early when lookahead only sees 1-gate reductions.")
+optimize_group.add_argument("--optimize-lns"       , "-L", action="store_true", help="enable optimization+LNS without touching settings. LNS is skipped on early exits")
+optimize_group.add_argument("--optimize-lns-trials", "-T", type=int  , help="enable optimization+LNS and set the count.")
+optimize_group.add_argument("--optimize-lns-window", "-W", type=int  , help="enable optimization+LNS and set the window size.")
 args = parser.parse_args()
 
-optimize = args.optimize or args.optimize_lns or       args.optimize_depth      is not None \
-			or args.optimize_nmax       is not None or args.optimize_beam       is not None \
-			or args.optimize_lns_trials is not None or args.optimize_lns_window is not None \
-			or args.optimize_seed       is not None or args.optimize_n_prefer   is not None \
-			or args.optimize_weight     is not None
+del parser, custom_crc_group, optimize_group, argparse
+
+gc.disable()
+gc.collect()
+del gc
+
+optimize = args.optimize or args.optimize_lns or args.optimize_exit_fast \
+			or args.optimize_depth      is not None or args.optimize_nmax       is not None \
+			or args.optimize_beam       is not None or args.optimize_lns_trials is not None \
+			or args.optimize_lns_window is not None or args.optimize_seed       is not None \
+			or args.optimize_n_prefer   is not None or args.optimize_weight     is not None \
+			or args.optimize_max_tmps   is not None
 lns = args.optimize_lns or args.optimize_lns_trials is not None or args.optimize_lns_window is not None
-optimize_depth    = args.optimize_depth      if args.optimize_depth      is not None else 0
-optimize_nmax     = args.optimize_nmax       if args.optimize_nmax       is not None else 2
-optimize_beam     = args.optimize_beam       if args.optimize_beam       is not None else 1
-optimize_seed     = args.optimize_seed
-optimize_weight   = args.optimize_weight     if args.optimize_weight     is not None else 1
-optimize_n_prefer = args.optimize_n_prefer   if args.optimize_n_prefer   is not None else "low"
-lns_trials        = args.optimize_lns_trials if args.optimize_lns_trials is not None else 3
-lns_window        = args.optimize_lns_window if args.optimize_lns_window is not None else 3
+optimize_depth     = args.optimize_depth      if args.optimize_depth      is not None else 0
+optimize_nmax      = args.optimize_nmax       if args.optimize_nmax       is not None else 2
+optimize_beam      = args.optimize_beam       if args.optimize_beam       is not None else 1
+optimize_seed      = args.optimize_seed
+optimize_weight    = args.optimize_weight     if args.optimize_weight     is not None else 1
+optimize_n_prefer  = args.optimize_n_prefer   if args.optimize_n_prefer   is not None else "low"
+optimize_max_tmps  = args.optimize_max_tmps
+optimize_exit_fast = args.optimize_exit_fast
+lns_trials         = args.optimize_lns_trials if args.optimize_lns_trials is not None else 3
+lns_window         = args.optimize_lns_window if args.optimize_lns_window is not None else 3
 
 if optimize_n_prefer == "l" or optimize_n_prefer == "lo"  : optimize_n_prefer = "low"
 if optimize_n_prefer == "h" or optimize_n_prefer == "hi"  : optimize_n_prefer = "high"
@@ -93,7 +105,7 @@ if not lns:
 # a lot of the logic relies on it being 3 characters, both explicitly and implicitly.
 # it might work fine, just probably not well.
 tmp_sgnl_base = args.tmp_name
-assert len(tmp_sgnl_base) == 3, "tmp port name must be 3 characters long"
+assert len(tmp_sgnl_base) == 3, "tmp signal name must be 3 characters long"
 
 data_len   = args.data_len
 in_port    = args.in_port
@@ -108,8 +120,10 @@ poly       = args.polynomial
 output     = args.output
 verbose    = args.verbose or 0
 
+eprint = gf2_cse._eprint
+
 def optimize_gates(eqns: list[set]) -> tuple[dict[int, set], list[set]]:
-	if verbose >= 2:
+	if verbose >= 1:
 		eprint(f"# starting optimization")
 
 	return gf2_cse.optimize_gates(
@@ -122,7 +136,10 @@ def optimize_gates(eqns: list[set]) -> tuple[dict[int, set], list[set]]:
 		lns_window,
 		lns_trials,
 		optimize_seed,
-		verbose
+		optimize_exit_fast,
+		optimize_max_tmps,
+		verbose,
+		sort=True
 	)
 
 # these come from crcmod.predefined._crc_definitions_table
@@ -183,6 +200,7 @@ if args.list_algorithms:
 	exit(0)
 
 if data_len < 1:
+	# NOTE: it is probably possible to make sane code for data length 0, but I don't care enough.
 	raise Exception("data length must be at least 1")
 
 if poly is not None:
@@ -211,7 +229,7 @@ else:
 	try:
 		import crcmod
 	except ImportError:
-		raise Exception("CRCs other than crc32 require `crcmod-plus`.")
+		raise Exception("CRCs other than crc32 require the `crcmod-plus` package.")
 
 	if crc_name is None:
 		crc_name = '32'
@@ -228,6 +246,14 @@ else:
 	polynomial = crcmod.predefined._get_definition_by_name(crc_name)["poly"]
 	polynomial ^= 1 << (polynomial.bit_length() - 1)
 
+if verbose >= 2:
+	from sys import argv
+
+	argv[0] = "crc-gen.py"
+	eprint("# command: " + ' '.join(argv))
+
+	del argv
+
 # sum_len is the number of bytes in the checksum
 sum_bits = sum_len << 3 # number of bits in the checksum
 sum_nibs = sum_len << 2 # number of nibbles in the checksum
@@ -235,8 +261,6 @@ sum_nibs = sum_len << 2 # number of nibbles in the checksum
 data_bits = data_len << 3
 
 reversed_polynomial = int(f"{polynomial:0{sum_bits}b}"[::-1], 2)
-
-eprint = gf2_cse._eprint
 
 lfsr_mask = (1 << sum_bits) - 1
 
@@ -290,6 +314,7 @@ in_pad          = " "*(max_io_pad - len(in_port))
 out_pad         = " "*(max_io_pad - len(out_port))
 in_idx_max_pad  = len(str(data_bits))
 out_idx_max_pad = len(str(sum_bits))
+idx_max_pad     = max(in_idx_max_pad, out_idx_max_pad)
 
 syntax_data = {
 	"v": {
@@ -446,7 +471,7 @@ match syntax:
 
 		# compute optimized graph
 		if optimize:
-			tmp_defs, outputs = optimize_gates(rows)
+			tmp_defs, outputs, _ = optimize_gates(rows)
 		else:
 			tmp_defs = {}
 			outputs  = rows
@@ -490,8 +515,15 @@ match syntax:
 				f"\n"
 			)
 
+		wire_max_pad = 0 # only one of the wires is there, so no padding
+
 		if optimize:
-			print(wire_type(tmp_port_o, len(tmp_defs) - 1))
+			wire_max_pad = max(
+				len(str(len(tmp_defs) - 1)),
+				len(str(sum_bits - 1))
+			)
+
+			print(wire_type(tmp_port_o, f"{len(tmp_defs) - 1:{wire_max_pad}}"))
 
 		tmp_idx_max_pad = len(str(len(tmp_defs) - 1))
 
@@ -500,7 +532,8 @@ match syntax:
 		elif max_pad_diff > 0: tmp_port_o += ' '*max_pad_diff
 
 		# local signal declaration
-		print(wire_type(local_port, sum_bits - 1))
+
+		print(wire_type(local_port, f"{sum_bits - 1:{wire_max_pad}}"))
 		print(begin_logic)
 
 		for i in range(len(tmp_defs)):
@@ -541,7 +574,7 @@ match syntax:
 	case "pyt" | "py" | "c":
 		# compute optimized equation graph
 		if optimize:
-			tmp_defs, outputs = optimize_gates(rows)
+			tmp_defs, outputs, _ = optimize_gates(rows)
 		else:
 			tmp_defs = {}
 			outputs  = rows
@@ -709,7 +742,7 @@ match syntax:
 
 		starting_gates = gf2_cse.count_gates(rows)
 		if optimize:
-			tmp_defs, outputs = optimize_gates(rows)
+			tmp_defs, outputs, _ = optimize_gates(rows)
 		else:
 			tmp_defs = {}
 			outputs  = rows
@@ -837,7 +870,7 @@ match syntax:
 		cse_time_stt = perf_counter_ns()
 
 		if optimize:
-			tmp_defs, outputs = optimize_gates(rows)
+			tmp_defs, outputs, _ = optimize_gates(rows)
 		else:
 			tmp_defs = {}
 			outputs  = rows
@@ -879,7 +912,7 @@ match syntax:
 
 		cse_time_stt = perf_counter_ns()
 
-		if optimize: tmp_defs, outputs = optimize_gates(rows)
+		if optimize: tmp_defs, outputs, _ = optimize_gates(rows)
 		else:        tmp_defs, outputs = {}, rows
 
 		cse_time_end = perf_counter_ns()
