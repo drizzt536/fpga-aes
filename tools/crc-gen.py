@@ -11,7 +11,7 @@ the "m" format gives JSON metrics about the graph reduction without giving the r
 the "python-test" / "pyt" formats output the same code as "python" / "py", but with some extra functions.
 """
 
-__version__ = "2026.06.12.2"
+__version__ = "2026.06.13.0"
 
 if __name__ != "__main__":
 	raise Exception("crc-gen.py should only be used at the top level.")
@@ -930,9 +930,11 @@ match syntax:
 					if type(obj) is not set:
 						raise NotImplementedError("default() only implemented for sets")
 
+					hasNone = None in obj
+					obj.discard(None)
 					lst = sorted(obj, reverse=True)
 
-					if None in obj:
+					if hasNone:
 						lst.insert(0, None)
 
 					return f"\u0000{json.dumps(lst, separators=seps)}\u0000"
