@@ -24,7 +24,7 @@ if you increase it enough, it should get better again.
 requires Python >=3.10
 """
 
-__version__ = "2026.06.12.1"
+__version__ = "2026.06.12.2"
 
 __all__ = (
 	"count_gates", "optimize_gates_nwise", "brute_force", "cleanup_aliases",
@@ -401,7 +401,11 @@ def optimize_gates_nwise(
 			early = True
 			break
 
-		skip_min, score, best, cont = find_best_nwise(s, tmp_count, depth, nmax, B, skip_min, n_prefer, lookahead_weight, rng, verbose >= 2)
+		skip_min, score, best, cont = find_best_nwise(
+			s, tmp_count, min(depth, max_tmps - round),
+			nmax, B, skip_min, n_prefer,
+			lookahead_weight, rng, verbose >= 2
+		)
 
 		if not cont:
 			break

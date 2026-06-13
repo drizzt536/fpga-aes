@@ -11,7 +11,7 @@ the "m" format gives JSON metrics about the graph reduction without giving the r
 the "python-test" / "pyt" formats output the same code as "python" / "py", but with some extra functions.
 """
 
-__version__ = "2026.06.12.1"
+__version__ = "2026.06.12.2"
 
 if __name__ != "__main__":
 	raise Exception("crc-gen.py should only be used at the top level.")
@@ -72,12 +72,12 @@ gc.disable()
 gc.collect()
 del gc
 
-optimize = args.optimize or args.optimize_lns or args.optimize_exit_fast \
-			or args.optimize_depth      is not None or args.optimize_nmax       is not None \
-			or args.optimize_beam       is not None or args.optimize_lns_trials is not None \
-			or args.optimize_lns_window is not None or args.optimize_seed       is not None \
-			or args.optimize_n_prefer   is not None or args.optimize_weight     is not None \
-			or args.optimize_max_tmps   is not None
+optimize = any(x not in (None, False) for x in (
+	args.optimize, args.optimize_lns, args.optimize_exit_fast,
+	args.optimize_depth, args.optimize_nmax, args.optimize_beam,
+	args.optimize_lns_trials, args.optimize_lns_window, args.optimize_seed,
+	args.optimize_n_prefer, args.optimize_weight, args.optimize_max_tmps
+))
 lns = args.optimize_lns or args.optimize_lns_trials is not None or args.optimize_lns_window is not None
 optimize_depth     = args.optimize_depth      if args.optimize_depth      is not None else 0
 optimize_nmax      = args.optimize_nmax       if args.optimize_nmax       is not None else 2
