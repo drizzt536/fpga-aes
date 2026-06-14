@@ -11,7 +11,7 @@ the "m" format gives JSON metrics about the graph reduction without giving the r
 the "python-test" / "pyt" formats output the same code as "python" / "py", but with some extra functions.
 """
 
-__version__ = "2026.06.13.2"
+# TODO: perhaps consider allowing the user to get output with spaces instead of tabs?
 
 if __name__ != "__main__":
 	raise Exception("crc-gen.py should only be used at the top level.")
@@ -19,34 +19,35 @@ if __name__ != "__main__":
 import argparse
 import gf2_cse
 import sys
-stderr = sys.stderr
-argv   = sys.argv
 from time import perf_counter_ns
 
-if __version__ != gf2_cse.__version__:
-	raise Exception("version mismatch with gf2_cse.py")
+stderr = sys.stderr
+argv   = sys.argv
 
-syntaxes = "verilog", "v", "systemverilog", "sv", "vhdl", "vhd", "python", "py", "python-test", "pyt", "graphviz", "dot", "gv", "c", "info", "i", "raw", "r", "json", "j", "m"
+__version__ = gf2_cse.__version__
+
+formats = "verilog", "v", "systemverilog", "sv", "vhdl", "vhd", "python", "py", "python-test", "pyt", "graphviz", "dot", "gv", "c", "info", "i", "raw", "r", "json", "j", "metrics", "m"
 
 parser = argparse.ArgumentParser(
 	description=f"%(prog)s {__version__}\n{__doc__}",
 	formatter_class=argparse.RawDescriptionHelpFormatter,
 )
 parser.add_argument("--data-len", "-l", type=int, default=4, help="bytes length of checksum input data. default is 4")
-parser.add_argument("--in-port", "--in-var", "-I", type=str, default="data", help="input port/variable name. default is 'data'")
-parser.add_argument("--out-port", "--out-var", "-O", type=str, default="crc", help="output port/variable name. default is 'crc'")
+parser.add_argument("--in-port", "--in-var", "-I", type=str, help="input port/variable name. default is 'data'")
+parser.add_argument("--out-port", "--out-var", "-O", type=str, help="output port/variable name. default is 'crc'")
 parser.add_argument("--tmp-name", "-t", type=str.lower, default="tmp", help="tmp signal name. default is 'tmp'. must be 3 characters long. might not work if it creates name collisions")
-parser.add_argument("--syntax", "-s", type=str.lower, choices=syntaxes, default=syntaxes[0], help=f"output language. default is '{syntaxes[0]}'")
-parser.add_argument("--algorithm", "--alg", "-a", type=lambda s: None if s is None else str.lower(s).strip(), default=None, help=f"CRC name. overrides other options. default is 'crc32'")
+parser.add_argument("--syntax", "--format", "-f", type=str.lower, choices=formats, default=formats[0], help=f"output language. default is '{formats[0]}'")
+parser.add_argument("--algorithm", "--alg", "-a", type=lambda s: None if s is None else str.lower(s).strip(), help=f"CRC name. overrides other options. default is 'crc32'")
 parser.add_argument("--output", "--out", "-o", type=str, default='-', help=f"output file. use 'auto' for automatic naming. default is '-' (stdout)")
 parser.add_argument("--list-algorithms", "-A", action="store_true", help="list available algorithms and exit")
+parser.add_argument("--lut-size", "-s", type=int, default=4, help="specify the FPGA LUT size. only effects verbose printouts and metrics. -1 is treated as infinity. default is 4")
 parser.add_argument("--verbose", "-v", type=int, help="set verbosity level. >=3 is the same as 2. mostly for optimization")
 parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {__version__}")
 
 custom_crc_group = parser.add_argument_group("custom CRC overrides (triggers custom mode if --polynomial is set)")
-custom_crc_group.add_argument("--polynomial", "--poly", "-p", type=int, help="polynomial. should include the uppermost bit (e.g. bit 33, bit 65)")
-custom_crc_group.add_argument("--init"   , "-i", type=int, default=0  , help="initial value. default is 0")
-custom_crc_group.add_argument("--xor-out", "-x", type=int, default=0  , help="final XOR mask. default is 0")
+custom_crc_group.add_argument("--polynomial", "--poly", "-p", type=str, help="polynomial. should include the uppermost bit (e.g. bit 33, bit 65). can also be a TOML file")
+custom_crc_group.add_argument("--init"   ,              "-i", type=int, help="initial value. default is 0")
+custom_crc_group.add_argument("--xor-out",              "-x", type=int, help="final XOR mask. default is 0")
 custom_crc_group.add_argument("--reflect", "-r", action="store_true"  , help="enable reflection. default is off")
 
 optimize_group = parser.add_argument_group(
@@ -61,13 +62,93 @@ optimize_group.add_argument("--optimize-weight"    , "-w", type=float, help="ena
 optimize_group.add_argument("--optimize-seed"      , "-S", type=int  , help="enable optimization, switch to predictable mode, and set the MT19937 seed")
 optimize_group.add_argument("--optimize-n-prefer"  , "-P", type=str  , help="enable optimization and set intersection count tie break preference", choices=("l", "lo", "low", "h", "hi", "high", "m", "mid", "r", "rand", "random"))
 optimize_group.add_argument("--optimize-max-tmps"  , "-m", type=int  , help="enable optimization. set tmp signal count for when the optimizer exits early.")
-optimize_group.add_argument("--optimize-min-gates" , "-M", type=int  , help="enable optimization. exit optimization early when lookahead only gate reductions below this threshold. false negatives are possible for >2 (it may optimize more than desired)")
+optimize_group.add_argument("--optimize-min-gates" , "-M", type=int  , help="enable optimization. exit optimization early when lookahead only sees gate reductions below this threshold. false negatives are possible for >2 (it may optimize more than desired)")
 optimize_group.add_argument("--optimize-lns"       , "-L", action="store_true", help="enable optimization+LNS without touching settings. LNS is skipped on early exits")
 optimize_group.add_argument("--optimize-lns-trials", "-T", type=int  , help="enable optimization+LNS and set the count.")
 optimize_group.add_argument("--optimize-lns-window", "-W", type=int  , help="enable optimization+LNS and set the window size.")
 args = parser.parse_args()
 
 del parser, custom_crc_group, optimize_group, argparse
+
+try:
+	args.polynomial = int(args.polynomial, 0)
+	# if you have a file where the path name is a parsable number, then just append `./` to the start.
+except ValueError:
+	# give it a structured input "language" so I can call this a compiler.
+	try:
+		import tomllib
+		with open(args.polynomial, "rb") as f:
+			toml = tomllib.load(f)
+		del tomllib
+		args.polynomial = None
+
+		if args.algorithm is not None: raise Exception("`--algorithm` and `--polynomial=<file>` both given")
+		if args.init      is not None: raise Exception("`--init` and `--polynomial=<file>` both given")
+		if args.xor_out   is not None: raise Exception("`--xor-out` and `--polynomial=<file>` both given")
+		if args.reflect              : raise Exception("`--reflect` and `--polynomial=<file>` both given")
+
+		if "in_port" in toml:
+			if args.in_port is not None:
+				raise Exception("`--polynomial=<file>` with attribute `in_port` and `--in-port` both given")
+
+			args.in_port = toml["in_port"]
+
+			if type(args.in_port) is not str:
+				raise Exception("TOML file given with attribute `in_port` that is not a string")
+
+		if "out_port" in toml:
+			if args.out_port is not None:
+				raise Exception("`--polynomial=<file>` with attribute `out_port` and `--out-port` both given")
+
+			args.out_port = toml["out_port"]
+
+			if type(args.out_port) is not str:
+				raise Exception("TOML file given with attribute `out_port` that is not a string")
+
+		# curve parameters
+		if "curve" in toml:
+			toml = toml["curve"]
+
+			if type(toml) is not dict:
+				raise Exception("TOML file given with attribute `curve` that is not a dictionary")
+
+			if "name" in toml:
+				args.crc_name = toml["name"]
+
+				if type(args.crc_name) is not str:
+					raise Exception("TOML file given with attribute `name` that is not a string")
+
+				if len(toml) != 1:
+					raise Exception("TOML file given with `name` attribute and something else")
+
+			if "polynomial" in toml:
+				args.polynomial = toml["polynomial"]
+
+				if type(args.polynomial) is not int:
+					raise Exception("TOML file given with attribute `polynomial` that is not an integer")
+
+			if "init" in toml:
+				args.init = toml["init"]
+
+				if type(args.init) is not int:
+					raise Exception("TOML file given with attribute `init` that is not an integer")
+
+			if "xor_out" in toml:
+				args.xor_out = toml["xor_out"]
+
+				if type(args.xor_out) is not int:
+					raise Exception("TOML file given with attribute `xor_out` that is not an integer")
+
+			if "reflect" in toml:
+				args.reflect = toml["reflect"]
+
+				if type(args.reflect) is not bool:
+					raise Exception("TOML file given with attribute `reflect` that is not a boolean")
+
+		del toml
+	except FileNotFoundError:
+		raise Exception("`--polynomial` given with a value that is not an integer or a file.")
+		# `open` can raise other exceptions, but I don't really care that much
 
 if hasattr(sys, "pypy_version_info"):
 	del sys
@@ -117,9 +198,10 @@ if not lns:
 tmp_sgnl_base = args.tmp_name
 assert len(tmp_sgnl_base) == 3, "tmp signal name must be 3 characters long"
 
+lut_size   = None if args.lut_size == -1 else args.lut_size
 data_len   = args.data_len
-in_port    = args.in_port
-out_port   = args.out_port
+in_port    = "data" if args.in_port  is None else args.in_port
+out_port   = "crc"  if args.out_port is None else args.out_port
 local_port = "local_" + out_port
 tmp_port_i = tmp_sgnl_base + " "*(len(in_port) - 3)    # 3 == len(tmp_sgnl_base)
 tmp_port_o = tmp_sgnl_base + " "*(len(local_port) - 3) # 3 == len(tmp_sgnl_base)
@@ -129,14 +211,18 @@ crc_name   = args.algorithm
 poly       = args.polynomial
 output     = args.output
 verbose    = args.verbose or 0
+eprint     = gf2_cse._eprint
 
-eprint = gf2_cse._eprint
+args.init    = args.init or 0
+args.xor_out = args.xor_out or 0
 
 def optimize_gates(eqns: list[set]) -> tuple[dict[int, set], list[set], bool]:
+	global ending_logic_depth
+
 	if verbose >= 1:
 		eprint(f"# starting optimization")
 
-	return gf2_cse.optimize_gates(
+	tmp_defs, outputs, _exited_early = gf2_cse.optimize_gates(
 		eqns,
 		optimize_depth,
 		optimize_nmax,
@@ -151,6 +237,13 @@ def optimize_gates(eqns: list[set]) -> tuple[dict[int, set], list[set], bool]:
 		verbose,
 		sort=True
 	)
+
+	ending_logic_depth = gf2_cse.logic_depth(tmp_defs, outputs, lut_size, sorted=True)
+
+	if verbose >= 1:
+		eprint(f"# approximate logic depth: {starting_logic_depth} => {ending_logic_depth}")
+
+	return tmp_defs, outputs
 
 # these come from crcmod.predefined._crc_definitions_table
 sum_len_map = {
@@ -202,11 +295,15 @@ sum_len_map = {
 }
 
 if args.list_algorithms:
-	print("supported algorithms:")
-	for key in sum_len_map:
+	print("supported named CRCs:")
+	prev_size = 0
+	for key, size in sum_len_map.items():
+		if size != prev_size:
+			prev_size = size
+			print(f"\n{size << 3}-bit CRCs")
 		print(f" - {key}")
 
-	print("\nNOTE: names are case insensitive, and are stripped of spaces and dashes and of 'crc' at the start")
+	print("\nnames are case insensitive, are stripped of all spaces and dashes, and can have 'crc' at the start.")
 	exit(0)
 
 if data_len < 1:
@@ -263,9 +360,8 @@ if verbose >= 2:
 del argv
 
 # sum_len is the number of bytes in the checksum
-sum_bits = sum_len << 3 # number of bits in the checksum
-sum_nibs = sum_len << 2 # number of nibbles in the checksum
-
+sum_bits  = sum_len << 3 # number of bits in the checksum
+sum_nibs  = sum_len << 2 # number of nibbles in the checksum
 data_bits = data_len << 3
 
 reversed_polynomial = int(f"{polynomial:0{sum_bits}b}"[::-1], 2)
@@ -284,8 +380,8 @@ if verbose >= 1:
 
 curve_gen_time_stt = perf_counter_ns()
 
-base_i = 7 if reflected else 0
-cols   = [0] * data_bits
+base_i  = 7 if reflected else 0
+cols    = [0] * data_bits
 current = crc((1 << base_i).to_bytes(data_len, byteorder="big")) ^ K
 cols[base_i] = current
 
@@ -314,6 +410,8 @@ rows = [
 for bit, eqn in enumerate(rows):
 	if (K >> bit) & 1:
 		eqn.add(None)
+
+starting_logic_depth = gf2_cse.logic_depth(None, rows, lut_size)
 
 if verbose >= 1:
 	eprint("\r# curve generation complete\x1b[K", flush=True)
@@ -426,17 +524,19 @@ wire_type   = tokens.get("wire_type")
 if output != "-":
 	if output == "auto":
 		extension = {
-			"pyt" : "py",
-			"raw" : "txt",
-			"i"   : "txt",
-			"r"   : "txt",
+			"pyt"     : "py",
+			"i"       : "txt",
+			"raw"     : "txt",
+			"r"       : "txt",
+			"j"       : "json",
+			"m"       : "json",
+			"metrics" : "json",
 		}.get(syntax, syntax)
 
 		output = f"crc{crc_name}_{data_len}.{extension}"
 
 	outfile = open(output, "w") # auto closed on exit
 	_print  = print
-	# NOTE: eprint isn't used past this point, so it doesn't matter that this probably breaks it.
 
 	def print(message: str, end: str = '\n') -> None:
 		"print a single string to the output file"
@@ -466,7 +566,7 @@ def get_terms(eqn: set) -> str:
 	return terms
 
 def c_type_length(count: int) -> int:
-	"returns the bit size of the smallest C integer type that can fit `count - 1`, or has >=count values."
+	"returns the bit size of the smallest standard C integer type that can fit `count - 1`, or can have >=count different values."
 	bits = (count - 1).bit_length()
 
 	if bits <=  8: return  8
@@ -480,7 +580,7 @@ match syntax:
 
 		# compute optimized graph
 		if optimize:
-			tmp_defs, outputs, _ = optimize_gates(rows)
+			tmp_defs, outputs = optimize_gates(rows)
 		else:
 			tmp_defs = {}
 			outputs  = rows
@@ -583,7 +683,7 @@ match syntax:
 	case "pyt" | "py" | "c":
 		# compute optimized equation graph
 		if optimize:
-			tmp_defs, outputs, _ = optimize_gates(rows)
+			tmp_defs, outputs = optimize_gates(rows)
 		else:
 			tmp_defs = {}
 			outputs  = rows
@@ -744,6 +844,7 @@ match syntax:
 	case "gv":
 		# Graphviz is so different from the other syntaxes that most of the `syntax_data` attributes don't make sense.
 
+		# TODO: consider expanding on this line wrap idea?
 		GV_DECL_LINE_WRAP = 100
 
 		in_idx_max_pad = 0
@@ -751,7 +852,7 @@ match syntax:
 
 		starting_gates = gf2_cse.count_gates(rows)
 		if optimize:
-			tmp_defs, outputs, _ = optimize_gates(rows)
+			tmp_defs, outputs = optimize_gates(rows)
 		else:
 			tmp_defs = {}
 			outputs  = rows
@@ -873,13 +974,13 @@ match syntax:
 				f"\nreflect = {str(args.reflect).lower()}"
 			)
 	case "raw" | "r":
-		# NOTE: the output for this is NOT JSON. It uses set syntax, which is why it is called raw and not json
+		# NOTE: the output for this is not JSON
 		starting_gates = gf2_cse.count_gates(rows)
 
 		cse_time_stt = perf_counter_ns()
 
 		if optimize:
-			tmp_defs, outputs, _ = optimize_gates(rows)
+			tmp_defs, outputs = optimize_gates(rows)
 		else:
 			tmp_defs = {}
 			outputs  = rows
@@ -894,7 +995,7 @@ match syntax:
 			sep = ''
 			pad = ''
 
-		td   = {}
+		td = {}
 
 		# reindex so it is in ascending order
 		for i in range(1, len(tmp_defs) + 1):
@@ -910,18 +1011,19 @@ match syntax:
 			f'{sep}"ending_gates":{pad}{ending_gates},'
 			f'{sep}"gate_reduction":{pad}{starting_gates - ending_gates},'
 			f'{sep}"compression":{pad}{1 - ending_gates / starting_gates},'
+			f'{sep}"logic_depth":{pad}{{"start":{pad}{starting_logic_depth},{pad}"end":{pad}{ending_logic_depth},{pad}"lut_size":{pad}{float("inf") if lut_size is None else lut_size}}},'
 			f'{sep}"gen_time_ns":{pad}{curve_gen_time_end - curve_gen_time_stt},'
 			f'{sep}"cse_time_ns":{pad}{cse_time_end - cse_time_stt}'
 			f"{'\n' if syntax == "raw" else ''}}}"
 		)
 
 		print(data if syntax == "raw" else data.replace(' ', ''))
-	case "json" | "j" | "m":
+	case "json" | "j" | "metrics" | "m":
 		starting_gates = gf2_cse.count_gates(rows)
 
 		cse_time_stt = perf_counter_ns()
 
-		if optimize: tmp_defs, outputs, _ = optimize_gates(rows)
+		if optimize: tmp_defs, outputs = optimize_gates(rows)
 		else:        tmp_defs, outputs = {}, rows
 
 		cse_time_end = perf_counter_ns()
@@ -954,20 +1056,20 @@ match syntax:
 				.replace('\\u0000"', '')
 			)
 
-		indent = '\t'         if syntax == "json" else None
-		seps   = (', ', ': ') if syntax == "json" else (',', ':')
+		indent = '\t'         if len(syntax) > 1 else None
+		seps   = (', ', ': ') if len(syntax) > 1 else (',', ':')
 
 		data: dict[str, any] = {}
 
-		if syntax != "m":
+		if syntax[0] == 'j':
 			td = {}
 
 			# reindex so keys are in ascending order
 			for i in range(1, len(tmp_defs) + 1):
 				td[i] = tmp_defs[i]
 
-			data["tmp_defs"] = td
-			data["outputs"]  = outputs
+			data["tmp_defs"]   = td
+			data["outputs"]    = outputs
 
 		# do this stuff after the other stuff for the dictionary key ordering.
 		data["crc_name"]       = crc_name
@@ -976,6 +1078,11 @@ match syntax:
 		data["ending_gates"]   = ending_gates
 		data["gate_reduction"] = starting_gates - ending_gates
 		data["compression"]    = 1 - ending_gates / starting_gates
+		data["logic_depth"]    = {
+			"start": starting_logic_depth,
+			"end": gf2_cse.logic_depth(tmp_defs, outputs, lut_size, sorted=True),
+			"lut_size": float("inf") if lut_size is None else lut_size
+		}
 		data["gen_time_ns"]    = curve_gen_time_end - curve_gen_time_stt
 		data["cse_time_ns"]    = cse_time_end - cse_time_stt
 

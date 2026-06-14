@@ -1,6 +1,6 @@
 """
 Common subexpression elimination library for simple GF(2) equation sets.
-Uses greedy selection of n-wise intersections, and optionally, large neighborhood search.
+Uses (greedy?) selection of n-wise intersections, and optionally, large neighborhood search.
 
 The main optimization function is `optimize_gates`. The rest of the functions are mostly helpers.
 
@@ -24,11 +24,13 @@ if you increase it enough, it should get better again.
 requires Python >=3.10
 """
 
-__version__ = "2026.06.13.2"
+# TODO: make a function that calculates the maximum fanout of any signal
+
+__version__ = "2026.06.14.0"
 
 __all__ = (
-	"count_gates", "optimize_gates_nwise", "brute_force", "cleanup_aliases",
-	"optimize_gates_lns", "tsort", "optimize_gates", "expand_gates", "graph_depth"
+	"optimize_gates_nwise", "brute_force", "cleanup_aliases", "optimize_gates_lns", # somewhat internal
+	"tsort", "count_gates", "optimize_gates", "expand_gates", "logic_depth", "graph_depth" # external
 )
 
 from copy   import deepcopy
@@ -115,7 +117,8 @@ def _dfs_sets(
 	best_s: dict[int, list[set]],
 	prune: bool = True
 ) -> None:
-	# from bisect import bisect_left
+	"always uses constraint pruning, uses domination pruning if `prune` is True."
+
 	n = len(idxs)
 
 	if n >= 2:
@@ -127,8 +130,6 @@ def _dfs_sets(
 				best_i[n] = [idxs]
 				best_s[n] = [inter]
 			else:
-				# ins_loc = bisect_left(best_s[n], -len(inter), key=lambda x: -len(x))
-
 				inter_len = len(inter)
 				ins_loc   = len(best_s[n]) - 1
 
@@ -354,7 +355,7 @@ def optimize_gates_nwise(
 	s is the equation list. B is the beam size.
 
 	exits early if it thinks there aren't any reductions greator than `exit_fast`
-	anywhere along the lookahead path
+	anywhere along the lookahead path.
 
 	returns (tmp vars dictionary, new outputs, exited_early)
 	"""
@@ -442,7 +443,10 @@ def optimize_gates_nwise(
 
 	return tmp_defs, outputs, early
 
-def find_all_reductions(tmp_defs: dict[int, set], outputs: list[set]) -> tuple[dict[int, list[tuple[int, ...]]], dict[int, list[set]]]:
+def find_all_reductions(
+	tmp_defs: dict[int, set],
+	outputs: list[set]
+) -> tuple[dict[int, list[tuple[int, ...]]], dict[int, list[set]]]:
 	sorted_keys = sorted(tmp_defs.keys(), reverse=True)
 	s = [tmp_defs[key] for key in sorted_keys] + outputs
 
@@ -729,13 +733,14 @@ def optimize_gates(
 	"""
 	first stage uses n-wise greedy optimization.
 	optional second stage uses brute force LNS
-	lns = (lns window size, lns trials)
-	lns[0] = 0 => skip LNS
-	lns[1] = 0 => use trials = 1 + ceil( (len(tmp_defs) + len(outputs)) / window_size )
+	lns_window = 0 => skip LNS
+	lns_trials = 0 => use trials = 1 + ceil( (len(tmp_defs) + len(outputs)) / window_size )
 	seed = None means it uses `SystemRandom` instead of `Random`.
 
 	returns (tmp vars dictionary, new outputs, exited_early)
 	"""
+
+	# NOTE: I haven't tested it, but I think nmax is the maximum fanout (when LNS is off).
 
 	rng = get_rng(seed)
 
@@ -770,17 +775,55 @@ def expand_gates(tmp_defs: dict[int, set], outputs: list[set]) -> list[set]:
 
 	return outputs
 
-def graph_depth(tmp_defs: dict[int, set], outputs: list[set], *, sorted: bool = False) -> int:
+def _ceil_log(n: int, b: int | None = 4) -> int:
 	"""
-	This assumes LUT2, which is not valid for hardware. But for graphviz rank count, this is accurate.
-	use sorted=False to topologically sort before ranking.
-	returns one less than the number of ranks in the graph
+	returns \\lceil log_b(n) \\rceil.
+	slower than math.log, but more accurate.
+	if b is None, then it uses base infinity (kind of). (always returns 1)
+	kind of like math.ceil(math.log(n, 1e308)), except for if n <= 1.
 	"""
 
-	if not tmp_defs:
+	if b is None:
 		return 1
 
-	if not sorted:
+	if b <= 1:
+		raise ValueError(f"base must be > 1 or None. got {b}")
+
+	if n <= 1:
+		return 0
+
+	count = 0
+	val   = 1
+
+	while val < n:
+		val  *= b
+		count += 1
+
+	return count
+
+def logic_depth(
+	tmp_defs: dict[int, set] | None,
+	outputs: list[set],
+	/,
+	lut_size: int | None = 4,
+	*,
+	sorted: bool = False
+) -> int | float:
+	"""
+	calculate an approximate hardware logic depth assuming balanced trees.
+	use sorted=False to topologically sort before ranking.
+	lut_size=None assumes infinite fanout
+	`outputs` should be non empty.
+
+	if `tmp_defs` is None, then `sorted` is ignored.
+	the return value is only a float if lut_size <= 1, at which point it returns infinity.
+	"""
+
+	if lut_size is not None and lut_size <= 1:
+		return float("inf")
+
+	if not sorted and tmp_defs is not None:
+		# TODO: consider doing a shallow copy instead of a deep copy.
 		tmp_defs = deepcopy(tmp_defs)
 		outputs  = deepcopy(outputs)
 		tsort(tmp_defs, outputs)
@@ -788,7 +831,7 @@ def graph_depth(tmp_defs: dict[int, set], outputs: list[set], *, sorted: bool = 
 	tmp_depths: dict[int, int] = {}
 
 	# start off assuming it is topologically sorted, and then if it isn't, then topologically sort it and start over
-	for i in range(1, len(tmp_defs) + 1):
+	for i in range(1, 1 if tmp_defs is None else len(tmp_defs) + 1):
 		eqn = tmp_defs[i]
 
 		depth = 0
@@ -796,16 +839,30 @@ def graph_depth(tmp_defs: dict[int, set], outputs: list[set], *, sorted: bool = 
 			if type(v) is int and v < 0:
 				if -v not in tmp_depths:
 					# this only happens if the graph was assumed to be sorted but actually wasn't
-					# this won't go indefinitely on cyclic graphs becase tsort.map throws an error for those.
-					return graph_depth(tmp_defs, outputs, sorted=False)
+					# this won't go indefinitely on cyclic graphs becase tsort._map throws an error for those.
+					return logic_depth(tmp_defs, outputs, lut_size=lut_size, sorted=False)
 
 				tmp = tmp_depths[-v]
 				if tmp > depth:
 					depth = tmp
 
-		tmp_depths[i] = 1 + depth
+		tmp_depths[i] = depth + _ceil_log(len(eqn) - (None in eqn), lut_size)
 
-	return 1 + max(max((tmp_depths[-v] for v in eqn if type(v) is int and v < 0), default=0) for eqn in outputs)
+	return max( _ceil_log(len(eqn) - (None in eqn), lut_size) + max(
+		(tmp_depths[-v] for v in eqn if type(v) is int and v < 0),
+		default=0
+	) for eqn in outputs )
+
+def graph_depth(tmp_defs: dict[int, set], outputs: list[set], *, sorted: bool = False) -> int:
+	"""
+	This assumes LUT\\infty, which is not true for real hardware.
+	But for graphviz rank count, this is accurate.
+	use sorted=False to topologically sort before ranking.
+	returns one less than the number of ranks in the graph
+	outputs should be non empty.
+	"""
+
+	return logic_depth(tmp_defs, outputs, lut_size=None, sorted=sorted)
 
 if __name__ == "__main__":
 	_eprint(f"gf2_cse (v{__version__}) is not a top level program")

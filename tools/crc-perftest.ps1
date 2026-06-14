@@ -95,7 +95,7 @@ foreach ($alg in $algorithms) {
 		for ($i = 1; $i -le $trials; $i++) {
 			wait
 			write-host "running trial $i/$trials"
-			$tmp = ./crc-gen.py -a $alg -l $len -cv $v -sm | convertfrom-json
+			$tmp = ./crc-gen.py -a $alg -l $len -cv $v -fm | convertfrom-json
 
 			if ($elem -eq $null) {
 				$elem = $tmp
