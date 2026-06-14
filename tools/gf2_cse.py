@@ -24,13 +24,15 @@ if you increase it enough, it should get better again.
 requires Python >=3.10
 """
 
-# TODO: make a function that calculates the maximum fanout of any signal
-
-__version__ = "2026.06.14.0"
+__version__ = "2026.06.14.1"
 
 __all__ = (
-	"optimize_gates_nwise", "brute_force", "cleanup_aliases", "optimize_gates_lns", # somewhat internal
-	"tsort", "count_gates", "optimize_gates", "expand_gates", "logic_depth", "graph_depth" # external
+	# somewhat internal
+	"optimize_gates_nwise", "brute_force", "cleanup_aliases", "optimize_gates_lns",
+
+	# external
+	"tsort", "count_gates", "optimize_gates", "expand_gates", "logic_depth",
+	"graph_depth", "max_fanout"
 )
 
 from copy   import deepcopy
@@ -863,6 +865,33 @@ def graph_depth(tmp_defs: dict[int, set], outputs: list[set], *, sorted: bool = 
 	"""
 
 	return logic_depth(tmp_defs, outputs, lut_size=None, sorted=sorted)
+
+def max_fanout(
+	tmp_defs: dict[int, set] | None,
+	outputs: list[set],
+	*,
+	nodes: bool = True
+) -> int | tuple[int, list[int]]:
+	"returns the max fanout, and optionally an unsorted list of the signals with that fanout value"
+	from collections import defaultdict
+
+	fanouts = defaultdict(int)
+
+	if tmp_defs is not None:
+		for eqn in tmp_defs.values():
+			for dep in eqn:
+				fanouts[dep] += 1
+
+	for eqn in outputs:
+		for dep in eqn:
+			fanouts[dep] += 1
+
+	max_fanout = max(fanouts.values())
+
+	if nodes:
+		return max_fanout, [e for e in fanouts if fanouts[e] == max_fanout]
+	else:
+		return max_fanout
 
 if __name__ == "__main__":
 	_eprint(f"gf2_cse (v{__version__}) is not a top level program")

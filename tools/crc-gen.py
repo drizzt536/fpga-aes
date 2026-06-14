@@ -45,7 +45,7 @@ parser.add_argument("--verbose", "-v", type=int, help="set verbosity level. >=3 
 parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {__version__}")
 
 custom_crc_group = parser.add_argument_group("custom CRC overrides (triggers custom mode if --polynomial is set)")
-custom_crc_group.add_argument("--polynomial", "--poly", "-p", type=str, help="polynomial. should include the uppermost bit (e.g. bit 33, bit 65). can also be a TOML file")
+custom_crc_group.add_argument("--polynomial", "--poly", "-p", type=str, help="polynomial. should include the uppermost bit (e.g. bit 33, bit 65). can also be a TOML file or a string with the TOML program")
 custom_crc_group.add_argument("--init"   ,              "-i", type=int, help="initial value. default is 0")
 custom_crc_group.add_argument("--xor-out",              "-x", type=int, help="final XOR mask. default is 0")
 custom_crc_group.add_argument("--reflect", "-r", action="store_true"  , help="enable reflection. default is off")
@@ -71,14 +71,21 @@ args = parser.parse_args()
 del parser, custom_crc_group, optimize_group, argparse
 
 try:
-	args.polynomial = int(args.polynomial, 0)
+	if args.polynomial is not None:
+		args.polynomial = int(args.polynomial, 0)
+
 	# if you have a file where the path name is a parsable number, then just append `./` to the start.
 except ValueError:
 	# give it a structured input "language" so I can call this a compiler.
 	try:
 		import tomllib
-		with open(args.polynomial, "rb") as f:
-			toml = tomllib.load(f)
+
+		if '\n' in args.polynomial:
+			toml = tomllib.loads(args.polynomial)
+		else:
+			with open(args.polynomial, "rb") as f:
+				toml = tomllib.load(f)
+
 		del tomllib
 		args.polynomial = None
 
@@ -217,7 +224,7 @@ args.init    = args.init or 0
 args.xor_out = args.xor_out or 0
 
 def optimize_gates(eqns: list[set]) -> tuple[dict[int, set], list[set], bool]:
-	global ending_logic_depth
+	global ending_logic_depth, ending_max_fanout
 
 	if verbose >= 1:
 		eprint(f"# starting optimization")
@@ -239,9 +246,11 @@ def optimize_gates(eqns: list[set]) -> tuple[dict[int, set], list[set], bool]:
 	)
 
 	ending_logic_depth = gf2_cse.logic_depth(tmp_defs, outputs, lut_size, sorted=True)
+	ending_max_fanout  = gf2_cse.max_fanout(tmp_defs, outputs, nodes=False)
 
 	if verbose >= 1:
 		eprint(f"# approximate logic depth: {starting_logic_depth} => {ending_logic_depth}")
+		eprint(f"# max fanout: {starting_max_fanout} => {ending_max_fanout}")
 
 	return tmp_defs, outputs
 
@@ -412,6 +421,9 @@ for bit, eqn in enumerate(rows):
 		eqn.add(None)
 
 starting_logic_depth = gf2_cse.logic_depth(None, rows, lut_size)
+ending_logic_depth   = starting_logic_depth
+starting_max_fanout  = gf2_cse.max_fanout(None, rows, nodes=False)
+ending_max_fanout    = starting_max_fanout
 
 if verbose >= 1:
 	eprint("\r# curve generation complete\x1b[K", flush=True)
@@ -1012,6 +1024,7 @@ match syntax:
 			f'{sep}"gate_reduction":{pad}{starting_gates - ending_gates},'
 			f'{sep}"compression":{pad}{1 - ending_gates / starting_gates},'
 			f'{sep}"logic_depth":{pad}{{"start":{pad}{starting_logic_depth},{pad}"end":{pad}{ending_logic_depth},{pad}"lut_size":{pad}{float("inf") if lut_size is None else lut_size}}},'
+			f'{sep}"max_fanout":{pad}{{"start":{pad}{starting_max_fanout},{pad}"end":{pad}{ending_max_fanout}}},'
 			f'{sep}"gen_time_ns":{pad}{curve_gen_time_end - curve_gen_time_stt},'
 			f'{sep}"cse_time_ns":{pad}{cse_time_end - cse_time_stt}'
 			f"{'\n' if syntax == "raw" else ''}}}"
@@ -1080,8 +1093,12 @@ match syntax:
 		data["compression"]    = 1 - ending_gates / starting_gates
 		data["logic_depth"]    = {
 			"start": starting_logic_depth,
-			"end": gf2_cse.logic_depth(tmp_defs, outputs, lut_size, sorted=True),
+			"end": ending_logic_depth,
 			"lut_size": float("inf") if lut_size is None else lut_size
+		}
+		data["max_fanout"]     = {
+			"start": starting_max_fanout,
+			"end": ending_max_fanout
 		}
 		data["gen_time_ns"]    = curve_gen_time_end - curve_gen_time_stt
 		data["cse_time_ns"]    = cse_time_end - cse_time_stt
