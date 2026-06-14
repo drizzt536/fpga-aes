@@ -1,0 +1,12 @@
+# example TOML program for `./crc-gen.py`
+
+in_port  = "inp"
+out_port = "outp"
+
+[curve]
+# name = "crc32" # mutually exclusive of the rest of the curve parameters
+polynomial = 0x17b
+
+init    = 45    # default is 0
+xor_out = 5     # default is 0
+reflect = false # default is false
