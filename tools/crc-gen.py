@@ -11,7 +11,7 @@ the "m" format gives JSON metrics about the graph reduction without giving the r
 the "python-test" / "pyt" formats output the same code as "python" / "py", but with some extra functions.
 """
 
-__version__ = "2026.06.13.1"
+__version__ = "2026.06.13.2"
 
 if __name__ != "__main__":
 	raise Exception("crc-gen.py should only be used at the top level.")
@@ -20,6 +20,7 @@ import argparse
 import gf2_cse
 import sys
 stderr = sys.stderr
+argv   = sys.argv
 from time import perf_counter_ns
 
 if __version__ != gf2_cse.__version__:
@@ -50,7 +51,7 @@ custom_crc_group.add_argument("--reflect", "-r", action="store_true"  , help="en
 
 optimize_group = parser.add_argument_group(
 	"optimization settings (optimizes gate count)",
-	"defaults: optimize off, lookahead depth 0, n max 2, beam size 1, lookahead weight 1, prefer low n, no tmp max, fast exit off, LNS: off, 3 trials, window size 3, unseeded"
+	"defaults: optimize off, lookahead depth 0, n max 2, beam size 1, lookahead weight 1, prefer low n, no tmp max, min gates 1, LNS: off, 3 trials, window size 3, unseeded"
 )
 optimize_group.add_argument("--optimize"           , "-c", action="store_true", help="enable optimization without touching settings")
 optimize_group.add_argument("--optimize-depth"     , "-d", type=int  , help="enable optimization and set search lookahead depth.")
@@ -60,7 +61,7 @@ optimize_group.add_argument("--optimize-weight"    , "-w", type=float, help="ena
 optimize_group.add_argument("--optimize-seed"      , "-S", type=int  , help="enable optimization, switch to predictable mode, and set the MT19937 seed")
 optimize_group.add_argument("--optimize-n-prefer"  , "-P", type=str  , help="enable optimization and set intersection count tie break preference", choices=("l", "lo", "low", "h", "hi", "high", "m", "mid", "r", "rand", "random"))
 optimize_group.add_argument("--optimize-max-tmps"  , "-m", type=int  , help="enable optimization. set tmp signal count for when the optimizer exits early.")
-optimize_group.add_argument("--optimize-exit-fast" , "-e", action="store_true", help="enable optimization. exit optimization early when lookahead only sees 1-gate reductions.")
+optimize_group.add_argument("--optimize-min-gates" , "-M", type=int  , help="enable optimization. exit optimization early when lookahead only gate reductions below this threshold. false negatives are possible for >2 (it may optimize more than desired)")
 optimize_group.add_argument("--optimize-lns"       , "-L", action="store_true", help="enable optimization+LNS without touching settings. LNS is skipped on early exits")
 optimize_group.add_argument("--optimize-lns-trials", "-T", type=int  , help="enable optimization+LNS and set the count.")
 optimize_group.add_argument("--optimize-lns-window", "-W", type=int  , help="enable optimization+LNS and set the window size.")
@@ -68,10 +69,13 @@ args = parser.parse_args()
 
 del parser, custom_crc_group, optimize_group, argparse
 
-if not hasattr(sys, "pypy_version_info"):
+if hasattr(sys, "pypy_version_info"):
+	del sys
+else:
+	del sys
 	# CPython uses reference counting, and the GC is only for cyclic references.
 	# the program doesn't generate cyclic references, so this is safe.
-	# PyPy uses a tracing GC, so this is not a good idea in PyPy.
+	# PyPy only has tracing GC, so this is not a good idea in PyPy.
 
 	import gc
 	gc.disable()
@@ -79,7 +83,7 @@ if not hasattr(sys, "pypy_version_info"):
 	del gc
 
 optimize = any(x not in (None, False) for x in (
-	args.optimize, args.optimize_lns, args.optimize_exit_fast,
+	args.optimize, args.optimize_lns, args.optimize_min_gates,
 	args.optimize_depth, args.optimize_nmax, args.optimize_beam,
 	args.optimize_lns_trials, args.optimize_lns_window, args.optimize_seed,
 	args.optimize_n_prefer, args.optimize_weight, args.optimize_max_tmps
@@ -92,7 +96,7 @@ optimize_seed      = args.optimize_seed
 optimize_weight    = args.optimize_weight     if args.optimize_weight     is not None else 1
 optimize_n_prefer  = args.optimize_n_prefer   if args.optimize_n_prefer   is not None else "low"
 optimize_max_tmps  = args.optimize_max_tmps
-optimize_exit_fast = args.optimize_exit_fast
+optimize_min_gates = args.optimize_min_gates or 1
 lns_trials         = args.optimize_lns_trials if args.optimize_lns_trials is not None else 3
 lns_window         = args.optimize_lns_window if args.optimize_lns_window is not None else 3
 
@@ -141,9 +145,9 @@ def optimize_gates(eqns: list[set]) -> tuple[dict[int, set], list[set], bool]:
 		optimize_weight, # lookahead weight
 		lns_window,
 		lns_trials,
-		optimize_seed,
-		optimize_exit_fast,
+		optimize_min_gates - 1,
 		optimize_max_tmps,
+		optimize_seed,
 		verbose,
 		sort=True
 	)
@@ -253,8 +257,10 @@ else:
 	polynomial ^= 1 << (polynomial.bit_length() - 1)
 
 if verbose >= 2:
-	sys.argv[0] = "crc-gen.py"
-	eprint("# command: " + ' '.join(sys.argv))
+	argv[0] = "crc-gen.py"
+	eprint("# command: " + ' '.join(argv))
+
+del argv
 
 # sum_len is the number of bytes in the checksum
 sum_bits = sum_len << 3 # number of bits in the checksum

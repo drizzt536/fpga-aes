@@ -24,7 +24,7 @@ if you increase it enough, it should get better again.
 requires Python >=3.10
 """
 
-__version__ = "2026.06.13.1"
+__version__ = "2026.06.13.2"
 
 __all__ = (
 	"count_gates", "optimize_gates_nwise", "brute_force", "cleanup_aliases",
@@ -345,13 +345,17 @@ def optimize_gates_nwise(
 	n_prefer: str = "low",
 	lookahead_weight: float | int = 1,
 	rng: Random = SystemRandom(), # for n_prefer="random"
-	exit_fast: bool = False,
+	exit_fast: int = 0,
 	max_tmps: int | None = None,
 	verbose: int = 0
 ) -> tuple[dict[int, set], list[set], bool]:
 	"""
 	verbose=0 disables all messages, 1 prints round data, >=2 prints everything
-	B is the beam size.
+	s is the equation list. B is the beam size.
+
+	exits early if it thinks there aren't any reductions greator than `exit_fast`
+	anywhere along the lookahead path
+
 	returns (tmp vars dictionary, new outputs, exited_early)
 	"""
 
@@ -366,10 +370,13 @@ def optimize_gates_nwise(
 		exit_fast_thresh = depth + 1
 	else:
 		# NOTE: (w**(depth + 1) - 1) / (w - 1) == \sum_{n=0}^{depth} w^n
-		#       the 0.001 term is just a fudge value because I don't feel like making sure it is always correct.
-		#       this is the score that will be returned for lookahead depth 1 if all of the reductions only reduce
-		#       the gate count by 1.
+		#       the 0.001 term is just a fudge value because I don't feel like making sure it
+		#       is always correct. this is the score that will be returned for lookahead depth
+		#       1 if all of the reductions only reduce the gate count by 1.
+		#       this doesn't account for the `round` calls in `find_best_nwise`
 		exit_fast_thresh = (lookahead_weight**(depth + 1) - 1) / (lookahead_weight - 1) + 1e-3
+
+	exit_fast_thresh *= exit_fast
 
 	s = deepcopy(s)
 
@@ -392,12 +399,10 @@ def optimize_gates_nwise(
 		if verbose >= 1:
 			_eprint(f"# round {round}: global reduction = {gate_reduction}, prev round reduction = {prev_gate_count - gate_count}, gate count = {gate_count}")
 
-		if exit_fast and score is not None and score <= exit_fast_thresh:
-			# this <= is because there might not be enough score=1 reductions left, so the lookahead might see all
-			# the way to the end. in that case, the score would be less.
-
+		if score is not None and score <= exit_fast_thresh:
+			# NOTE: this won't actually fire if exit_fast <= 0
 			if verbose >= 1:
-				_eprint("# lookahead only sees 1-gate reductions. exiting early")
+				_eprint(f"# lookahead only sees reductions of <={exit_fast} gates. exiting early")
 
 			early = True
 			break
@@ -437,8 +442,7 @@ def optimize_gates_nwise(
 
 	return tmp_defs, outputs, early
 
-def find_all_reductions(tmp_defs: dict[int, set], outputs: list[set]) -> tuple[
-	dict[int, list[tuple[int, ...]]], dict[int, list[set]]]:
+def find_all_reductions(tmp_defs: dict[int, set], outputs: list[set]) -> tuple[dict[int, list[tuple[int, ...]]], dict[int, list[set]]]:
 	sorted_keys = sorted(tmp_defs.keys(), reverse=True)
 	s = [tmp_defs[key] for key in sorted_keys] + outputs
 
@@ -716,9 +720,9 @@ def optimize_gates(
 	lookahead_weight: int | float = 1,
 	lns_window: int = 0,
 	lns_trials: int = 0,
-	seed: int | None = None,
-	exit_fast: bool = False,
+	exit_fast: int = 0,
 	max_tmps: int | None = None,
+	seed: int | None = None,
 	verbose: int = 0,
 	sort: bool = True
 ) -> tuple[dict[int, set], list[set], bool]:
@@ -729,6 +733,7 @@ def optimize_gates(
 	lns[0] = 0 => skip LNS
 	lns[1] = 0 => use trials = 1 + ceil( (len(tmp_defs) + len(outputs)) / window_size )
 	seed = None means it uses `SystemRandom` instead of `Random`.
+
 	returns (tmp vars dictionary, new outputs, exited_early)
 	"""
 
