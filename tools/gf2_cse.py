@@ -5,9 +5,9 @@ Uses greedy selection of n-wise intersections, and optionally, large neighborhoo
 The main optimization function is `optimize_gates`. The rest of the functions are mostly helpers.
 
 The input should be a list of sets, where each set contains an integer >= 0, where an element `n`
-represents `in[n]`, so `assign out[0] = in[7] ^ in[2] ^ in[0];` would become `{7, 2, 0}` for the
-set. Constant terms can be anything so long as it is not an integer. `None` works well. A string
-should work too, but it is not tested.
+represents `in[n]`, so `assign out[0] = 1 ^ in[7] ^ in[2] ^ in[0];` would become `{None, 7, 2, 0}`.
+Constant terms can be anything so long as it is not an integer. `None` works well. A string should
+work too, but it is not tested, and probably won't type check if you care about that.
 
 The output is a tuple of two values: `tmp_defs` and `outputs`. `outputs` is the equivalent form of
 the input, so `outputs[2]` is just the optimized form of `out[2]` from the input. `tmp_defs` is a
@@ -24,7 +24,7 @@ if you increase it enough, it should get better again.
 requires Python >=3.10
 """
 
-__version__ = "2026.06.13.0"
+__version__ = "2026.06.13.1"
 
 __all__ = (
 	"count_gates", "optimize_gates_nwise", "brute_force", "cleanup_aliases",
@@ -107,7 +107,7 @@ def add_tmp_dict(
 def _dfs_sets(
 	start: int,            # start index
 	idxs: tuple[int, ...], # indices
-	inter: set,            # current intersection
+	inter: set | None,     # current intersection
 	s: list[set],          # equation list
 	nmax: int,             # check up to and including n=nmax
 	B: int,                # return the top B (or less) results per level
@@ -119,6 +119,9 @@ def _dfs_sets(
 	n = len(idxs)
 
 	if n >= 2:
+		# assert inter is not None
+		# this ^^^^ would make mypy shut up about len(None) for inter.
+
 		if len(best_s[n]) < B or len(inter) > len(best_s[n][-1]):
 			if B == 1:
 				best_i[n] = [idxs]
@@ -191,7 +194,6 @@ def _resolve_best(
 
 	nmax      = 1 + len(best_i)
 	max_score = max(scores)
-	best      = None, None
 
 	match prefer:
 		case "high":
@@ -215,7 +217,6 @@ def _resolve_best(
 		case _:
 			raise Exception(f"invalid tie break preference: '{prefer}'. valid options are 'high', 'low', 'mid', 'random'")
 
-
 	return max(0, max_score), best
 
 def find_best_nwise(
@@ -224,7 +225,7 @@ def find_best_nwise(
 	depth: int,
 	nmax: int,
 	B: int,
-	skip_min: int = None,
+	skip_min: int | None = None,
 	n_prefer: str = "low",
 	lookahead_weight: float | int = 1,
 	rng: Random = SystemRandom(),
@@ -259,8 +260,8 @@ def find_best_nwise(
 	if nmax < 2:
 		return skip_min, 0, (None, None), False
 
-	best_i = {n: [] for n in range(2, nmax + 1)}
-	best_s = {n: [] for n in range(2, nmax + 1)}
+	best_i: dict[int, list[tuple[int, ...]]] = {n: [] for n in range(2, nmax + 1)}
+	best_s: dict[int, list[set]]             = {n: [] for n in range(2, nmax + 1)}
 
 	_dfs_sets(0, (), None, s, nmax, B, best_i, best_s)
 
@@ -274,7 +275,7 @@ def find_best_nwise(
 			# foreach `n`
 
 			tmp_best_i = None
-			tmp_best_s = set()
+			tmp_best_s: set = set()
 
 			for j in range(len(best_i[i])):
 				best  = best_i[i][j], best_s[i][j]
@@ -436,13 +437,14 @@ def optimize_gates_nwise(
 
 	return tmp_defs, outputs, early
 
-def find_all_reductions(tmp_defs: dict[int, set], outputs: list[set]) -> tuple[dict[int, tuple], dict[int, set]]:
+def find_all_reductions(tmp_defs: dict[int, set], outputs: list[set]) -> tuple[
+	dict[int, list[tuple[int, ...]]], dict[int, list[set]]]:
 	sorted_keys = sorted(tmp_defs.keys(), reverse=True)
 	s = [tmp_defs[key] for key in sorted_keys] + outputs
 
 	nmax = len(s)
-	best_i = {n: [] for n in range(2, nmax + 1)}
-	best_s = {n: [] for n in range(2, nmax + 1)}
+	best_i: dict[int, list[tuple[int, ...]]] = {n: [] for n in range(2, nmax + 1)}
+	best_s: dict[int, list[set]]             = {n: [] for n in range(2, nmax + 1)}
 
 	_dfs_sets(0, (), None, s, nmax, 1 << 31, best_i, best_s, prune=False)
 	return best_i, best_s
@@ -628,8 +630,8 @@ def tsort__map(tmp_defs: dict[int, set]) -> dict[int, int]:
 
 	from collections import deque
 
-	graph    = {node: [] for node in tmp_defs}
-	indegree = {node: 0  for node in tmp_defs}
+	graph: dict[int, list[int]] = {node: [] for node in tmp_defs}
+	indegree: dict[int, int]    = {node: 0  for node in tmp_defs}
 
 	for node, dependencies in tmp_defs.items():
 		for dep in dependencies:
@@ -637,9 +639,9 @@ def tsort__map(tmp_defs: dict[int, set]) -> dict[int, int]:
 				graph[-dep].append(node)
 				indegree[node] += 1
 
-	queue   = deque([node for node in tmp_defs if indegree[node] == 0])
-	pos_map = {}
-	pos     = 1
+	pos_map: dict[int, int] = {}
+	queue = deque([node for node in tmp_defs if indegree[node] == 0])
+	pos   = 1
 
 	while queue:
 		u = queue.popleft()
@@ -700,9 +702,9 @@ def tsort(tmp_defs: dict[int, set], outputs: list[set]) -> None:
 	else:
 		tsort.remap(tmp_defs, outputs, pos_map)
 
-tsort._map  = tsort__map
-tsort.swap  = tsort_swap
-tsort.remap = tsort_remap
+tsort._map  = tsort__map  # type: ignore[attr-defined]
+tsort.swap  = tsort_swap  # type: ignore[attr-defined]
+tsort.remap = tsort_remap # type: ignore[attr-defined]
 del tsort__map, tsort_swap, tsort_remap
 
 def optimize_gates(
@@ -752,11 +754,10 @@ def optimize_gates(
 
 	return tmp_defs, outputs, early
 
-def expand_gates(tmp_defs: dict[int, set], outputs: list[set]) -> None:
+def expand_gates(tmp_defs: dict[int, set], outputs: list[set]) -> list[set]:
 	"""
 	this should return the original equation list.
 	both arguments are also updated in-place.
-	this is not used anywhere
 	"""
 
 	for tmp in tuple(tmp_defs.keys()):
@@ -779,7 +780,7 @@ def graph_depth(tmp_defs: dict[int, set], outputs: list[set], *, sorted: bool = 
 		outputs  = deepcopy(outputs)
 		tsort(tmp_defs, outputs)
 
-	tmp_depths = {}
+	tmp_depths: dict[int, int] = {}
 
 	# start off assuming it is topologically sorted, and then if it isn't, then topologically sort it and start over
 	for i in range(1, len(tmp_defs) + 1):

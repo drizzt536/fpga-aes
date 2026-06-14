@@ -11,15 +11,15 @@ the "m" format gives JSON metrics about the graph reduction without giving the r
 the "python-test" / "pyt" formats output the same code as "python" / "py", but with some extra functions.
 """
 
-__version__ = "2026.06.13.0"
+__version__ = "2026.06.13.1"
 
 if __name__ != "__main__":
 	raise Exception("crc-gen.py should only be used at the top level.")
 
 import argparse
 import gf2_cse
-import gc
-from sys  import stderr
+import sys
+stderr = sys.stderr
 from time import perf_counter_ns
 
 if __version__ != gf2_cse.__version__:
@@ -68,9 +68,15 @@ args = parser.parse_args()
 
 del parser, custom_crc_group, optimize_group, argparse
 
-gc.disable()
-gc.collect()
-del gc
+if not hasattr(sys, "pypy_version_info"):
+	# CPython uses reference counting, and the GC is only for cyclic references.
+	# the program doesn't generate cyclic references, so this is safe.
+	# PyPy uses a tracing GC, so this is not a good idea in PyPy.
+
+	import gc
+	gc.disable()
+	gc.collect()
+	del gc
 
 optimize = any(x not in (None, False) for x in (
 	args.optimize, args.optimize_lns, args.optimize_exit_fast,
@@ -122,7 +128,7 @@ verbose    = args.verbose or 0
 
 eprint = gf2_cse._eprint
 
-def optimize_gates(eqns: list[set]) -> tuple[dict[int, set], list[set]]:
+def optimize_gates(eqns: list[set]) -> tuple[dict[int, set], list[set], bool]:
 	if verbose >= 1:
 		eprint(f"# starting optimization")
 
@@ -247,12 +253,8 @@ else:
 	polynomial ^= 1 << (polynomial.bit_length() - 1)
 
 if verbose >= 2:
-	from sys import argv
-
-	argv[0] = "crc-gen.py"
-	eprint("# command: " + ' '.join(argv))
-
-	del argv
+	sys.argv[0] = "crc-gen.py"
+	eprint("# command: " + ' '.join(sys.argv))
 
 # sum_len is the number of bytes in the checksum
 sum_bits = sum_len << 3 # number of bits in the checksum
@@ -277,8 +279,9 @@ if verbose >= 1:
 curve_gen_time_stt = perf_counter_ns()
 
 base_i = 7 if reflected else 0
-cols   = [None] * data_bits
-cols[base_i] = current = crc((1 << base_i).to_bytes(data_len, byteorder="big")) ^ K
+cols   = [0] * data_bits
+current = crc((1 << base_i).to_bytes(data_len, byteorder="big")) ^ K
+cols[base_i] = current
 
 del base_i
 
@@ -783,7 +786,7 @@ match syntax:
 			"\n\t\trank = same;"
 		)
 
-		decls    = []
+		decls: list[str] = []
 		decl_len = 0
 		for i in range(data_bits):
 			decl = f'"in[{i}]";'
@@ -919,7 +922,7 @@ match syntax:
 
 		ending_gates = gf2_cse.count_gates(tmp_defs, outputs)
 
-		def json_dump_data(data: dict[str, any], indent: str, seps: tuple[str, str]) -> str:
+		def json_dump_data(data: dict[str, any], indent: str | None, seps: tuple[str, str]) -> str:
 			import json
 
 			# sets aren't serializable, so I have do this nonsense to make them print properly
@@ -948,7 +951,7 @@ match syntax:
 		indent = '\t'         if syntax == "json" else None
 		seps   = (', ', ': ') if syntax == "json" else (',', ':')
 
-		data = {}
+		data: dict[str, any] = {}
 
 		if syntax != "m":
 			td = {}
