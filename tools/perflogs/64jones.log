@@ -1,0 +1,8 @@
+crc_name data_len starting_gates ending_gates gate_reduction compression gen_time_ns cse_time_ns
+64jones         1            232           82            150       64.66       19650    14006550
+64jones         2            518          188            330       63.71       13400    52595500
+64jones         4           1030          409            621       60.29       21100   235766450
+64jones         8           2048          811           1237       60.40       22200  1011790300
+64jones        16           4071         1547           2524       62.00       34300  3476297750
+64jones        32           8228         2964           5264       63.98       61500 15432088600
+64jones        64          16375         5523          10852       66.27      120350 64092693850

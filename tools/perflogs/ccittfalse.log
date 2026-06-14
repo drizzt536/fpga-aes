@@ -1,0 +1,12 @@
+crc_name   data_len starting_gates ending_gates gate_reduction compression gen_time_ns cse_time_ns
+ccittfalse        1             24           13             11       45.83       10850      769950
+ccittfalse        2             80           43             37       46.25       12250     1679750
+ccittfalse        4            206          104            102       49.51       12850     4394450
+ccittfalse        8            438          214            224       51.14       27500    12701500
+ccittfalse       16            938          424            514       54.80       27800    40777600
+ccittfalse       32           1942          797           1145       58.96       56400   179063150
+ccittfalse       64           4092         1513           2579       63.03      104900   671767200
+ccittfalse      128           8286         2762           5524       66.67      220300  2951072000
+ccittfalse      256          16364         4938          11426       69.82      386250 11065189250
+ccittfalse      512          32856         9082          23774       72.36      620850 28342292800
+ccittfalse     1024          65278        17467          47811       73.24     1341450 95225867200
