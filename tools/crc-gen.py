@@ -12,13 +12,20 @@ the "m" format gives JSON metrics about the graph reduction without giving the r
 the "python-test" / "pyt" formats output the same code as "python" / "py", but with some extra functions.
 """
 
+# TODO: consider adding a key that when held when a round ends, it stops the optimization early.
+
 if __name__ != "__main__":
 	raise Exception("crc-gen.py should only be used at the top level.")
 
 import argparse
 import gf2_cse
+import pickle
+import lzma
 import sys
-from time import perf_counter_ns
+import os
+
+from hashlib import sha256
+from time    import perf_counter_ns
 
 stderr = sys.stderr
 argv   = sys.argv
@@ -74,6 +81,7 @@ optimize_group.add_argument("--optimize-max-tmps"  , "-M", type=int  , help="ena
 optimize_group.add_argument("--optimize-lns"       , "-L", action="store_true", help="enable optimization+LNS without touching settings. LNS is skipped on early exits")
 optimize_group.add_argument("--optimize-lns-trials", "-T", type=int  , help="enable optimization+LNS and set the count.")
 optimize_group.add_argument("--optimize-lns-window", "-W", type=int  , help="enable optimization+LNS and set the window size.")
+optimize_group.add_argument("--cache"              , "-C", type=str.lower, help="set cache behavior. does not enable optimization. should be a combination of 'c': clear, 'o': off, 'r': read, 'w': write.\ndefault is off.'o' cannot be given with 'r' or 'w'. only 'o' and 'c' can be used with optimization off. case insensitive.")
 args = parser.parse_args()
 
 del core_group, format_group, custom_crc_group, optimize_group, argparse
@@ -143,7 +151,7 @@ else:
 
 		del n
 	except ValueError:
-		raise Exception(f"invalid value given to `--indent`: '{args.indent}'")
+		raise ValueError(f"invalid value given to `--indent`: '{args.indent}'")
 
 # these come from crcmod.predefined._crc_definitions_table
 sum_len_map = {
@@ -251,7 +259,6 @@ def print_help_toml() -> None:
 	polynomial = 0x18012d591 # attribute order doesn't matter. curve order does though
 	""".replace('\t', '')[1:-1])
 
-
 if getattr(args, "help=all"):
 	parser.print_help()
 	print("\n################################## ALG HELP ##################################")
@@ -266,7 +273,6 @@ if getattr(args, "help=algorithms"):
 	print_help_algs()
 	exit(0)
 
-
 if getattr(args, "help=toml"):
 	print_help_toml()
 	exit(0)
@@ -274,6 +280,47 @@ if getattr(args, "help=toml"):
 if verbose >= 2:
 	argv[0] = "crc-gen.py"
 	eprint("# command: " + ' '.join(argv))
+
+args.cache = 'o' if args.cache is None else args.cache
+
+if len(args.cache) > 4 or not args.cache:
+	raise ValueError(f"`--cache` value too long: '{args.cache}'")
+
+for c in args.cache:
+	if c not in "ocrw":
+		raise ValueError(f"`--cache` value has invalid character '{c}'")
+
+if len(set(args.cache)) != len(args.cache):
+	raise ValueError(f"`--cache` value contains duplicate flags: '{args.cache}'")
+
+if 'o' in args.cache:
+	if 'r' in args.cache or 'w' in args.cache:
+		raise ValueError("cache cannot be enabled and disabled at the same time")
+
+	cache_settings = ''
+else:
+	cache_settings = ''
+	if 'r' in args.cache: cache_settings += 'r'
+	if 'w' in args.cache: cache_settings += 'w'
+
+# possible `cache` values after this point: '', 'r', 'w', 'rw', 'c', 'cw'
+
+if 'c' in args.cache:
+	if os.path.isdir("crc-cache"):
+		for file in os.listdir("crc-cache"):
+			os.remove(f"crc-cache/{file}")
+
+	if len(argv) == 2 and len(args.cache) == 1:
+		if os.path.isdir("crc-cache"):
+			os.rmdir("crc-cache")
+		exit(0)
+
+	cache_settings = cache_settings.replace('r', '')
+
+if cache_settings and not optimize:
+	raise ValueError("caching cannot be enabled if optimization is off")
+
+# possible `cache` values after this point: '', 'r', 'w', 'rw'
 
 del argv
 
@@ -495,6 +542,46 @@ def parse_args(output: str, optimize: bool, args: object, first: bool, outfile) 
 	out_port      = args.out_port
 	tmp_sgnl_base = args.tmp_name
 
+	hash_key = sha256(pickle.dumps((
+		__version__,
+		crc_name,
+		poly,
+		init,
+		xor_out,
+		reflected,
+		data_len,
+		lns,
+		optimize_depth,
+		optimize_nmax,
+		optimize_beam,
+		optimize_seed,
+		optimize_weight,
+		optimize_n_prefer,
+		optimize_max_tmps,
+		optimize_min_gates,
+		lns_trials,
+		lns_window
+	), protocol=5)).hexdigest()
+
+	cache_file = f"crc-cache/{hash_key}.xz"
+
+	def cache_read() -> tuple[dict[int, set], list[set]] | None:
+		if not os.path.isdir("crc-cache"):
+			return None
+
+		if not os.path.isfile(cache_file):
+			return None
+
+		with lzma.open(cache_file, "rb") as f:
+			return pickle.load(f)
+
+	def cache_write(tmp_defs: dict[int, set], outputs: list[set], /) -> None:
+		if not os.path.isdir("crc-cache"):
+			os.mkdir("crc-cache")
+
+		with lzma.open(cache_file, "wb") as f:
+			pickle.dump((tmp_defs, outputs), f, protocol=pickle.HIGHEST_PROTOCOL)
+
 	if in_port == out_port:
 		raise ValueError(f"input port ('{in_port}') and output port ('{out_port}') can't be the same")
 
@@ -523,7 +610,7 @@ def parse_args(output: str, optimize: bool, args: object, first: bool, outfile) 
 
 	if data_len < 1:
 		# NOTE: it is probably possible to make sane code for data length 0, but I don't care enough.
-		raise Exception("data length must be at least 1")
+		raise ValueError("data length must be at least 1")
 
 	if poly is not None:
 		if crc_name is not None:
@@ -558,7 +645,7 @@ def parse_args(output: str, optimize: bool, args: object, first: bool, outfile) 
 		sum_len = sum_len_map.get(crcmod.predefined._simplify_name(crc_name), None)
 
 		if sum_len is None:
-			raise Exception(f"crc name '{crc_name}' does not exist or is unknown")
+			raise ValueError(f"crc name '{crc_name}' does not exist or is unknown")
 
 		crc_name = crcmod.predefined._simplify_name(crc_name)
 		crc = crcmod.predefined.mkCrcFun(crc_name)
@@ -569,27 +656,36 @@ def parse_args(output: str, optimize: bool, args: object, first: bool, outfile) 
 
 	in_port_i = in_port + " "*(len(tmp_port_i) - len(in_port)) if optimize else in_port
 
-	def optimize_gates(eqns: list[set]) -> tuple[dict[int, set], list[set], bool]:
+	def optimize_gates(eqns: list[set]) -> tuple[dict[int, set], list[set]]:
 		nonlocal ending_logic_depth, ending_max_fanout
 
-		if verbose >= 1:
-			eprint(f"# starting optimization")
+		if 'r' in cache_settings and (cache_value := cache_read()) is not None:
+			if verbose >= 1:
+				eprint("# optimized graph was found in cache")
 
-		tmp_defs, outputs, _exited_early = gf2_cse.optimize_gates(
-			eqns,
-			optimize_depth,
-			optimize_nmax,
-			optimize_beam,
-			optimize_n_prefer,
-			optimize_weight, # lookahead weight
-			lns_window,
-			lns_trials,
-			optimize_min_gates - 1,
-			optimize_max_tmps,
-			optimize_seed,
-			verbose,
-			sort=True
-		)
+			tmp_defs, outputs = cache_value
+		else:
+			if verbose >= 1:
+				eprint("# starting optimization")
+
+			tmp_defs, outputs, _ = gf2_cse.optimize_gates(
+				eqns,
+				optimize_depth,
+				optimize_nmax,
+				optimize_beam,
+				optimize_n_prefer,
+				optimize_weight, # lookahead weight
+				lns_window,
+				lns_trials,
+				optimize_min_gates - 1,
+				optimize_max_tmps,
+				optimize_seed,
+				verbose,
+				sort=True
+			)
+
+			if 'w' in cache_settings:
+				cache_write(tmp_defs, outputs)
 
 		if not tmp_defs:
 			global optimize, in_port_i
@@ -928,10 +1024,10 @@ def parse_args(output: str, optimize: bool, args: object, first: bool, outfile) 
 			tmp_port_i = tmp_sgnl_base
 
 			if in_port in {"bit_", "byte_"}:
-				raise Exception(f"`--in-port '{in_port}'` cannot be given with `--syntax '{syntax}'`")
+				raise ValueError(f"`--in-port '{in_port}'` cannot be given with `--syntax '{syntax}'`")
 
 			if out_port in {"bit_", "byte_"}:
-				raise Exception(f"`--in-port '{out_port}'` cannot be given with `--syntax '{syntax}'`")
+				raise ValueError(f"`--in-port '{out_port}'` cannot be given with `--syntax '{syntax}'`")
 
 			if syntax == "c":
 				print(
@@ -1288,7 +1384,7 @@ def parse_polynomial(args: object) -> list[dict[str, any]]:
 		try:
 			toml = tomllib.loads(args.polynomial)
 		except tomllib.TOMLDecodeError:
-			raise Exception("`--polynomial`/`--toml` given invalid TOML program")
+			raise ValueError("`--polynomial`/`--toml` given invalid TOML program")
 	else:
 		try:
 			with open(args.polynomial, "rb") as f:
@@ -1299,18 +1395,18 @@ def parse_polynomial(args: object) -> list[dict[str, any]]:
 			try:
 				toml = tomllib.loads(args.polynomial)
 			except tomllib.TOMLDecodeError:
-				raise Exception("`--polynomial`/`--toml` input is not an integer, file path, or TOML program")
+				raise ValueError("`--polynomial`/`--toml` input is not an integer, file path, or TOML program")
 
 	args.polynomial = None
 
-	if args.in_port   is not None: raise Exception("`--polynomial=<toml>` and `--in-port` both given")
-	if args.out_port  is not None: raise Exception("`--polynomial=<toml>` and `--out-port` both given")
-	if args.tmp_name  is not None: raise Exception("`--polynomial=<toml>` and `--tmp-name` both given")
-	if args.data_len  is not None: raise Exception("`--polynomial=<toml>` and `--data-len` both given")
-	if args.algorithm is not None: raise Exception("`--polynomial=<toml>` and `--algorithm` both given")
-	if args.init      is not None: raise Exception("`--polynomial=<toml>` and `--init` both given")
-	if args.xor_out   is not None: raise Exception("`--polynomial=<toml>` and `--xor-out` both given")
-	if args.reflect              : raise Exception("`--polynomial=<toml>` and `--reflect` both given")
+	if args.in_port   is not None: raise ValueError("`--polynomial=<toml>` and `--in-port` both given")
+	if args.out_port  is not None: raise ValueError("`--polynomial=<toml>` and `--out-port` both given")
+	if args.tmp_name  is not None: raise ValueError("`--polynomial=<toml>` and `--tmp-name` both given")
+	if args.data_len  is not None: raise ValueError("`--polynomial=<toml>` and `--data-len` both given")
+	if args.algorithm is not None: raise ValueError("`--polynomial=<toml>` and `--algorithm` both given")
+	if args.init      is not None: raise ValueError("`--polynomial=<toml>` and `--init` both given")
+	if args.xor_out   is not None: raise ValueError("`--polynomial=<toml>` and `--xor-out` both given")
+	if args.reflect              : raise ValueError("`--polynomial=<toml>` and `--reflect` both given")
 
 	# this can definitely be refactored to have less code, but it really isn't
 	# that much stuff at the moment, so I don't really see a reason to do that
@@ -1318,39 +1414,39 @@ def parse_polynomial(args: object) -> list[dict[str, any]]:
 	# global settings
 	if "in-port" in toml:
 		if args.in_port is not None:
-			raise Exception("TOML attribute `in-port` and `--in-port` both given")
+			raise ValueError("TOML attribute `in-port` and `--in-port` both given")
 
 		args.in_port = toml.pop("in-port")
 
 		if type(args.in_port) is not str:
-			raise Exception("TOML attribute `in-port` is not a string")
+			raise ValueError("TOML attribute `in-port` is not a string")
 
 	if "out-port" in toml:
 		if args.out_port is not None:
-			raise Exception("TOML attribute `out-port` and `--out-port` both given")
+			raise ValueError("TOML attribute `out-port` and `--out-port` both given")
 
 		args.out_port = toml.pop("out-port")
 
 		if type(args.out_port) is not str:
-			raise Exception("TOML attribute `out-port` is not a string")
+			raise ValueError("TOML attribute `out-port` is not a string")
 
 	if "tmp-name" in toml:
 		if args.tmp_name is not None:
-			raise Exception("TOML attribute `tmp-name` and `--tmp-name` both given")
+			raise ValueError("TOML attribute `tmp-name` and `--tmp-name` both given")
 
 		args.tmp_name = toml.pop("tmp-name")
 
 		if type(args.tmp_name) is not str:
-			raise Exception("TOML attribute `tmp-name` is not a string")
+			raise ValueError("TOML attribute `tmp-name` is not a string")
 
 	if "data-len" in toml:
 		if args.data_len is not None:
-			raise Exception("TOML attribute `data-len` and `--data-len` both given")
+			raise ValueError("TOML attribute `data-len` and `--data-len` both given")
 
 		args.data_len = toml.pop("data-len")
 
 		if type(args.data_len) is not int:
-			raise Exception("TOML attribute `data-len` is not an integer")
+			raise ValueError("TOML attribute `data-len` is not an integer")
 
 	# curve parameters
 	if "curve" in toml:
@@ -1360,34 +1456,34 @@ def parse_polynomial(args: object) -> list[dict[str, any]]:
 			curves = [curves]
 
 		if type(curves) is not list:
-			raise Exception("TOML attribute `curve` is not a dictionary or a list")
+			raise ValueError("TOML attribute `curve` is not a dictionary or a list")
 
 		for i, curve in enumerate(curves):
 			if type(curve) is not dict:
-				raise Exception(f"TOML `[[curve]]` index {i} is not a dictionary")
+				raise ValueError(f"TOML `[[curve]]` index {i} is not a dictionary")
 
 			if "in-port" in curve:
 				if type(curve["in-port"]) is not str:
-					raise Exception(f"TOML `[[curve]]` index {i} attribute `in-port` is not a string")
+					raise ValueError(f"TOML `[[curve]]` index {i} attribute `in-port` is not a string")
 
 			if "out-port" in curve:
 				if type(curve["out-port"]) is not str:
-					raise Exception(f"TOML `[[curve]]` index {i} attribute `out-port` is not a string")
+					raise ValueError(f"TOML `[[curve]]` index {i} attribute `out-port` is not a string")
 
 			if "tmp-name" in curve:
 				if type(curve["tmp-name"]) is not str:
-					raise Exception(f"TOML `[[curve]]` index {i} attribute `tmp-name` is not a string")
+					raise ValueError(f"TOML `[[curve]]` index {i} attribute `tmp-name` is not a string")
 
 			if "data-len" in curve:
 				if type(curve["data-len"]) is not int:
-					raise Exception(f"TOML `[[curve]]` index {i} attribute `data-len` is not an integer")
+					raise ValueError(f"TOML `[[curve]]` index {i} attribute `data-len` is not an integer")
 
 			if "name" in curve:
 				if type(curve["name"]) is not str:
-					raise Exception(f"TOML `[[curve]]` index {i} attribute `name` is not a string")
+					raise ValueError(f"TOML `[[curve]]` index {i} attribute `name` is not a string")
 
 				if any(key in curve for key in ("polynomial", "init", "xor-out", "reflect")):
-					raise Exception(f"TOML file `[[curve]]` index {i} attribute `name` is not given alone")
+					raise ValueError(f"TOML file `[[curve]]` index {i} attribute `name` is not given alone")
 
 				curve["polynomial"] = None
 				curve["init"]       = None
@@ -1399,25 +1495,25 @@ def parse_polynomial(args: object) -> list[dict[str, any]]:
 
 			if "polynomial" in curve:
 				if type(curve["polynomial"]) is not int:
-					raise Exception(f"TOML `[[curve]]` index {i} attribute `polynomial` is not an integer")
+					raise ValueError(f"TOML `[[curve]]` index {i} attribute `polynomial` is not an integer")
 			else:
-				raise Exception(f"TOML `[[curve]]` index {i} doesn't have a `name` or `polynomial` attribute")
+				raise ValueError(f"TOML `[[curve]]` index {i} doesn't have a `name` or `polynomial` attribute")
 
 			if "init" in curve:
 				if type(curve["init"]) is not int:
-					raise Exception(f"TOML `[[curve]]` index {i} attribute `init` is not an integer")
+					raise ValueError(f"TOML `[[curve]]` index {i} attribute `init` is not an integer")
 			else:
 				curve["init"] = 0
 
 			if "xor-out" in curve:
 				if type(curve["xor-out"]) is not int:
-					raise Exception(f"TOML `[[curve]]` index {i} attribute `xor-out` is not an integer")
+					raise ValueError(f"TOML `[[curve]]` index {i} attribute `xor-out` is not an integer")
 			else:
 				curve["xor-out"] = 0
 
 			if "reflect" in curve:
 				if type(curve["reflect"]) is not bool:
-					raise Exception(f"TOML `[[curve]]` index {i} attribute `reflect` is not a boolean")
+					raise ValueError(f"TOML `[[curve]]` index {i} attribute `reflect` is not a boolean")
 			else:
 				curve["reflect"] = False
 
@@ -1427,12 +1523,12 @@ def parse_polynomial(args: object) -> list[dict[str, any]]:
 			}
 
 			if remainder:
-				raise Exception(f"TOML `[[curve]]` index {i} has unknown attributes: '{"', '".join(remainder)}'")
+				raise ValueError(f"TOML `[[curve]]` index {i} has unknown attributes: '{"', '".join(remainder)}'")
 	else:
 		curves = []
 
 	if toml:
-		raise Exception(f"TOML has unknown attributes: '{"', '".join(toml)}'")
+		raise ValueError(f"TOML has unknown attributes: '{"', '".join(toml)}'")
 
 	return curves
 
