@@ -24,7 +24,7 @@ if you increase it enough, it should get better again.
 requires Python >=3.10
 """
 
-__version__ = "2026.06.14.1"
+__version__ = "2026.06.14.2"
 
 __all__ = (
 	# somewhat internal
@@ -886,7 +886,7 @@ def max_fanout(
 		for dep in eqn:
 			fanouts[dep] += 1
 
-	max_fanout = max(fanouts.values())
+	max_fanout = max(fanouts.values(), default=0)
 
 	if nodes:
 		return max_fanout, [e for e in fanouts if fanouts[e] == max_fanout]

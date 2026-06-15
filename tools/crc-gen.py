@@ -11,8 +11,6 @@ the "m" format gives JSON metrics about the graph reduction without giving the r
 the "python-test" / "pyt" formats output the same code as "python" / "py", but with some extra functions.
 """
 
-# TODO: perhaps consider allowing the user to get output with spaces instead of tabs?
-
 if __name__ != "__main__":
 	raise Exception("crc-gen.py should only be used at the top level.")
 
@@ -35,9 +33,11 @@ parser = argparse.ArgumentParser(
 parser.add_argument("--data-len", "-l", type=int, default=4, help="bytes length of checksum input data. default is 4")
 parser.add_argument("--in-port", "--in-var", "-I", type=str, help="input port/variable name. default is 'data'")
 parser.add_argument("--out-port", "--out-var", "-O", type=str, help="output port/variable name. default is 'crc'")
-parser.add_argument("--tmp-name", "-t", type=str.lower, default="tmp", help="tmp signal name. default is 'tmp'. must be 3 characters long. might not work if it creates name collisions")
-parser.add_argument("--syntax", "--format", "-f", type=str.lower, choices=formats, default=formats[0], help=f"output language. default is '{formats[0]}'")
+parser.add_argument("--tmp-name", "-t", type=str, help="tmp signal name. default is 'tmp'. must be 3 characters long. might not work if it creates name collisions")
 parser.add_argument("--algorithm", "--alg", "-a", type=lambda s: None if s is None else str.lower(s).strip(), help=f"CRC name. overrides other options. default is 'crc32'")
+
+parser.add_argument("--indent", "-g", type=str.lower, help=f"indentation level. defaults to -1. options are tabs, tab, none, or int n>=-1")
+parser.add_argument("--syntax", "--format", "-f", type=str.lower, choices=formats, default=formats[0], help=f"output language. default is '{formats[0]}'")
 parser.add_argument("--output", "--out", "-o", type=str, default='-', help=f"output file. use 'auto' for automatic naming. default is '-' (stdout)")
 parser.add_argument("--list-algorithms", "-A", action="store_true", help="list available algorithms and exit")
 parser.add_argument("--lut-size", "-s", type=int, default=4, help="specify the FPGA LUT size. only effects verbose printouts and metrics. -1 is treated as infinity. default is 4")
@@ -45,14 +45,14 @@ parser.add_argument("--verbose", "-v", type=int, help="set verbosity level. >=3 
 parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {__version__}")
 
 custom_crc_group = parser.add_argument_group("custom CRC overrides (triggers custom mode if --polynomial is set)")
-custom_crc_group.add_argument("--polynomial", "--poly", "-p", type=str, help="polynomial. should include the uppermost bit (e.g. bit 33, bit 65). can also be a TOML file or a string with the TOML program")
+custom_crc_group.add_argument("--polynomial", "--toml", "-p", type=str, help="polynomial/curve parameters. as an integer, it should include the uppermost bit (e.g. bit 33). can also be a TOML file or inline TOML program")
 custom_crc_group.add_argument("--init"   ,              "-i", type=int, help="initial value. default is 0")
 custom_crc_group.add_argument("--xor-out",              "-x", type=int, help="final XOR mask. default is 0")
 custom_crc_group.add_argument("--reflect", "-r", action="store_true"  , help="enable reflection. default is off")
 
 optimize_group = parser.add_argument_group(
 	"optimization settings (optimizes gate count)",
-	"defaults: optimize off, lookahead depth 0, n max 2, beam size 1, lookahead weight 1, prefer low n, no tmp max, min gates 1, LNS: off, 3 trials, window size 3, unseeded"
+	"defaults: optimize off, lookahead depth 0, n max 2, beam size 1, lookahead weight 1, prefer low n, min gate reduction/round 1, no tmp max, LNS: off, 3 trials, window size 3, unseeded"
 )
 optimize_group.add_argument("--optimize"           , "-c", action="store_true", help="enable optimization without touching settings")
 optimize_group.add_argument("--optimize-depth"     , "-d", type=int  , help="enable optimization and set search lookahead depth.")
@@ -61,8 +61,8 @@ optimize_group.add_argument("--optimize-beam"      , "-b", type=int  , help="ena
 optimize_group.add_argument("--optimize-weight"    , "-w", type=float, help="enable optimization and set the lookahead weighting")
 optimize_group.add_argument("--optimize-seed"      , "-S", type=int  , help="enable optimization, switch to predictable mode, and set the MT19937 seed")
 optimize_group.add_argument("--optimize-n-prefer"  , "-P", type=str  , help="enable optimization and set intersection count tie break preference", choices=("l", "lo", "low", "h", "hi", "high", "m", "mid", "r", "rand", "random"))
-optimize_group.add_argument("--optimize-max-tmps"  , "-m", type=int  , help="enable optimization. set tmp signal count for when the optimizer exits early.")
-optimize_group.add_argument("--optimize-min-gates" , "-M", type=int  , help="enable optimization. exit optimization early when lookahead only sees gate reductions below this threshold. false negatives are possible for >2 (it may optimize more than desired)")
+optimize_group.add_argument("--optimize-min-gates" , "-m", type=int  , help="enable optimization. exit optimization early when lookahead only sees gate reductions below this threshold. false negatives are possible for >2 (it may optimize more than desired)")
+optimize_group.add_argument("--optimize-max-tmps"  , "-M", type=int  , help="enable optimization. set tmp signal count for when the optimizer exits early.")
 optimize_group.add_argument("--optimize-lns"       , "-L", action="store_true", help="enable optimization+LNS without touching settings. LNS is skipped on early exits")
 optimize_group.add_argument("--optimize-lns-trials", "-T", type=int  , help="enable optimization+LNS and set the count.")
 optimize_group.add_argument("--optimize-lns-window", "-W", type=int  , help="enable optimization+LNS and set the window size.")
@@ -76,86 +76,119 @@ try:
 
 	# if you have a file where the path name is a parsable number, then just append `./` to the start.
 except ValueError:
-	# give it a structured input "language" so I can call this a compiler.
-	try:
-		import tomllib
+	# give the program a structured input language so I can call this a compiler.
+	import tomllib
 
-		if '\n' in args.polynomial:
-			toml = tomllib.loads(args.polynomial)
-		else:
+	if '\n' in args.polynomial:
+		toml = tomllib.loads(args.polynomial)
+	else:
+		try:
 			with open(args.polynomial, "rb") as f:
 				toml = tomllib.load(f)
+		except FileNotFoundError, OSError:
+			# `open` can throw other errors, but I don't really care that much. just let them propogate.
+			# try and parse it as a TOML line if it didn't parse as a file path.
+			try:
+				toml = tomllib.loads(args.polynomial)
+			except tomllib.TOMLDecodeError:
+				raise Exception("`--polynomial` input was not a valid integer, file path, or TOML program")
 
-		del tomllib
-		args.polynomial = None
+	del tomllib
+	args.polynomial = None
 
-		if args.algorithm is not None: raise Exception("`--algorithm` and `--polynomial=<file>` both given")
-		if args.init      is not None: raise Exception("`--init` and `--polynomial=<file>` both given")
-		if args.xor_out   is not None: raise Exception("`--xor-out` and `--polynomial=<file>` both given")
-		if args.reflect              : raise Exception("`--reflect` and `--polynomial=<file>` both given")
+	if args.algorithm is not None: raise Exception("`--algorithm` and `--polynomial=<toml>` both given")
+	if args.init      is not None: raise Exception("`--init` and `--polynomial=<toml>` both given")
+	if args.xor_out   is not None: raise Exception("`--xor-out` and `--polynomial=<toml>` both given")
+	if args.reflect              : raise Exception("`--reflect` and `--polynomial=<toml>` both given")
 
-		if "in_port" in toml:
-			if args.in_port is not None:
-				raise Exception("`--polynomial=<file>` with attribute `in_port` and `--in-port` both given")
+	# this can definitely be refactored to have less code, but it really isn't
+	# that much stuff at the moment, so I don't really see a reason to do that
 
-			args.in_port = toml["in_port"]
+	if "in-port" in toml:
+		if args.in_port is not None:
+			raise Exception("TOML attribute `in-port` and `--in-port` both given")
 
-			if type(args.in_port) is not str:
-				raise Exception("TOML file given with attribute `in_port` that is not a string")
+		args.in_port = toml.pop("in-port")
 
-		if "out_port" in toml:
-			if args.out_port is not None:
-				raise Exception("`--polynomial=<file>` with attribute `out_port` and `--out-port` both given")
+		if type(args.in_port) is not str:
+			raise Exception("TOML attribute `in-port` is not a string")
 
-			args.out_port = toml["out_port"]
+	if "out-port" in toml:
+		if args.out_port is not None:
+			raise Exception("TOML attribute `out-port` and `--out-port` both given")
 
-			if type(args.out_port) is not str:
-				raise Exception("TOML file given with attribute `out_port` that is not a string")
+		args.out_port = toml.pop("out-port")
 
-		# curve parameters
-		if "curve" in toml:
-			toml = toml["curve"]
+		if type(args.out_port) is not str:
+			raise Exception("TOML attribute `out-port` is not a string")
 
-			if type(toml) is not dict:
-				raise Exception("TOML file given with attribute `curve` that is not a dictionary")
+	if "tmp-name" in toml:
+		if args.tmp_name is not None:
+			raise Exception("TOML attribute `tmp-name` and `--tmp-name` both given")
 
-			if "name" in toml:
-				args.crc_name = toml["name"]
+		args.tmp_name = toml.pop("tmp-name")
 
-				if type(args.crc_name) is not str:
-					raise Exception("TOML file given with attribute `name` that is not a string")
+		if type(args.tmp_name) is not str:
+			raise Exception("TOML attribute `tmp-name` is not a string")
 
-				if len(toml) != 1:
-					raise Exception("TOML file given with `name` attribute and something else")
+	if "data-len" in toml:
+		if args.data_len is not None:
+			raise Exception("TOML attribute `data-len` and `--data-len` both given")
 
-			if "polynomial" in toml:
-				args.polynomial = toml["polynomial"]
+		args.data_len = toml.pop("data-len")
 
-				if type(args.polynomial) is not int:
-					raise Exception("TOML file given with attribute `polynomial` that is not an integer")
+		if type(args.data_len) is not int:
+			raise Exception("TOML attribute `data-len` is not an integer")
 
-			if "init" in toml:
-				args.init = toml["init"]
+	# curve parameters
+	if "curve" in toml:
+		curve = toml.pop("curve")
 
-				if type(args.init) is not int:
-					raise Exception("TOML file given with attribute `init` that is not an integer")
+		if type(curve) is not dict:
+			raise Exception("TOML `[curve]` is not a dictionary")
 
-			if "xor_out" in toml:
-				args.xor_out = toml["xor_out"]
+		if "name" in curve:
+			args.crc_name = curve.pop("name")
 
-				if type(args.xor_out) is not int:
-					raise Exception("TOML file given with attribute `xor_out` that is not an integer")
+			if type(args.crc_name) is not str:
+				raise Exception("TOML `[curve]` attribute `name` is not a string")
 
-			if "reflect" in toml:
-				args.reflect = toml["reflect"]
+			if curve:
+				raise Exception("TOML file `[curve]` attribute `name` is not given alone")
 
-				if type(args.reflect) is not bool:
-					raise Exception("TOML file given with attribute `reflect` that is not a boolean")
+		if "polynomial" in curve:
+			args.polynomial = curve.pop("polynomial")
 
-		del toml
-	except FileNotFoundError:
-		raise Exception("`--polynomial` given with a value that is not an integer or a file.")
-		# `open` can raise other exceptions, but I don't really care that much
+			if type(args.polynomial) is not int:
+				raise Exception("TOML `[curve]` attribute `polynomial` is not an integer")
+
+		if "init" in curve:
+			args.init = curve.pop("init")
+
+			if type(args.init) is not int:
+				raise Exception("TOML `[curve]` attribute `init` is not an integer")
+
+		if "xor-out" in curve:
+			args.xor_out = curve.pop("xor-out")
+
+			if type(args.xor_out) is not int:
+				raise Exception("TOML `[curve] attribute `xor-out` is not an integer")
+
+		if "reflect" in curve:
+			args.reflect = curve.pop("reflect")
+
+			if type(args.reflect) is not bool:
+				raise Exception("TOML `[curve]` attribute `reflect` is not a boolean")
+
+		if curve:
+			raise Exception(f"TOML `[curve]` has unknown attributes: '{"', '".join(curve)}'")
+
+		del curve
+
+	if toml:
+		raise Exception(f"TOML has unknown attributes: '{"', '".join(toml)}'")
+
+	del toml
 
 if hasattr(sys, "pypy_version_info"):
 	del sys
@@ -202,7 +235,7 @@ if not lns:
 
 # a lot of the logic relies on it being 3 characters, both explicitly and implicitly.
 # it might work fine, just probably not well.
-tmp_sgnl_base = args.tmp_name
+tmp_sgnl_base = "tmp" if args.tmp_name is None else args.tmp_name
 assert len(tmp_sgnl_base) == 3, "tmp signal name must be 3 characters long"
 
 lut_size   = None if args.lut_size == -1 else args.lut_size
@@ -220,8 +253,24 @@ output     = args.output
 verbose    = args.verbose or 0
 eprint     = gf2_cse._eprint
 
-args.init    = args.init or 0
+args.init    = args.init    or 0
 args.xor_out = args.xor_out or 0
+
+if args.indent is None or args.indent in ("tabs", "tab", "t", -1):
+	indent_str = '\t'
+elif args.indent == "none":
+	indent_str = ''
+else:
+	try:
+		n = int(args.indent)
+		if n < 0:
+			raise ValueError("")
+
+		indent_str = ' ' * n
+
+		del n
+	except ValueError:
+		raise Exception(f"invalid value given to `--indent`: '{args.indent}'")
 
 def optimize_gates(eqns: list[set]) -> tuple[dict[int, set], list[set], bool]:
 	global ending_logic_depth, ending_max_fanout
@@ -533,7 +582,11 @@ comment     = tokens.get("comment")
 begin_logic = tokens.get("begin_logic") # begin actual logic
 wire_type   = tokens.get("wire_type")
 
-if output != "-":
+_print = print
+
+if output == "-":
+	outfile = None
+else:
 	if output == "auto":
 		extension = {
 			"pyt"     : "py",
@@ -548,12 +601,17 @@ if output != "-":
 		output = f"crc{crc_name}_{data_len}.{extension}"
 
 	outfile = open(output, "w") # auto closed on exit
-	_print  = print
 
-	def print(message: str, end: str = '\n') -> None:
-		"print a single string to the output file"
+def print(message: str, end: str = '\n') -> None:
+	"""
+	print a single string to the output file.
+	assumes `end` doesn't have tabs in it.
+	"""
 
-		_print(message, end=end, file=outfile)
+	if indent_str != '\t':
+		message = message.replace('\t', indent_str)
+
+	_print(message, end=end, file=outfile)
 
 def get_terms(eqn: set) -> str:
 	if None in eqn:
@@ -1022,7 +1080,7 @@ match syntax:
 			f'{sep}"starting_gates":{pad}{starting_gates},'
 			f'{sep}"ending_gates":{pad}{ending_gates},'
 			f'{sep}"gate_reduction":{pad}{starting_gates - ending_gates},'
-			f'{sep}"compression":{pad}{1 - ending_gates / starting_gates},'
+			f'{sep}"compression":{pad}{0.0 if starting_gates == 0.0 else 1 - ending_gates / starting_gates},'
 			f'{sep}"logic_depth":{pad}{{"start":{pad}{starting_logic_depth},{pad}"end":{pad}{ending_logic_depth},{pad}"lut_size":{pad}{float("inf") if lut_size is None else lut_size}}},'
 			f'{sep}"max_fanout":{pad}{{"start":{pad}{starting_max_fanout},{pad}"end":{pad}{ending_max_fanout}}},'
 			f'{sep}"gen_time_ns":{pad}{curve_gen_time_end - curve_gen_time_stt},'
@@ -1090,7 +1148,7 @@ match syntax:
 		data["starting_gates"] = starting_gates
 		data["ending_gates"]   = ending_gates
 		data["gate_reduction"] = starting_gates - ending_gates
-		data["compression"]    = 1 - ending_gates / starting_gates
+		data["compression"]    = 0.0 if starting_gates == 0.0 else 1 - ending_gates / starting_gates
 		data["logic_depth"]    = {
 			"start": starting_logic_depth,
 			"end": ending_logic_depth,
