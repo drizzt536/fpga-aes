@@ -1,14 +1,41 @@
-# example TOML program for `./crc-gen.py`
+# optimization flags apply to all the curves and can only be changed via the CLI.
+# these apply to all curves. they do not have to all be provided
+# if a TOML file/raw input is given, then the CLI flags for these cannot be used
+in-port  = "abc" # default is "data"
+out-port = "zzz" # default is "crc"
+tmp-name = "qwe" # default is "tmp"
+data-len = 5     # default is 4
 
-in-port  = "inp"
+# if there is only one curve, you can do `[curve]` instead of `[[curve]]`, the compiler exits without doing anything
+[[curve]]
+# these apply to only this curve. it resets back to the global value for the next curve
+# these override the global ones
+in-port  = "inp"  # the names have to use dashes, so no `in_port`.
 out-port = "outp"
 tmp-name = "net"
-data-len = 32
+data-len = 2
 
-[curve]
+# name = "crc32"   # mutually exclusive with `polynomial
+polynomial = 0x17b # must be given if `name` is not given
+
+# these three only make sense with `polynomial`, and not with `name`.
+init       = 45    # default is 0
+xor-out    = 5     # default is 0
+reflect    = false # default is false
+
+# if no [curve] or [[curve]] attributes exist, the compiler will just do nothing and exit
+
+[[curve]]
+name = "CRC-32" # same flexibility as with the `--algorithm` CLI flag
+
+[[curve]]
+# this won't name collide with the other one with `-o auto` because the data length is different.
 polynomial = 0x17b
-# name = "crc32" # mutually exclusive of the rest of the curve parameters
+reflect    = true
 
-init    = 45    # default is 0
-xor-out = 5     # default is 0
-reflect = false # default is false
+[[curve]]
+in-port    = "crc_data"
+tmp-name   = "qwe" # this does nothing since it is the same as the global value
+init       = 0xFFFFFFFB
+xor-out    = 0xFFFFFFFB
+polynomial = 0x18012d591 # attribute order doesn't matter. curve order does though

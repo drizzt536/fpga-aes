@@ -24,7 +24,7 @@ if you increase it enough, it should get better again.
 requires Python >=3.10
 """
 
-__version__ = "2026.06.14.2"
+__version__ = "2026.06.15.0"
 
 __all__ = (
 	# somewhat internal
@@ -42,9 +42,15 @@ def _eprint(*args, **kwargs) -> None:
 	"print to stderr"
 
 	from sys import stderr
+	from re import sub as replace
 
 	if not stderr.isatty() and type(args[0]) is str:
-		print(args[0].replace("\x1b[K", ''), *args[1:], **kwargs, file=stderr)
+		print(
+			replace(r'\x1b\[[\d;]*?[mKJ]', '', args[0]),
+			*args[1:],
+			**kwargs,
+			file=stderr
+		)
 	else:
 		print(*args, **kwargs, file=stderr)
 
@@ -428,7 +434,7 @@ def optimize_gates_nwise(
 		gate_reduction  = orig_gate_count - gate_count
 		round += 1
 
-	gate_compression = gate_reduction / orig_gate_count
+	gate_compression = 0.0 if orig_gate_count == 0.0 else gate_reduction / orig_gate_count
 	tmp_defs = {i: v for i, v in enumerate(reversed(s[0:tmp_count]), 1)}
 	outputs  = s[tmp_count:]
 
