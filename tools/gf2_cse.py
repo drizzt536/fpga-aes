@@ -24,7 +24,7 @@ if you increase it enough, it should get better again.
 requires Python >=3.10
 """
 
-__version__ = "2026.06.15.0"
+__version__ = "2026.06.16.0"
 
 __all__ = (
 	# somewhat internal
@@ -356,6 +356,7 @@ def optimize_gates_nwise(
 	rng: Random = SystemRandom(), # for n_prefer="random"
 	exit_fast: int = 0,
 	max_tmps: int | None = None,
+	interactive: bool = False,
 	verbose: int = 0
 ) -> tuple[dict[int, set], list[set], bool]:
 	"""
@@ -368,11 +369,36 @@ def optimize_gates_nwise(
 	returns (tmp vars dictionary, new outputs, exited_early)
 	"""
 
+	import signal
+
 	if max_tmps is None:
 		max_tmps = float("inf")
 
 	if nmax < 2:
 		nmax = 2
+
+	sigint_critical = False # don't throw KeyboardInterrupt in critical sections
+	sigint_pending  = False # interrupt pending for end of round
+
+	def sigint_stop_now(signum, frame) -> None:
+		nonlocal sigint_pending
+
+		if verbose >= 0:
+			_eprint("\x1b[33m# stopping optimization as soon as possible\x1b[m")
+
+		if sigint_critical:
+			sigint_pending = True
+		else:
+			raise KeyboardInterrupt
+
+	def sigint_stop_soon(signum, frame) -> None:
+		nonlocal sigint_pending
+
+		if verbose >= 0:
+			_eprint("\x1b[33m# stopping optimization after the current round\x1b[m")
+
+		sigint_pending = True
+		signal.signal(signal.SIGINT, sigint_stop_now)
 
 	if abs(lookahead_weight - 1) < 1e-9:
 		# avoid divide by 0
@@ -399,40 +425,62 @@ def optimize_gates_nwise(
 	score           = None
 	early           = False
 
-	while True:
-		if round > max_tmps:
-			_eprint(f"# max tmps {max_tmps} reached. exiting early")
-			early = True
-			break
+	if interactive:
+		sigint_orig_handler = signal.signal(signal.SIGINT, sigint_stop_soon)
 
-		if verbose >= 1:
-			_eprint(f"# round {round}: global reduction = {gate_reduction}, prev round reduction = {prev_gate_count - gate_count}, gate count = {gate_count}")
+	try:
+		while True:
+			sigint_critical = False
 
-		if score is not None and score <= exit_fast_thresh:
-			# NOTE: this won't actually fire if exit_fast <= 0
+			if round > max_tmps:
+				_eprint(f"# max tmps {max_tmps} reached. exiting early")
+				early = True
+				break
+
 			if verbose >= 1:
-				_eprint(f"# lookahead only sees reductions of <={exit_fast} gates. exiting early")
+				_eprint(f"# round {round}: global reduction = {gate_reduction}, prev round reduction = {prev_gate_count - gate_count}, gate count = {gate_count}")
 
-			early = True
-			break
+			if score is not None and score <= exit_fast_thresh:
+				# NOTE: this won't actually fire if exit_fast <= 0
+				if verbose >= 1:
+					_eprint(f"# lookahead only sees reductions of <={exit_fast} gates. exiting early")
 
-		skip_min, score, best, cont = find_best_nwise(
-			s, tmp_count, min(depth, max_tmps - round),
-			nmax, B, skip_min, n_prefer,
-			lookahead_weight, rng, verbose >= 2
-		)
+				early = True
+				break
 
-		if not cont:
-			break
+			# not a critical section since it doesn't alter `s`
+			skip_min, score, best, cont = find_best_nwise(
+				s, tmp_count, min(depth, max_tmps - round),
+				nmax, B, skip_min, n_prefer,
+				lookahead_weight, rng, verbose >= 2
+			)
 
-		tmp_count += 1
+			if not cont:
+				break
 
-		add_tmp_list(s, best, tmp_count)
+			sigint_critical = True
+			tmp_count += 1
 
-		prev_gate_count = gate_count
-		gate_count      = count_gates(s)
-		gate_reduction  = orig_gate_count - gate_count
-		round += 1
+			add_tmp_list(s, best, tmp_count)
+
+			prev_gate_count = gate_count
+			gate_count      = count_gates(s)
+			gate_reduction  = orig_gate_count - gate_count
+			round += 1
+
+			if sigint_pending:
+				raise KeyboardInterrupt
+
+		# for regular breaks
+		sigint_critical = True
+	except KeyboardInterrupt:
+		if not interactive:
+			raise KeyboardInterrupt
+
+		early = True # skip LNS if enabled
+
+	# NOTE: if something else throws an error, then the old sigint handler is lost.
+	# TODO: fix this ^^^^^
 
 	gate_compression = 0.0 if orig_gate_count == 0.0 else gate_reduction / orig_gate_count
 	tmp_defs = {i: v for i, v in enumerate(reversed(s[0:tmp_count]), 1)}
@@ -448,6 +496,9 @@ def optimize_gates_nwise(
 		)
 	elif verbose == 1:
 		_eprint(f"# optimized gate count = {gate_count}")
+
+	if interactive:
+		signal.signal(signal.SIGINT, sigint_orig_handler)
 
 	return tmp_defs, outputs, early
 
@@ -736,6 +787,8 @@ def optimize_gates(
 	max_tmps: int | None = None,
 	seed: int | None = None,
 	verbose: int = 0,
+	*,
+	interactive: bool = False,
 	sort: bool = True
 ) -> tuple[dict[int, set], list[set], bool]:
 	"""
@@ -745,16 +798,20 @@ def optimize_gates(
 	lns_trials = 0 => use trials = 1 + ceil( (len(tmp_defs) + len(outputs)) / window_size )
 	seed = None means it uses `SystemRandom` instead of `Random`.
 
+	if interactive, ^C requests the optimizer to stop after the current round.
+	And a second ^C requests it to stop as soon as possible, which is usually
+	immediately unless it is in a critical section.
+
 	returns (tmp vars dictionary, new outputs, exited_early)
 	"""
 
-	# NOTE: I haven't tested it, but I think nmax is the maximum fanout (when LNS is off).
+	# NOTE: I haven't tested it, but I think nmax is the max tmp signal fanout when LNS is off.
 
 	rng = get_rng(seed)
 
 	tmp_defs, outputs, early = optimize_gates_nwise(
 		s, depth, nmax, beam, n_prefer, lookahead_weight,
-		rng, exit_fast, max_tmps, verbose
+		rng, exit_fast, max_tmps, interactive, verbose
 	)
 
 	if not early and lns_window != 0:

@@ -10,9 +10,11 @@ the "raw" / "r" formats output the raw graph data as a python object string. it 
 the "json" / "j" formats output the raw graph data as a JSON object string with sets replaced with lists.
 the "m" format gives JSON metrics about the graph reduction without giving the reduced graph.
 the "python-test" / "pyt" formats output the same code as "python" / "py", but with some extra functions.
-"""
 
-# TODO: consider adding a key that when held when a round ends, it stops the optimization early.
+during optimization, ^C makes a soft request to stop after the round ends. ^C a second time makes it stop
+as soon as possible. The program has to be in focus for it to be noticed. ^C before and after optimization
+takes place crashes the program as normal.
+"""
 
 if __name__ != "__main__":
 	raise Exception("crc-gen.py should only be used at the top level.")
@@ -49,7 +51,7 @@ core_group.add_argument("--data-len", "-l", type=int, help="bytes length of chec
 core_group.add_argument("--syntax", "--format", "-f", type=str.lower, choices=formats, default=formats[0], help=f"output language. default is '{formats[0]}'")
 core_group.add_argument("--output", "--out", "-o", type=str, default='-', help=f"output file. use 'auto' for automatic naming. default is '-' (stdout)")
 core_group.add_argument("--lut-size", "-s", type=int, default=4, help="specify the FPGA LUT size. only effects verbose printouts and metrics.\n-1 is treated as infinity. default is 4")
-core_group.add_argument("--verbose", "-v", type=int, help="set verbosity level. >=3 is the same as 2. -1 suppresses warnings. mostly for optimization")
+core_group.add_argument("--verbose", "-v", type=int, help="set verbosity level. >=3 is the same as 2. value < 0 suppresses warnings.")
 
 format_group = parser.add_argument_group("formatting options")
 format_group.add_argument("--in-port", "--in-var", "-I", type=str, help="input port/variable name. default is 'data'")
@@ -66,8 +68,10 @@ custom_crc_group.add_argument("--reflect", "-r", action="store_true"  , help="en
 optimize_group = parser.add_argument_group(
 	"optimization settings",
 	"optimizes for XOR2 gate count"
-	"\ndefaults: optimize off, lookahead depth 0, n max 2, beam size 1, lookahead weight 1, prefer low n, min round reduction 1, no tmp max"
-	"\nLNS: off, 3 trials, window size 3, unseeded"
+	"\ndefaults:"
+	"\n   basic : off, lookahead depth 0 weight 1, nmax 2, beam size 1, prefer low n, min round reduction 1, no tmp max"
+	"\n   LNS   : off, 3 trials, window size 3, unseeded"
+	"\n   cache : clear off, read off, write off"
 )
 optimize_group.add_argument("--optimize"           , "-c", action="store_true", help="enable optimization without touching settings")
 optimize_group.add_argument("--optimize-depth"     , "-d", type=int  , help="enable optimization and set search lookahead depth.")
@@ -78,13 +82,15 @@ optimize_group.add_argument("--optimize-seed"      , "-S", type=int  , help="ena
 optimize_group.add_argument("--optimize-n-prefer"  , "-P", type=str  , help="enable optimization and set intersection count tie break preference", choices=("l", "lo", "low", "h", "hi", "high", "m", "mid", "r", "rand", "random"))
 optimize_group.add_argument("--optimize-min-gates" , "-m", type=int  , help="enable optimization. exit optimization early when lookahead only sees gate reductions below this threshold.\nfalse negatives are possible for >2 (it may optimize more than desired)")
 optimize_group.add_argument("--optimize-max-tmps"  , "-M", type=int  , help="enable optimization. set tmp signal count for when the optimizer exits early.")
+optimize_group.add_argument("--cache"              , "-C", type=str.lower, help="enable optimization and set cache behavior. value is a combination of 'c'/'x': clear/expunge, 'o': off,\n'r': read, 'w': write, 'u': use/read-write. 'o' cannot be given with 'r', 'w', or 'u'. case insensitive.\n'c'/'x' by itself with no other arguments will clear the cache and exit.")
 optimize_group.add_argument("--optimize-lns"       , "-L", action="store_true", help="enable optimization+LNS without touching settings. LNS is skipped on early exits")
 optimize_group.add_argument("--optimize-lns-trials", "-T", type=int  , help="enable optimization+LNS and set the count.")
 optimize_group.add_argument("--optimize-lns-window", "-W", type=int  , help="enable optimization+LNS and set the window size.")
-optimize_group.add_argument("--cache"              , "-C", type=str.lower, help="set cache behavior. does not enable optimization. should be a combination of 'c': clear, 'o': off, 'r': read, 'w': write.\ndefault is off.'o' cannot be given with 'r' or 'w'. only 'o' and 'c' can be used with optimization off. case insensitive.")
 args = parser.parse_args()
 
 del core_group, format_group, custom_crc_group, optimize_group, argparse
+
+CACHE_DIR = "crc-cache"
 
 gc_disabled = not hasattr(sys, "pypy_version_info")
 del sys
@@ -104,7 +110,7 @@ optimize = any(x not in (None, False) for x in (
 	args.optimize, args.optimize_lns, args.optimize_min_gates,
 	args.optimize_depth, args.optimize_nmax, args.optimize_beam,
 	args.optimize_lns_trials, args.optimize_lns_window, args.optimize_seed,
-	args.optimize_n_prefer, args.optimize_weight, args.optimize_max_tmps
+	args.optimize_n_prefer, args.optimize_weight, args.optimize_max_tmps,
 ))
 
 lns = args.optimize_lns or args.optimize_lns_trials is not None or args.optimize_lns_window is not None
@@ -281,7 +287,11 @@ if verbose >= 2:
 	argv[0] = "crc-gen.py"
 	eprint("# command: " + ' '.join(argv))
 
-args.cache = 'o' if args.cache is None else args.cache
+if args.cache is None:
+	args.cache = 'o'
+
+args.cache = args.cache.replace('u', "rw")
+args.cache = args.cache.replace('x', 'c')
 
 if len(args.cache) > 4 or not args.cache:
 	raise ValueError(f"`--cache` value too long: '{args.cache}'")
@@ -306,19 +316,28 @@ else:
 # possible `cache` values after this point: '', 'r', 'w', 'rw', 'c', 'cw'
 
 if 'c' in args.cache:
-	if os.path.isdir("crc-cache"):
-		for file in os.listdir("crc-cache"):
-			os.remove(f"crc-cache/{file}")
+	if os.path.isdir(CACHE_DIR):
+		cache_files = os.listdir(CACHE_DIR)
+
+		for file in cache_files:
+			os.remove(f"{CACHE_DIR}/{file}")
+
+		if verbose >= 1:
+			eprint(f"# removed all {len(cache_files)} cache files")
+
+		del cache_files
+	elif verbose >= 1:
+		eprint("# removed all 0 cache files")
 
 	if len(argv) == 2 and len(args.cache) == 1:
-		if os.path.isdir("crc-cache"):
-			os.rmdir("crc-cache")
+		if os.path.isdir(CACHE_DIR):
+			os.rmdir(CACHE_DIR)
 		exit(0)
 
 	cache_settings = cache_settings.replace('r', '')
 
-if cache_settings and not optimize:
-	raise ValueError("caching cannot be enabled if optimization is off")
+if cache_settings:
+	optimize = True
 
 # possible `cache` values after this point: '', 'r', 'w', 'rw'
 
@@ -428,7 +447,7 @@ C_IDENT       = re.compile(r"(?ai)^[a-z_]\w*$")
 VERILOG_IDENT = re.compile(r"(?ai)^[a-z_][\w$]*$")
 del re
 
-# these are more strict than necesary because these names are stupid to pick as a variable/signal name anyway
+# these are more strict than necessary because these names are stupid to pick as a variable/signal name anyway
 C_KEYWORDS = {
 	"_Bool", "_Complex", "_Imaginary", "__asm", "__asm__", "__attribute", "__attribute__", "__auto_type",
 	"__cdecl", "__clrcall", "__declspec", "__fastcall", "__inline__", "__restrict__", "__stdcall", "__thiscall",
@@ -542,8 +561,7 @@ def parse_args(output: str, optimize: bool, args: object, first: bool, outfile) 
 	out_port      = args.out_port
 	tmp_sgnl_base = args.tmp_name
 
-	hash_key = sha256(pickle.dumps((
-		__version__,
+	cache_key = sha256(pickle.dumps((
 		crc_name,
 		poly,
 		init,
@@ -563,10 +581,13 @@ def parse_args(output: str, optimize: bool, args: object, first: bool, outfile) 
 		lns_window
 	), protocol=5)).hexdigest()
 
-	cache_file = f"crc-cache/{hash_key}.xz"
+	cache_file = f"{CACHE_DIR}/{cache_key}.xz"
+
+	if verbose >= 2:
+		eprint(f"# cache key: '{cache_key}'")
 
 	def cache_read() -> tuple[dict[int, set], list[set]] | None:
-		if not os.path.isdir("crc-cache"):
+		if not os.path.isdir(CACHE_DIR):
 			return None
 
 		if not os.path.isfile(cache_file):
@@ -576,8 +597,8 @@ def parse_args(output: str, optimize: bool, args: object, first: bool, outfile) 
 			return pickle.load(f)
 
 	def cache_write(tmp_defs: dict[int, set], outputs: list[set], /) -> None:
-		if not os.path.isdir("crc-cache"):
-			os.mkdir("crc-cache")
+		if not os.path.isdir(CACHE_DIR):
+			os.mkdir(CACHE_DIR)
 
 		with lzma.open(cache_file, "wb") as f:
 			pickle.dump((tmp_defs, outputs), f, protocol=pickle.HIGHEST_PROTOCOL)
@@ -681,6 +702,7 @@ def parse_args(output: str, optimize: bool, args: object, first: bool, outfile) 
 				optimize_max_tmps,
 				optimize_seed,
 				verbose,
+				interactive=True,
 				sort=True
 			)
 
@@ -704,7 +726,7 @@ def parse_args(output: str, optimize: bool, args: object, first: bool, outfile) 
 
 	# sum_len is the number of bytes in the checksum
 	sum_bits  = sum_len << 3 # number of bits in the checksum
-	sum_nibs  = sum_len << 2 # number of nibbles in the checksum
+	sum_nibs  = sum_len << 1 # number of nibbles in the checksum
 	data_bits = data_len << 3
 
 	in_idx_max_pad  = len(str(data_bits))
