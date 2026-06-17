@@ -5,16 +5,22 @@ batch jobs can be created through TOML input.
 requires Python >=3.12.
 requires crcmod-plus if a CRC function other than CRC32 is used.
 
-the "info" / "i" formats output curve metadata in a human readable format
-the "raw" / "r" formats output the raw graph data as a python object string. it is not valid JSON.
-the "json" / "j" formats output the raw graph data as a JSON object string with sets replaced with lists.
-the "m" format gives JSON metrics about the graph reduction without giving the reduced graph.
-the "python-test" / "pyt" formats output the same code as "python" / "py", but with some extra functions.
+"info" / "i" formats output curve metadata in a human readable format
+"raw" / "r" formats output the raw graph data as a python object string. it is not valid JSON.
+"json" / "j" formats output the raw graph data as a JSON object string with sets replaced with lists.
+"m" format gives JSON metrics about the graph reduction without giving the reduced graph.
+"python-test" / "pyt" formats output the same code as "python" / "py", but with some extra functions.
+"nmigen" / "nmg" formats are the same as "amaranth" / "am" but for the legacy `Elaboratable` API.
+"noop" / "nop" formats output nothing except for the stuff that goes to stderr.
 
 during optimization, ^C makes a soft request to stop after the round ends. ^C a second time makes it stop
 as soon as possible. The program has to be in focus for it to be noticed. ^C before and after optimization
 takes place crashes the program as normal.
 """
+
+# TODO: consider adding Veryl or Spade Rust output formats
+# TODO: consider adding FIRRTL and CIRCT IR formats
+# TODO: add assembly formats because that would be freaking awesome
 
 if __name__ != "__main__":
 	raise Exception("crc-gen.py should only be used at the top level.")
@@ -29,29 +35,69 @@ import os
 from hashlib import sha256
 from time    import perf_counter_ns
 
-stderr = sys.stderr
-argv   = sys.argv
+stderr  = sys.stderr
+argv    = sys.argv
+prog    = "crc-gen"
+argv[0] = f"{prog}.py"
 
 __version__ = gf2_cse.__version__
 
-formats = "verilog", "v", "systemverilog", "sv", "vhdl", "vhd", "python", "py", "python-test", "pyt", "graphviz", "dot", "gv", "c", "info", "i", "raw", "r", "json", "j", "metrics", "m"
+# the first alias per format key is the canonical one. the value is the file extension
+formats = {
+	("v"  , "verilog")                   : "v"     ,
+	("sv" , "systemverilog")             : "sv"    ,
+	("vhd", "vhdl")                      : "vhd"   ,
+	("ch" , "chisel", "ch6" , "chisel6") : "scala" ,
+	("ch3", "chisel3")                   : "scala" ,
+	("sp" , "spinal", "spinalhdl")       : "scala" ,
+	("am" , "amaranth")                  : "py"    ,
+	("nmg", "nmigen")                    : "py"    ,
+	("py" , "python")                    : "py"    ,
+	("pyt", "python-test")               : "py"    ,
+	("gv" , "dot", "graphviz")           : "gv"    ,
+	("c"  , "c")                         : "c"     ,
+	("c++", "cpp")                       : "cpp"   ,
+	("metrics",)       : "txt"  , ("m",) : "txt"   ,
+	("info",)          : "txt"  , ("i",) : "txt"   ,
+	("raw",)           : "txt"  , ("r",) : "txt"   ,
+	("json",)          : "json" , ("j",) : "json"  ,
+	("asm=json",)      : "json" ,
+	("nop", "noop")    : None   ,
+}
+
+extension = None
+
+def format_validator(syntax: str) -> str:
+	global extension
+
+	syntax = syntax.strip().lower()
+
+	for aliases in formats:
+		if syntax in aliases:
+			extension = formats[aliases]
+			return aliases[0]
+
+	flat_formats = [e for t in formats for e in t] # this nested syntax is stupid. it is backwards
+
+	raise argparse.ArgumentTypeError(f"invalid format '{syntax}'. see `--help=formats` / `-F` for a list of valid formats")
 
 parser = argparse.ArgumentParser(
 	description=f"%(prog)s {__version__}\n{__doc__}",
 	formatter_class=argparse.RawTextHelpFormatter,
 )
+parser.add_argument("--help=formats"   , "-F", action="store_true", help="list available formats and exit")
 parser.add_argument("--help=algorithms", "-A", action="store_true", help="list available algorithms and exit")
 parser.add_argument("--help=toml", action="store_true", help="print out an example TOML program and exit")
-parser.add_argument("--help=all", action="store_true", help="print all the help stuff at once and exit")
+parser.add_argument("--help=all" , action="store_true", help="print all the help stuff at once and exit")
 parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {__version__}")
 
 core_group = parser.add_argument_group("core options")
-core_group.add_argument("--algorithm", "--alg", "-a", type=lambda s: None if s is None else str.lower(s).strip(), help=f"CRC name. overrides other options. default is 'crc32'")
+core_group.add_argument("--algorithm", "--alg", "-a", type=lambda s: None if s is None else str.lower(s).strip(), help=f"CRC name (see --help=algorithms / -A). default is 'crc32'")
 core_group.add_argument("--data-len", "-l", type=int, help="bytes length of checksum input data. default is 4")
-core_group.add_argument("--syntax", "--format", "-f", type=str.lower, choices=formats, default=formats[0], help=f"output language. default is '{formats[0]}'")
+core_group.add_argument("--syntax", "--format", "-f", type=format_validator, default="verilog", help=f"output language (see --help=formats / -F). default is 'verilog'")
 core_group.add_argument("--output", "--out", "-o", type=str, default='-', help=f"output file. use 'auto' for automatic naming. default is '-' (stdout)")
 core_group.add_argument("--lut-size", "-s", type=int, default=4, help="specify the FPGA LUT size. only effects verbose printouts and metrics.\n-1 is treated as infinity. default is 4")
-core_group.add_argument("--verbose", "-v", type=int, help="set verbosity level. >=3 is the same as 2. value < 0 suppresses warnings.")
+core_group.add_argument("--verbose", "-v", type=int, help="set verbosity level. >=3 is the same as 2. <0 suppresses warnings.")
 
 format_group = parser.add_argument_group("formatting options")
 format_group.add_argument("--in-port", "--in-var", "-I", type=str, help="input port/variable name. default is 'data'")
@@ -71,7 +117,7 @@ optimize_group = parser.add_argument_group(
 	"\ndefaults:"
 	"\n   basic : off, lookahead depth 0 weight 1, nmax 2, beam size 1, prefer low n, min round reduction 1, no tmp max"
 	"\n   LNS   : off, 3 trials, window size 3, unseeded"
-	"\n   cache : clear off, read off, write off"
+	"\n   cache : clear off, read off, write off, delete off"
 )
 optimize_group.add_argument("--optimize"           , "-c", action="store_true", help="enable optimization without touching settings")
 optimize_group.add_argument("--optimize-depth"     , "-d", type=int  , help="enable optimization and set search lookahead depth.")
@@ -82,15 +128,18 @@ optimize_group.add_argument("--optimize-seed"      , "-S", type=int  , help="ena
 optimize_group.add_argument("--optimize-n-prefer"  , "-P", type=str  , help="enable optimization and set intersection count tie break preference", choices=("l", "lo", "low", "h", "hi", "high", "m", "mid", "r", "rand", "random"))
 optimize_group.add_argument("--optimize-min-gates" , "-m", type=int  , help="enable optimization. exit optimization early when lookahead only sees gate reductions below this threshold.\nfalse negatives are possible for >2 (it may optimize more than desired)")
 optimize_group.add_argument("--optimize-max-tmps"  , "-M", type=int  , help="enable optimization. set tmp signal count for when the optimizer exits early.")
-optimize_group.add_argument("--cache"              , "-C", type=str.lower, help="enable optimization and set cache behavior. value is a combination of 'c'/'x': clear/expunge, 'o': off,\n'r': read, 'w': write, 'u': use/read-write. 'o' cannot be given with 'r', 'w', or 'u'. case insensitive.\n'c'/'x' by itself with no other arguments will clear the cache and exit.")
 optimize_group.add_argument("--optimize-lns"       , "-L", action="store_true", help="enable optimization+LNS without touching settings. LNS is skipped on early exits")
 optimize_group.add_argument("--optimize-lns-trials", "-T", type=int  , help="enable optimization+LNS and set the count.")
 optimize_group.add_argument("--optimize-lns-window", "-W", type=int  , help="enable optimization+LNS and set the window size.")
+
+cache_group = parser.add_argument_group("caching options")
+cache_dir_group = cache_group.add_mutually_exclusive_group()
+cache_dir_group.add_argument("--cache-dir"   , "-D", type=str  , help="change the cache directory. doesn't enable optimization. '~' and environment variables are expanded.\ndefault is './crc-cache'.")
+cache_dir_group.add_argument("--cache-global", "-G", action="store_true"  , help="use a user global cache directory. cannot appear with `--cache-dir`.")
+cache_group.add_argument("--cache"           , "-C", type=str.lower, help="enable optimization and set cache behavior. combination of c/x: clear/expunge, o: off, r: read, w: write,\nu: use/read+write, d: delete entry. o may only appear with c/x. d must appear by itself. case insensitive.\n`%(prog)s -Cc` will clear the cache and exit. cache entries are never automatically invalidated, so they\nmay return old values if the optimizer is updated. a manual cache clear is required in this case.")
 args = parser.parse_args()
 
-del core_group, format_group, custom_crc_group, optimize_group, argparse
-
-CACHE_DIR = "crc-cache"
+del core_group, format_group, custom_crc_group, optimize_group, cache_group, cache_dir_group, argparse
 
 gc_disabled = not hasattr(sys, "pypy_version_info")
 del sys
@@ -136,6 +185,9 @@ if abs(optimize_weight - round(optimize_weight)) < 1e-9:
 if not lns:
 	lns_window = 0
 	lns_trials = 0
+
+# TODO: consider expanding on this line wrap idea?
+GV_DECL_LINE_WRAP = 100
 
 lut_size = None if args.lut_size == -1 else args.lut_size
 syntax   = args.syntax
@@ -208,6 +260,29 @@ sum_len_map = {
 	"64jones": 8,
 }
 
+def print_help_formats(formats: tuple[tuple[str, ...], ...] = formats) -> None:
+	formats = list(formats)
+
+	print("supported output formats (case insensitive):")
+
+	i = 0
+	while i < len(formats):
+		e = formats[i] # alias list
+
+		# combine stuff like ("info",), ("i",) into one tuple
+		if (
+			i + 1 < len(formats)             # not the last format
+			and len(e) == 1                  # alias list has one element
+			and len(formats[i + 1]) == 1     # next alias list only has one element
+			and e[0][0] == formats[i + 1][0] # next format is the first letter of the current one
+		):
+			e = formats[i] + formats[i + 1]
+			formats.pop(i + 1)
+
+		print(f" - {' / '.join(e)}")
+
+		i += 1
+
 def print_help_algs() -> None:
 	print("supported named CRCs:")
 
@@ -267,13 +342,19 @@ def print_help_toml() -> None:
 
 if getattr(args, "help=all"):
 	parser.print_help()
-	print("\n################################## ALG HELP ##################################")
+	print("\n################################# FORMAT HELP #################################")
+	print_help_formats()
+	print("\n################################### ALG HELP ##################################")
 	print_help_algs()
 	print("\n################################## TOML HELP ##################################")
 	print_help_toml()
 	exit(0)
 
 del parser
+
+if getattr(args, "help=formats"):
+	print_help_formats()
+	exit(0)
 
 if getattr(args, "help=algorithms"):
 	print_help_algs()
@@ -284,62 +365,100 @@ if getattr(args, "help=toml"):
 	exit(0)
 
 if verbose >= 2:
-	argv[0] = "crc-gen.py"
 	eprint("# command: " + ' '.join(argv))
 
+if args.cache_global:
+	if os.name == "nt":
+		args.cache_dir = f"%LocalAppData%/{prog}/cache"
+	else:
+		if os.environ.get("XDG_CACHE_HOME"):
+			args.cache_dir = f"$XDG_CACHE_HOME/{prog}"
+		else:
+			# if you are on macos, this may or may not be what you actually want.
+			# you macos sick freaks can pass the path manually if this isn't good enough for you.
+			# https://drive.google.com/file/d/1a7ZMx_xamAJyxaFLTIxkdc4vkb-ZQ5oj/view?usp=sharing
+
+			# the dirty Jython users are stuck in the past, so this won't even compile for them,
+			# so don't worry about os.name == "java". And Jython 3 is definitely not happening
+			# this decade, if ever. Python 2 is barely even from this century. You cannot actually
+			# be using ts in the big '26 and actually take yourself seriously.
+			args.cache_dir = f"~/.cache/{prog}"
+
+if args.cache_dir is None:
+	args.cache_dir = './crc-cache'
+elif args.cache is None:
+	raise Exception("`--cache-dir` cannot be used without `--cache`")
+
+cache_dir = os.path.expanduser(os.path.expandvars(args.cache_dir))
+if os.name == "nt":
+	cache_dir = cache_dir.replace('\\', '/')
+
 if args.cache is None:
-	args.cache = 'o'
-
-args.cache = args.cache.replace('u', "rw")
-args.cache = args.cache.replace('x', 'c')
-
-if len(args.cache) > 4 or not args.cache:
-	raise ValueError(f"`--cache` value too long: '{args.cache}'")
-
-for c in args.cache:
-	if c not in "ocrw":
-		raise ValueError(f"`--cache` value has invalid character '{c}'")
-
-if len(set(args.cache)) != len(args.cache):
-	raise ValueError(f"`--cache` value contains duplicate flags: '{args.cache}'")
-
-if 'o' in args.cache:
-	if 'r' in args.cache or 'w' in args.cache:
-		raise ValueError("cache cannot be enabled and disabled at the same time")
-
 	cache_settings = ''
 else:
-	cache_settings = ''
-	if 'r' in args.cache: cache_settings += 'r'
-	if 'w' in args.cache: cache_settings += 'w'
+	args.cache = args.cache.replace('u', "rw")
+	args.cache = args.cache.replace('x', 'c')
 
-# possible `cache` values after this point: '', 'r', 'w', 'rw', 'c', 'cw'
+	if len(args.cache) > 4 or not args.cache:
+		raise ValueError(f"`--cache` value too long: '{args.cache}'")
 
-if 'c' in args.cache:
-	if os.path.isdir(CACHE_DIR):
-		cache_files = os.listdir(CACHE_DIR)
+	for c in args.cache:
+		if c not in "ocrwd":
+			raise ValueError(f"`--cache` value has invalid character '{c}'")
 
-		for file in cache_files:
-			os.remove(f"{CACHE_DIR}/{file}")
+	if len(set(args.cache)) != len(args.cache):
+		raise ValueError(f"`--cache` value contains duplicate flags: '{args.cache}'")
 
-		if verbose >= 1:
-			eprint(f"# removed all {len(cache_files)} cache files")
+	if 'd' in args.cache:
+		if len(args.cache) != 1:
+			raise ValueError(f"`--cache` 'd' must appear alone.")
 
-		del cache_files
-	elif verbose >= 1:
-		eprint("# removed all 0 cache files")
+		cache_settings = 'd'
+	elif 'o' in args.cache:
+		if 'r' in args.cache or 'w' in args.cache:
+			raise ValueError("cache cannot be enabled and disabled at the same time")
 
-	if len(argv) == 2 and len(args.cache) == 1:
-		if os.path.isdir(CACHE_DIR):
-			os.rmdir(CACHE_DIR)
-		exit(0)
+		cache_settings = ''
+	else:
+		cache_settings = ''
+		if 'r' in args.cache: cache_settings += 'r'
+		if 'w' in args.cache: cache_settings += 'w'
 
-	cache_settings = cache_settings.replace('r', '')
+	# possible `cache` values after this point: '', 'd', 'r', 'w', 'rw', 'c', 'cw'
 
-if cache_settings:
-	optimize = True
+	if 'c' in args.cache and syntax != "nop":
+		if os.path.isdir(cache_dir):
+			cache_files = os.listdir(cache_dir)
 
-# possible `cache` values after this point: '', 'r', 'w', 'rw'
+			for file in cache_files:
+				os.remove(f"{cache_dir}/{file}")
+
+			if verbose >= 1:
+				eprint(f"# removed all {len(cache_files)} cache files")
+
+			del cache_files
+		elif verbose >= 1:
+			eprint("# removed all 0 cache files")
+
+		if len(args.cache) == 1:
+			argv[1] = argv[1].replace("--cache", "-C").replace('=', '')
+
+			solo_short = len(argv) == 2 and len(argv[1]) == 3
+			solo_long  = len(argv) == 3 and argv[1] == '-C' and argv[2].lower() in 'cx'
+
+			if solo_long or solo_short:
+				if os.path.isdir(cache_dir):
+					os.rmdir(cache_dir)
+				exit(0)
+
+			del solo_long, solo_short
+
+		cache_settings = cache_settings.replace('r', '')
+
+	if cache_settings:
+		optimize = True
+
+# possible `cache` values after this point: '', 'd', 'r', 'w', 'rw'
 
 del argv
 
@@ -356,6 +475,7 @@ syntax_data = {
 		"footer"      : "\nendmodule",
 		"comment"     : "//",
 		"begin_logic" : '',
+		"var_prefix"  : '',
 		"wire_type"   : lambda name, size: f"wire [{size} : 0] {name.strip()};",
 	}, "vhd": {
 		"xor"         : " xor ",
@@ -369,6 +489,7 @@ syntax_data = {
 		"footer"      : "end architecture;",
 		"comment"     : "--",
 		"begin_logic" : "begin",
+		"var_prefix"  : '',
 		"wire_type"   : lambda name, size: f"\tsignal {name.lstrip()} : std_logic_vector({size} downto 0);",
 	}, "py": {
 		"xor"         : " ^ ",
@@ -379,9 +500,10 @@ syntax_data = {
 		']'           : ']',
 		'^'           : '\t',
 		'$'           : '',
-		"footer"      : '',
+		"footer"      : None,
 		"comment"     : '#',
 		"begin_logic" : '',
+		"var_prefix"  : '',
 		"wire_type"   : lambda name, size: f"\t{name.lstrip()} = [0] * {size}",
 	}, "c": {
 		"xor"         : " ^ ",
@@ -395,6 +517,7 @@ syntax_data = {
 		"footer"      : '}',
 		"comment"     : "//",
 		"begin_logic" : '',
+		"var_prefix"  : '',
 		"wire_type"   : lambda name, size: f"\tuint8_t {name.lstrip()}[{size}];",
 	}, "gv": {
 		"xor"         : '","',
@@ -408,23 +531,59 @@ syntax_data = {
 		"footer"      : '}',
 		"comment"     : "//",
 		"begin_logic" : None,
+		"var_prefix"  : '',
 		"wire_type"   : None,
+	}, "am": {
+		"xor"         : " ^ ",
+		'1'           : '1',
+		'0'           : '0',
+		'='           : ".eq(",
+		'['           : '[',
+		']'           : ']',
+		'^'           : "\t\tc += ",
+		'$'           : ')',
+		"footer"      : "\n\t\treturn m",
+		"comment"     : '#',
+		"begin_logic" : '',
+		"var_prefix"  : '',
+		"wire_type"   : lambda name, size: f"\t\t{name.lstrip()} = Signal({size})",
+	}, "ch": {
+		"xor"         : " ^ ",
+		'1'           : "1.B",
+		'0'           : "0.B",
+		'='           : " := ",
+		'['           : '(',
+		']'           : ')',
+		'^'           : '\t',
+		'$'           : '',
+		"footer"      : '}',
+		"comment"     : '//',
+		"begin_logic" : '',
+		"var_prefix"  : '',
+		"wire_type"   : lambda name, size: f"\tval {name.lstrip()} = Wire(Vec({size}, Bool()))",
+	}, "sp": {
+		"xor"         : " ^ ",
+		'1'           : "B(1)",
+		'0'           : "B(0)",
+		'='           : " := ",
+		'['           : '(',
+		']'           : ')',
+		'^'           : '\t',
+		'$'           : '',
+		"footer"      : '}',
+		"comment"     : '//',
+		"begin_logic" : '',
+		"var_prefix"  : 'io.',
+		"wire_type"   : lambda name, size: f"\tval {name.lstrip()} = Bits({size} bits)",
 	}
 }
 
-syntax_data["sv"] = syntax_data["v"]
+syntax_data["sv"]  = syntax_data["v"]
 syntax_data["pyt"] = syntax_data["py"]
-
-syntax = {
-	"vhdl"          : "vhd",
-	"verilog"       : "v",
-	"systemverilog" : "sv",
-	"python"        : "py",
-	"python-test"   : "pyt",
-	"info"          : "i",
-	"graphviz"      : "gv",
-	"dot"           : "gv",
-}.get(syntax, syntax)
+syntax_data["c++"] = syntax_data["c"]
+syntax_data["nmg"] = syntax_data["am"]
+syntax_data["ch3"] = {key: val for key, val in syntax_data["ch"].items()}
+syntax_data["ch3"]["var_prefix"] = 'io.'
 
 tokens = syntax_data.get(syntax, {})
 
@@ -439,24 +598,55 @@ suffix      = tokens.get("$")
 footer      = tokens.get("footer")
 comment     = tokens.get("comment")
 begin_logic = tokens.get("begin_logic") # begin actual logic
+vpfx        = tokens.get("var_prefix")
 wire_type   = tokens.get("wire_type")
 
 import re
 VHDL_IDENT    = re.compile(r"(?ai)^[a-z]\w*$")
 C_IDENT       = re.compile(r"(?ai)^[a-z_]\w*$")
 VERILOG_IDENT = re.compile(r"(?ai)^[a-z_][\w$]*$")
+SCALA_IDENT   = VERILOG_IDENT # coincidental
 del re
 
 # these are more strict than necessary because these names are stupid to pick as a variable/signal name anyway
+# not all of the "keywords" are actually real keywords
+SCALA_KEYWORDS = {
+	"abstract", "as", "case", "catch", "class", "def", "derives", "do", "else", "end", "extends", "extension",
+	"false", "final", "finally", "for", "forSome", "if", "implicit", "import", "infix", "inline", "lazy", "match",
+	"new", "null", "object", "opaque", "open", "override", "package", "private", "protected", "return", "sealed",
+	"super", "this", "throw", "trait", "true", "try", "type", "using", "val", "var", "while", "with", "yield"
+}
+
+CHISEL_KEYWORDS = {
+	"Bool", "Bundle", "Module", "Reg", "UInt", "Vec", "Wire", "clock", "io", "reset", "val"
+}
+
+SPINALHDL_KEYWORDS = {
+	"Bits", "Bool", "Bundle", "Component", "UInt", "Vec", "clock", "downto", "in", "io", "out", "reset"
+}
+
 C_KEYWORDS = {
-	"_Bool", "_Complex", "_Imaginary", "__asm", "__asm__", "__attribute", "__attribute__", "__auto_type",
-	"__cdecl", "__clrcall", "__declspec", "__fastcall", "__inline__", "__restrict__", "__stdcall", "__thiscall",
-	"__typeof", "__typeof__", "__vectorcall", "__volatile", "__volatile__", "alignas", "alignof", "asm", "auto",
-	"bool", "break", "case", "char", "const", "constexpr", "continue", "default", "do", "double", "else", "enum",
-	"extern", "false", "float", "for", "goto", "if", "inline", "int", "long", "nullptr", "register", "restrict",
-	"return", "short", "signed", "sizeof", "static", "static_assert", "struct", "switch", "thread_local", "true",
-	"typedef", "typeof", "typeof_unqual", "union", "unsigned", "void", "volatile", "while",
-	"byte_", "bit_", "i_" # not actual keywords. these are used in the emitted code
+	"EOF", "NULL", "_BitInt", "_Bool", "_Complex", "_Imaginary", "__asm", "__asm__", "__attribute", "__attribute__",
+	"__auto_type", "__cdecl", "__clrcall", "__declspec", "__fastcall", "__inline__", "__int128_t", "__restrict__",
+	"__stdcall", "__thiscall", "__typeof", "__typeof__", "__vectorcall", "__volatile", "__volatile__", "alignas",
+	"alignof", "asm", "auto", "bit_", "bool", "break", "byte_", "case", "char", "const", "constexpr", "continue",
+	"default", "do", "double", "else", "enum", "extern", "false", "float", "for", "goto", "i_", "if", "inline",
+	"int", "int16_t", "int32_t", "int64_t", "int8_t", "int_fast16_t", "int_fast32_t", "int_fast64_t", "int_fast8_t",
+	"int_least16_t", "int_least32_t", "int_least64_t", "int_least8_t", "intptr_t", "long", "nullptr", "printf",
+	"puts", "register", "restrict", "return", "short", "signed", "size_t", "sizeof", "ssize_t", "static",
+	"static_assert", "stderr", "stdin", "stdout", "struct", "switch", "thread_local", "true", "typedef", "typeof",
+	"typeof_unqual", "uint16_t", "uint32_t", "uint64_t", "uint8_t", "uint_fast16_t", "uint_fast32_t",
+	"uint_fast64_t", "uint_fast8_t", "uint_least16_t", "uint_least32_t", "uint_least64_t", "uint_least8_t",
+	"uintptr_t", "union", "unsigned", "void", "volatile", "while"
+}
+
+CPP_KEYWORDS = {
+	"allocator", "and", "and_eq", "array", "bitand", "bitor", "catch", "char16_t", "char32_t", "char8_t", "class",
+	"co_await", "co_return", "co_yield", "concept", "const_cast", "consteval", "constinit", "decltype", "delete",
+	"dynamic_cast", "explicit", "export", "friend", "make_shared", "make_unique", "mutable", "namespace", "new",
+	"noexcept", "not", "not_eq", "operator", "or", "or_eq", "private", "protected", "public", "reinterpret_cast",
+	"requires", "shared_ptr", "static_cast", "string", "template", "this", "throw", "try", "typeid", "typename",
+	"unique_ptr", "using", "vector", "virtual", "wchar_t", "weak_ptr", "xor", "xor_eq"
 }
 
 VERILOG_KEYWORDS = {
@@ -490,15 +680,11 @@ def valid_varname(name: str) -> bool:
 	"returns whether or not a variable/signal name is valid in the current syntax"
 	import keyword # for python
 
-	if syntax in ("i", "raw", "r", "json", "j", "metrics", "m"):
-		# these formats don't emit code output, so the names don't matter.
-		return True
-
-	if not name: # empty names are not valid
+	if not name and syntax in {"py", "pyt", "am", "nmg", "ch", "gv", "c", "c++", "v", "sv", "vhd"}:
 		return False
 
 	match syntax:
-		case "py" | "pyt":
+		case "py" | "pyt" | "am" | "nmg":
 			return (
 				name.isidentifier()
 				and not keyword.iskeyword(name)
@@ -510,10 +696,22 @@ def valid_varname(name: str) -> bool:
 				and name.isprintable()
 				and '"' not in name
 			)
-		case "c":
+		case "ch" | "sp":
+			return (
+				bool(SCALA_IDENT.fullmatch(name))
+				and name not in SCALA_KEYWORDS
+				and (syntax != "ch" or name not in CHISEL_KEYWORDS)
+				and (syntax != "sp" or name not in SPINALHDL_KEYWORDS)
+			)
+		case "c" | "c++":
 			return (
 				bool(C_IDENT.fullmatch(name))
 				and name not in C_KEYWORDS
+				and (syntax != "c++" or (
+					name not in CPP_KEYWORDS
+					and not name.startswith("__")
+					and (name[0] != "_" or name[1] != name[1].toupper())
+				))
 			)
 		case "v" | "sv":
 			return (
@@ -529,7 +727,8 @@ def valid_varname(name: str) -> bool:
 				and name.lower() not in VHDL_KEYWORDS
 			)
 		case _:
-			raise ValueError(f"unknown syntax: '{syntax}'")
+			# all other formats don't emit code so the names don't matter
+			return True
 
 def c_type_length(count: int) -> int:
 	"returns the bit size of the smallest standard C integer type that can fit `count - 1`, or can have >=count different values."
@@ -540,12 +739,13 @@ def c_type_length(count: int) -> int:
 	if bits <= 32: return 32
 	return 64
 
-def parse_args(output: str, optimize: bool, args: object, first: bool, outfile) -> any:
-	"do all the main stuff"
-
-	first = not first
-
+def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outfile) -> tuple[any, str | None]:
+	"do all the main stuff that has to happen per batch job"
 	# returns the output file handle if it is still open, otherwise it returns None
+	# and the second value is either the file name or None.
+
+	global cache_settings
+
 	if gc_disabled:
 		gc.collect()
 
@@ -581,15 +781,18 @@ def parse_args(output: str, optimize: bool, args: object, first: bool, outfile) 
 		lns_window
 	), protocol=5)).hexdigest()
 
-	cache_file = f"{CACHE_DIR}/{cache_key}.xz"
+	cache_file = f"{cache_dir}/{cache_key}.xz"
 
 	if verbose >= 2:
 		eprint(f"# cache key: '{cache_key}'")
 
-	def cache_read() -> tuple[dict[int, set], list[set]] | None:
-		if not os.path.isdir(CACHE_DIR):
-			return None
+	if cache_settings == 'd' and os.path.isfile(cache_file):
+		if verbose >= 1:
+			eprint("# removed current cache entry")
 
+		os.remove(cache_file)
+
+	def cache_read() -> tuple[dict[int, set], list[set]] | None:
 		if not os.path.isfile(cache_file):
 			return None
 
@@ -597,9 +800,10 @@ def parse_args(output: str, optimize: bool, args: object, first: bool, outfile) 
 			return pickle.load(f)
 
 	def cache_write(tmp_defs: dict[int, set], outputs: list[set], /) -> None:
-		if not os.path.isdir(CACHE_DIR):
-			os.mkdir(CACHE_DIR)
+		if not os.path.isdir(cache_dir):
+			os.makedirs(cache_dir, exist_ok=True)
 
+		# if the cache entry exists already, this will just overwrite it.
 		with lzma.open(cache_file, "wb") as f:
 			pickle.dump((tmp_defs, outputs), f, protocol=pickle.HIGHEST_PROTOCOL)
 
@@ -678,7 +882,11 @@ def parse_args(output: str, optimize: bool, args: object, first: bool, outfile) 
 	in_port_i = in_port + " "*(len(tmp_port_i) - len(in_port)) if optimize else in_port
 
 	def optimize_gates(eqns: list[set]) -> tuple[dict[int, set], list[set]]:
-		nonlocal ending_logic_depth, ending_max_fanout
+		nonlocal ending_logic_depth, ending_max_fanout, in_idx_max_pad
+		global optimize, in_port_i
+
+		if not optimize:
+			return {}, rows
 
 		if 'r' in cache_settings and (cache_value := cache_read()) is not None:
 			if verbose >= 1:
@@ -703,20 +911,23 @@ def parse_args(output: str, optimize: bool, args: object, first: bool, outfile) 
 				optimize_seed,
 				verbose,
 				interactive=True,
-				sort=True
+				sort="slow" if syntax.startswith("asm=") or syntax in {"c", "c++"} else "fast"
 			)
 
 			if 'w' in cache_settings:
 				cache_write(tmp_defs, outputs)
 
 		if not tmp_defs:
-			global optimize, in_port_i
-
 			optimize  = False
 			in_port_i = in_port
 
 		ending_logic_depth = gf2_cse.logic_depth(tmp_defs, outputs, lut_size, sorted=True)
 		ending_max_fanout  = gf2_cse.max_fanout(tmp_defs, outputs, nodes=False)
+
+		in_idx_max_pad = max(
+			in_idx_max_pad,
+			len( str(len(tmp_defs)) )
+		)
 
 		if verbose >= 1:
 			eprint(f"# LUT{lut_size} logic depth: ~ {starting_logic_depth} => {ending_logic_depth}")
@@ -729,9 +940,15 @@ def parse_args(output: str, optimize: bool, args: object, first: bool, outfile) 
 	sum_nibs  = sum_len << 1 # number of nibbles in the checksum
 	data_bits = data_len << 3
 
-	in_idx_max_pad  = len(str(data_bits))
-	out_idx_max_pad = len(str(sum_bits))
+	# idx \in [0, bits - 1]
+	in_idx_max_pad  = len(str(data_bits - 1))
+	out_idx_max_pad = len(str(sum_bits - 1))
 	idx_max_pad     = max(in_idx_max_pad, out_idx_max_pad)
+
+	# idx + 1 \in [1, bits]
+	in_idxp1_max_pad  = len(str(data_bits))
+	out_idxp1_max_pad = len(str(sum_bits))
+	idxp1_max_pad     = max(in_idxp1_max_pad, out_idxp1_max_pad)
 
 	reversed_polynomial = int(f"{polynomial:0{sum_bits}b}"[::-1], 2)
 
@@ -788,39 +1005,33 @@ def parse_args(output: str, optimize: bool, args: object, first: bool, outfile) 
 	if verbose >= 1:
 		eprint("\r# curve generation complete\x1b[K", flush=True)
 
-	def print(message: str, end: str = '\n') -> None:
+	def print(message: str | None, end: str = '\n') -> None:
 		"""
 		print a single string to the output file.
 		assumes `end` doesn't have tabs in it.
 		"""
 
-		nonlocal first
+		nonlocal extra_newline
+
+		if message is None:
+			# don't print anything
+			return
 
 		from builtins import print as _print
 
-		if first:
+		if extra_newline:
 			_print(end='\n', file=outfile)
-			first = False
+			extra_newline = False
 
 		if indent_str != '\t':
 			message = message.replace('\t', indent_str)
 
 		_print(message, end=end, file=outfile)
 
-	if output == "-":
+	if output == '-':
 		outfile = None
 	else:
 		if output == "auto":
-			extension = {
-				"pyt"     : "py",
-				"i"       : "txt",
-				"raw"     : "txt",
-				"r"       : "txt",
-				"j"       : "json",
-				"m"       : "json",
-				"metrics" : "json",
-			}.get(syntax, syntax)
-
 			outfile = open(f"crc{crc_name}_{data_len}.{extension}", "w")
 		elif outfile is None:
 			outfile = open(output, "w")
@@ -833,7 +1044,7 @@ def parse_args(output: str, optimize: bool, args: object, first: bool, outfile) 
 			has_const = False
 
 		terms = xor.join(
-			f"{in_port_i}{lbr}{n:{in_idx_max_pad}}{rbr}" if n >= 0 else f"{tmp_port_i}{lbr}{-n - 1:{in_idx_max_pad}}{rbr}"
+			f"{vpfx}{in_port_i}{lbr}{n:{in_idx_max_pad}}{rbr}" if n >= 0 else f"{' '*len(vpfx)}{tmp_port_i}{lbr}{-n - 1:{in_idx_max_pad}}{rbr}"
 			for n in sorted(eqn, reverse=True)
 		)
 
@@ -847,23 +1058,64 @@ def parse_args(output: str, optimize: bool, args: object, first: bool, outfile) 
 
 		return terms
 
-	match syntax:
-		case "vhd" | "v" | "sv":
-			is_sv = syntax == "sv"
+	def make_declarations(tmp_defs, outputs, *, inclusive_bound_declarations: bool = True) -> None:
+		nonlocal tmp_port_o
 
-			# compute optimized graph
-			if optimize:
-				tmp_defs, outputs = optimize_gates(rows)
-			else:
-				tmp_defs = {}
-				outputs  = rows
+		wire_max_pad = 0 # only one of the wires is there, so no padding
 
-			print(f"{comment} Generated with crc-gen.py")
+		# some languages do stuff like `Signals(18)`, while others are only `17 downto 0` type stuff.
+		minus = -1 if inclusive_bound_declarations else 0
 
-			# header
-			if syntax == "vhd":
+		if optimize:
+			wire_max_pad = max(
+				len(str(len(tmp_defs) + minus)),
+				len(str(sum_bits + minus))
+			)
+
+			print(wire_type(tmp_port_o, f"{len(tmp_defs) + minus:{wire_max_pad}}"))
+
+		tmp_idx_max_pad = len(str(len(tmp_defs) + minus))
+
+		max_pad_diff = out_idx_max_pad - tmp_idx_max_pad
+		if   max_pad_diff < 0: tmp_port_o  = tmp_port_o[:max_pad_diff]
+		elif max_pad_diff > 0: tmp_port_o += ' '*max_pad_diff
+
+		# local signal declaration
+		print(wire_type(local_port, f"{sum_bits + minus:{wire_max_pad}}"))
+
+		print(begin_logic)
+
+		## regular assignments
+		for i in range(len(tmp_defs)):
+			print(f"{prefix}{tmp_port_o}{lbr}{i:{tmp_idx_max_pad}}{rbr}{assign}{get_terms(tmp_defs[1 + i])}{suffix}")
+
+		if optimize: print("") # separate `tmp_sgnl_base` from `local_crc`
+
+		for i in range(sum_bits):
+			print(f"{prefix}{local_port}{lbr}{i:{out_idx_max_pad}}{rbr}{assign}{get_terms(outputs[i])}{suffix}")
+
+	def job_ret() -> tuple[any, str | None]:
+		"helper function. use `return job_ret()`"
+
+		if output == "auto":
+			outfile.close()
+			return None, outfile.name
+
+		return outfile, (None if outfile is None else outfile.name)
+
+	if syntax in {"vhd", "v", "sv", "am", "nmg", "ch", "ch3", "sp"}:
+		is_svl = syntax == "sv"
+		is_nmg = syntax == "nmg"
+		is_ch3 = syntax == "ch3"
+
+		tmp_defs, outputs = optimize_gates(rows)
+
+		# header
+		match syntax:
+			case "vhd":
 				print(
-					f"library ieee;"
+					f"-- Generated with {prog}.py"
+					f"\nlibrary ieee;"
 					f"\nuse ieee.std_logic_1164.all;"
 					f"\n"
 					f"\nentity crc{crc_name}_{data_len} is"
@@ -882,84 +1134,174 @@ def parse_args(output: str, optimize: bool, args: object, first: bool, outfile) 
 					f"\n\t-- crc{crc_name}(0): 0x{K:0{sum_nibs}X}"
 					f"\n"
 				)
-			else:
+			case "v" | "sv":
 				print(
-					f"// polynomial: 0x{polynomial:0{sum_nibs}X}"
+					f"// Generated with {prog}.py"
+					f"\n// polynomial: 0x{polynomial:0{sum_nibs}X}"
 					f"\n// crc{crc_name}(0): 0x{K:0{sum_nibs}X}"
 					f"\n"
 					f"\nmodule crc{crc_name}_{data_len} #("
 					f"\n\t// 1 => little endian, 0 => big endian"
-					f"\n\tparameter{" bit" if is_sv else ""} BSWAP = 1"
+					f"\n\tparameter{" bit" if is_svl else ""} BSWAP = 1"
 					f"\n) ("
 					f"\n\tinput  [{data_bits - 1:{idx_max_pad}} : 0] {in_port},"
 					f"\n\toutput [{sum_bits - 1:{idx_max_pad}} : 0] {out_port}"
 					f"\n);"
 					f"\n"
 				)
-
-			wire_max_pad = 0 # only one of the wires is there, so no padding
-
-			if optimize:
-				wire_max_pad = max(
-					len(str(len(tmp_defs) - 1)),
-					len(str(sum_bits - 1))
+			case "am" | "nmg":
+				print(
+					f"{(
+						"try:"
+						"\n\tfrom nmigen import Module, Signal"
+						"\nexcept ImportError:"
+						"\n\tfrom amaranth import Module, Signal"
+						if is_nmg else
+						"from amaranth.lib.wiring import Component, In, Out"
+						"\nfrom amaranth import Module, Signal"
+					)}"
+					f"\nclass Crc{crc_name}_{data_len}({"Elaboratable" if is_nmg else "Component"}):"
+					f"\n\t\"\"\""
+					f"\n\tGenerated with {prog}.py"
+					f"\n\tpolynomial: 0x{polynomial:0{sum_nibs}X}"
+					f"\n\tcrc{crc_name}(0): 0x{K:0{sum_nibs}X}"
+					f"\n"
+					f"\n\tbswap: True => little endian, False => big endian"
+					f"\n\t\"\"\""
+					f"\n"
+					f"\n\t{in_port}{in_pad}: {  "Signal" if is_nmg else f"In  ({data_bits:{idxp1_max_pad}})" }"
+					f"\n\t{out_port}{out_pad}: {"Signal" if is_nmg else f"Out ({sum_bits :{idxp1_max_pad}})" }"
+					f"\n\t"
+					f"\n\tdef __init__(self, bswap: bool = True) -> None:"
+					f"\n\t\tself.bswap = bswap"
+					f"{(
+						f"\n"
+						f"\n\t\tself.{in_port}{in_pad}= Signal({data_bits:{idxp1_max_pad}})"
+						f"\n\t\tself.{out_port}{out_pad}= Signal({sum_bits:{idxp1_max_pad}})"
+						if is_nmg else
+						f"\n\t\tsuper().__init__()"
+					)}"
+					f"\n"
+					f"\n\tdef elaborate(self, platform{'' if is_nmg else f': "Platform | None"'}) -> Module:"
+					f"\n\t\tm = Module()"
+					f"\n\t\tc = m.d.comb"
+					f"\n"
+					f"\n\t\t{in_port}{in_pad}= self.{in_port}"
+					f"\n\t\t{out_port}{out_pad}= self.{out_port}"
+					f"\n"
 				)
+			case "ch" | "ch3":
+				print(
+					f"// Generated with {prog}.py"
+					f"\n// polynomial: 0x{polynomial:0{sum_nibs}X}"
+					f"\n// crc{crc_name}(0): 0x{K:0{sum_nibs}X}"
+					f"\n"
+					f"\nimport chisel3._"
+					f"\nimport chisel3.util._"
+					"\n"
+					f"\nclass crc{crc_name}_{data_len}(val bswap: Boolean = true) extends Module {{"
+					f"{(
+						f"\n\tval io = IO(new Bundle {{"
+						f"\n\t\tval {in_port}{in_pad}= Input (UInt({data_bits:{idxp1_max_pad}}.W))"
+						f"\n\t\tval {out_port}{out_pad}= Output(UInt({sum_bits:{idxp1_max_pad}}.W))"
+						f"\n\t}})"
+						if is_ch3 else
+						f"\n\tval {in_port}{in_pad}= IO(Input (UInt({data_bits:{idxp1_max_pad}}.W)))"
+						f"\n\tval {out_port}{out_pad}= IO(Output(UInt({sum_bits:{idxp1_max_pad}}.W)))"
+					)}"
+					f"\n"
+				)
+			case "sp":
+				print(
+					f"// Generated with {prog}.py"
+					f"\n// polynomial: 0x{polynomial:0{sum_nibs}X}"
+					f"\n// crc{crc_name}(0): 0x{K:0{sum_nibs}X}"
+					f"\n"
+					f"import spinal.core._"
+					f"\n"
+					f"\nclass crc{crc_name}_{data_len}(bswap: Boolean = true) extends Component {{"
+					f"\n\tval io = new Bundle {{"
+					f"\n\t\tval {in_port}{in_pad}= in  UInt({data_bits:{idxp1_max_pad}} bits)"
+					f"\n\t\tval {out_port}{out_pad}= out UInt({sum_bits:{idxp1_max_pad}} bits)"
+					f"\n\t}}"
+					f"\n"
+				)
+			case _:
+				raise Exception("`match` case mismatch with containing logic.")
 
-				print(wire_type(tmp_port_o, f"{len(tmp_defs) - 1:{wire_max_pad}}"))
+		make_declarations(tmp_defs, outputs, inclusive_bound_declarations=syntax in {"vhd", "v", "sv"})
 
-			tmp_idx_max_pad = len(str(len(tmp_defs) - 1))
-
-			max_pad_diff = out_idx_max_pad - tmp_idx_max_pad
-			if   max_pad_diff < 0: tmp_port_o  = tmp_port_o[:max_pad_diff]
-			elif max_pad_diff > 0: tmp_port_o += ' '*max_pad_diff
-
-			# local signal declaration
-
-			print(wire_type(local_port, f"{sum_bits - 1:{wire_max_pad}}"))
-			print(begin_logic)
-
-			for i in range(len(tmp_defs)):
-				print(f"{prefix}{tmp_port_o}{lbr}{i:{tmp_idx_max_pad}}{rbr}{assign}{get_terms(tmp_defs[1 + i])}{suffix}")
-
-			if optimize: print("") # separate `tmp_sgnl_base` from `local_crc`
-
-			for i in range(sum_bits):
-				print(f"{prefix}{local_port}{lbr}{i:{out_idx_max_pad}}{rbr}{assign}{get_terms(outputs[i])}{suffix}")
-
-			# generate
-			if sum_len > 1:
-				if syntax == "vhd":
-					print(
-						f"\n\tendian_check: if BSWAP generate"
-						f"\n\t\tlittle_endian: for i in 0 to {sum_len - 1} generate"
-						f"\n\t\t\t{out_port}(8*i + 7 downto 8*i) <= {local_port}({sum_bits - 1} - 8*i downto {sum_bits - 8} - 8*i);"
-						f"\n\t\tend generate;"
-						f"\n\telse generate"
-						f"\n\t\t{out_port} <= {local_port};"
-						f"\n\tend generate;"
-					)
-				else:
-					print(
-						f"{'' if is_sv else "\ngenvar i;"}"
-						f"\ngenerate"
-						f"\n\tif (BSWAP)"
-						f"\n\t\tfor ({"genvar " if is_sv else ''}i = 0; i < {sum_len}; {"i++" if is_sv else "i = i + 1"})"
-						f"\n\t\t\tassign {out_port}[8*i + 7 : 8*i] = {local_port}[{sum_bits - 1} - 8*i : {sum_bits - 8} - 8*i];"
-						f"\n\telse"
-						f"\n\t\tassign {out_port} = {local_port};"
-						f"\nendgenerate"
-					)
+		if sum_len == 1:
+			# don't emit a generate block for sum length 1 since it does nothing.
+			if syntax == "sp":
+				print(f"\n\t{vpfx}{out_port}{assign}{local_port}.asUInt")
+			elif syntax in {"ch", "ch3"}:
+				print(f"\n\t{out_port}{assign}{local_port}.asUInt")
 			else:
 				print(f"\n{prefix}{out_port}{assign}{local_port}{suffix}")
 
 			print(footer)
-		case "pyt" | "py" | "c":
+			return job_ret()
+
+		# generate
+		match syntax:
+			case "vhd":
+				print(
+					f"\n\tendian_check: if BSWAP generate"
+					f"\n\t\tlittle_endian: for i in 0 to {sum_len - 1} generate"
+					f"\n\t\t\t{out_port}(8*i + 7 downto 8*i) <= {local_port}({sum_bits - 1} - 8*i downto {sum_bits - 8} - 8*i);"
+					f"\n\t\tend generate;"
+					f"\n\telse generate"
+					f"\n\t{prefix}{out_port}{assign}{local_port}{suffix}"
+					f"\n\tend generate;"
+				)
+			case "v" | "sv":
+				print(
+					f"{'' if is_svl else "\ngenvar i;"}"
+					f"\ngenerate"
+					f"\n\tif (BSWAP)"
+					f"\n\t\tfor ({"genvar " if is_svl else ''}i = 0; i < {sum_len}; {"i++" if is_svl else "i = i + 1"})"
+					f"\n\t\t\tassign {out_port}[8*i + 7 : 8*i] = {local_port}[{sum_bits - 1} - 8*i : {sum_bits - 8} - 8*i];"
+					f"\n\telse"
+					f"\n\t\t{prefix}{out_port}{assign}{local_port}{suffix}"
+					f"\nendgenerate"
+				)
+			case "am" | "nmg":
+				print(
+					f"\n\t\tif self.bswap:"
+					f"\n\t\t\tfor i in range({sum_len}):"
+					f"\n\t\t\t\tc += {out_port}[8*i : 8*i + 8].eq( {local_port}[{sum_bits - 8} - 8*i : {sum_bits} - 8*i] )"
+					f"\n\t\telse:"
+					f"\n\t{prefix}{out_port}{assign}{local_port}{suffix}"
+				)
+			case "ch" | "ch3":
+				print(
+					f"\n\tio.{out_port} := ("
+					f"\n\t\tif (bswap) "
+					f"\n\t\t\tCat({local_port}.asBools.grouped(8).map(Cat(_)).toSeq.reverse)"
+					f"\n\t\telse "
+					f"\n\t\t\t{local_port}.asUInt"
+					f"\n\t)"
+				)
+			case "sp":
+				print(
+					f"\n\tio.{out_port} := ("
+					f"\n\t\tif (bswap)"
+					f"\n\t\t\t{local_port}.subdivideIn(8 bits).reverse.asBits.asUInt"
+					f"\n\t\telse"
+					f"\n\t\t\t{local_port}.asUInt"
+					f"\n\t)"
+				)
+			case _:
+				raise Exception("`match` case mismatch with containing logic.")
+
+		print(footer)
+		return job_ret()
+
+	match syntax:
+		case "pyt" | "py" | "c" | "c++":
 			# compute optimized equation graph
-			if optimize:
-				tmp_defs, outputs = optimize_gates(rows)
-			else:
-				tmp_defs = {}
-				outputs  = rows
+			tmp_defs, outputs = optimize_gates(rows)
 
 			if syntax in {"python-test", "pyt"}:
 				# also give functions for testing the functionality
@@ -1051,7 +1393,7 @@ def parse_args(output: str, optimize: bool, args: object, first: bool, outfile) 
 			if out_port in {"bit_", "byte_"}:
 				raise ValueError(f"`--in-port '{out_port}'` cannot be given with `--syntax '{syntax}'`")
 
-			if syntax == "c":
+			if syntax in {"c", "c++"}:
 				print(
 					f"#include <stdint.h>"
 					f"\n"
@@ -1077,26 +1419,9 @@ def parse_args(output: str, optimize: bool, args: object, first: bool, outfile) 
 					f"\n"
 				)
 
-			if optimize:
-				print(wire_type(tmp_sgnl_base if syntax == "c" else tmp_port_o, len(tmp_defs)))
+			make_declarations(tmp_defs, outputs, inclusive_bound_declarations=True)
 
-			print(wire_type(local_port, sum_bits), end="\n\n")
-
-			tmp_idx_max_pad = len(str(len(tmp_defs) - 1))
-
-			max_pad_diff = out_idx_max_pad - tmp_idx_max_pad
-			if   max_pad_diff < 0: tmp_port_o  = tmp_port_o[:max_pad_diff]
-			elif max_pad_diff > 0: tmp_port_o += ' '*max_pad_diff
-
-			for i in range(len(tmp_defs)):
-				print(f"{prefix}{tmp_port_o}{lbr}{i:{tmp_idx_max_pad}}{rbr}{assign}{get_terms(tmp_defs[1 + i])}{suffix}")
-
-			if optimize: print("")
-
-			for i in range(sum_bits):
-				print(f"{prefix}{local_port}{lbr}{i:{out_idx_max_pad}}{rbr}{assign}{get_terms(outputs[i])}{suffix}")
-
-			if syntax == "c":
+			if syntax in {"c", "c++"}:
 				print(
 					f"\n\tuint{sum_bits}_t {out_port} = 0;"
 					f"\n\tfor (uint{c_type_length(sum_bits)}_t i_ = 0; i_ < {sum_bits}; i_++)"
@@ -1117,21 +1442,14 @@ def parse_args(output: str, optimize: bool, args: object, first: bool, outfile) 
 		case "gv":
 			# Graphviz is so different from the other syntaxes that most of the `syntax_data` attributes don't make sense.
 
-			# TODO: consider expanding on this line wrap idea?
-			GV_DECL_LINE_WRAP = 100
-
 			in_idx_max_pad = 0
 			in_port_i = "in"
 
-			starting_gates = gf2_cse.count_gates(rows)
-			if optimize:
-				tmp_defs, outputs = optimize_gates(rows)
-			else:
-				tmp_defs = {}
-				outputs  = rows
+			starting_gates    = gf2_cse.count_gates(rows)
+			tmp_defs, outputs = optimize_gates(rows)
 
 			print(
-				f"{comment} Generated with crc-gen.py"
+				f"{comment} Generated with {prog}.py"
 				f"\n{comment} compile: dot -Tpdf -O crc{crc_name}_{data_len}.gv"
 				f"\ndigraph crc{crc_name}_{data_len} {{"
 			)
@@ -1250,15 +1568,9 @@ def parse_args(output: str, optimize: bool, args: object, first: bool, outfile) 
 			# NOTE: the output for this is not JSON
 			starting_gates = gf2_cse.count_gates(rows)
 
-			cse_time_stt = perf_counter_ns()
-
-			if optimize:
-				tmp_defs, outputs = optimize_gates(rows)
-			else:
-				tmp_defs = {}
-				outputs  = rows
-
-			cse_time_end = perf_counter_ns()
+			cse_time_stt      = perf_counter_ns()
+			tmp_defs, outputs = optimize_gates(rows)
+			cse_time_end      = perf_counter_ns()
 
 			ending_gates = gf2_cse.count_gates(tmp_defs, outputs)
 			if syntax == "raw":
@@ -1292,15 +1604,12 @@ def parse_args(output: str, optimize: bool, args: object, first: bool, outfile) 
 			)
 
 			print(data if syntax == "raw" else data.replace(' ', ''))
-		case "json" | "j" | "metrics" | "m":
+		case "json" | "j" | "metrics" | "m" | "asm=json":
 			starting_gates = gf2_cse.count_gates(rows)
 
-			cse_time_stt = perf_counter_ns()
-
-			if optimize: tmp_defs, outputs = optimize_gates(rows)
-			else:        tmp_defs, outputs = {}, rows
-
-			cse_time_end = perf_counter_ns()
+			cse_time_stt      = perf_counter_ns()
+			tmp_defs, outputs = optimize_gates(rows)
+			cse_time_end      = perf_counter_ns()
 
 			ending_gates = gf2_cse.count_gates(tmp_defs, outputs)
 
@@ -1322,7 +1631,7 @@ def parse_args(output: str, optimize: bool, args: object, first: bool, outfile) 
 						if hasNone:
 							lst.insert(0, None)
 
-						return f"\u0000{json.dumps(lst, separators=seps)}\u0000"
+						return f"\u0000{json.dumps(lst, separators=inseps)}\u0000"
 
 				return (json
 					.dumps(data, indent=indent, separators=seps, cls=Encoder)
@@ -1330,12 +1639,13 @@ def parse_args(output: str, optimize: bool, args: object, first: bool, outfile) 
 					.replace('\\u0000"', '')
 				)
 
-			indent = '\t'         if len(syntax) > 1 else None
-			seps   = (', ', ': ') if len(syntax) > 1 else (',', ':')
+			indent = '\t'        if len(syntax) > 1 else None
+			seps   = (',', ': ') if len(syntax) > 1 else (',', ':')
+			inseps = (', ', ':') if len(syntax) > 1 else (',', ':')
 
 			data: dict[str, any] = {}
 
-			if syntax[0] == 'j':
+			if syntax == 'j' or syntax.endswith("json"):
 				td = {}
 
 				# reindex so keys are in ascending order
@@ -1363,16 +1673,17 @@ def parse_args(output: str, optimize: bool, args: object, first: bool, outfile) 
 			}
 			data["gen_time_ns"]    = curve_gen_time_end - curve_gen_time_stt
 			data["cse_time_ns"]    = cse_time_end - cse_time_stt
-
 			print(json_dump_data(data, indent, seps))
+		case "nop":
+			if optimize:
+				# just for the output
+
+				cache_settings = '' # no caching
+				optimize_gates(rows)
 		case _:
 			raise Exception(f"mismatch between argparse syntax list and match/case syntax list. syntax: '{syntax}'")
 
-	if output == "auto":
-		outfile.close()
-		return None, outfile.name
-
-	return outfile, (None if outfile is None else outfile.name)
+	return job_ret()
 
 def parse_polynomial(args: object) -> list[dict[str, any]]:
 	"calculate the curve dictionary stuff from the TOML file"
@@ -1560,6 +1871,10 @@ args.out_port = "crc"  if args.out_port is None else args.out_port
 args.tmp_name = "tmp"  if args.tmp_name is None else args.tmp_name
 args.data_len = 4      if args.data_len is None else args.data_len
 
+if syntax == "nop":
+	# ignore `-o`. this is just so it doesn't create any files.
+	output = '-'
+
 outfile = None
 first   = True
 
@@ -1573,7 +1888,7 @@ for curve in curves:
 		eprint("")
 
 	if verbose >= 2:
-		eprint(f"# params={curve}")
+		eprint(f"# job params={curve}")
 
 	if "in-port"  in curve: args.in_port  = curve["in-port"]
 	if "out-port" in curve: args.out_port = curve["out-port"]
@@ -1586,7 +1901,7 @@ for curve in curves:
 	args.xor_out    = curve["xor-out"]
 	args.reflect    = curve["reflect"]
 
-	outfile, filename = parse_args(output, optimize, args, first and output != "auto", outfile)
+	outfile, filename = run_job(output, optimize, args, not first and output != "auto", outfile)
 
 	(args.in_port, args.out_port, args.tmp_name, args.data_len) = save
 	first = False

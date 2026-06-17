@@ -24,7 +24,7 @@ if you increase it enough, it should get better again.
 requires Python >=3.10
 """
 
-__version__ = "2026.06.16.0"
+__version__ = "2026.06.17.0"
 
 __all__ = (
 	# somewhat internal
@@ -692,8 +692,8 @@ def tmp_swap(tmp_defs: dict[int, set], outputs: list[set], i: int, j: int) -> No
 			eqn.discard(j)
 			eqn.add(i)
 
-def tsort__map(tmp_defs: dict[int, set]) -> dict[int, int]:
-	"topological sort helper to get position map. Kahn's algorithm"
+def _tsort_map_fast(tmp_defs: dict[int, set]) -> dict[int, int]:
+	"topological sort helper to get position map. Kahn's algorithm with a plain FIFO"
 
 	from collections import deque
 
@@ -712,7 +712,7 @@ def tsort__map(tmp_defs: dict[int, set]) -> dict[int, int]:
 
 	while queue:
 		u = queue.popleft()
-		
+
 		pos_map[u] = pos
 		pos += 1
 
@@ -727,23 +727,51 @@ def tsort__map(tmp_defs: dict[int, set]) -> dict[int, int]:
 
 	return pos_map
 
-def tsort_swap(tmp_defs: dict[int, set], outputs: list[set], pos_map: dict[int, int]) -> None:
-	"topological sort using swapping. O(V^2)"
+def _tsort_map_slow(tmp_defs: dict[int, set]) -> dict[int, int]:
+	"""
+	topological sort helper to get position map. Kahn's algorithm with a heuristic priority queue.
+	For nodes of the same indegree, it prioritizes by outdegree. O([V + E] log V)
+	"""
 
-	# NOTE: the last remaining element in the map will always be of the form `x: x`
+	import heapq
 
-	while pos_map:
-		key, val = next(iter( pos_map.items() ))
+	graph: dict[int, list[int]] = {node: [] for node in tmp_defs}
+	indegree: dict[int, int]    = {node: 0  for node in tmp_defs}
 
-		if key == val:
-			del pos_map[key]
-			continue
+	for node, dependencies in tmp_defs.items():
+		for dep in dependencies:
+			if type(dep) is int and dep < 0:
+				graph[-dep].append(node)
+				indegree[node] += 1
 
-		tmp_swap(tmp_defs, outputs, key, val)
-		pos_map[key] = pos_map.pop(val)
+	outdegree: dict[int, int] = {node: len(deps) for node, deps in graph.items()}
 
-def tsort_remap(tmp_defs: dict[int, set], outputs: list[set], pos_map: dict[int, int]) -> None:
-	"topological sort using direct remapping. O(V + E)"
+	pos_map: dict[int, int] = {}
+	heap = [(-outdegree[node], node) for node in tmp_defs if indegree[node] == 0]
+	heapq.heapify(heap)
+	pos   = 1
+
+	while heap:
+		_, u = heapq.heappop(heap)
+
+		pos_map[u] = pos
+		pos += 1
+
+		for v in graph[u]:
+			indegree[v] -= 1
+
+			if indegree[v] == 0:
+				heapq.heappush(heap, (-outdegree[v], v))
+
+	if len(pos_map) != len(tmp_defs):
+		raise ValueError("A cyclic dependency was detected")
+
+	return pos_map
+
+def tsort(tmp_defs: dict[int, set], outputs: list[set], *, fast: bool = True) -> None:
+	"topological sort using direct remapping. O([V + E] log V)"
+
+	pos_map = (_tsort_map_fast if fast else _tsort_map_slow)(tmp_defs)
 
 	id_map = {-old_pos: -new_pos for old_pos, new_pos in pos_map.items()}
 
@@ -757,22 +785,6 @@ def tsort_remap(tmp_defs: dict[int, set], outputs: list[set], pos_map: dict[int,
 
 	for i, eqn in enumerate(outputs):
 		outputs[i] = {id_map.get(dep, dep) for dep in eqn}
-
-def tsort(tmp_defs: dict[int, set], outputs: list[set]) -> None:
-	"in-place topological sort"
-
-	pos_map = tsort._map(tmp_defs)
-
-	# I pulled these constraints out of my ass.
-	if len(tmp_defs) < 15 or len(tmp_defs) - sum(1 for key, val in pos_map.items() if key == val) < 10:
-		tsort.swap(tmp_defs, outputs, pos_map)
-	else:
-		tsort.remap(tmp_defs, outputs, pos_map)
-
-tsort._map  = tsort__map  # type: ignore[attr-defined]
-tsort.swap  = tsort_swap  # type: ignore[attr-defined]
-tsort.remap = tsort_remap # type: ignore[attr-defined]
-del tsort__map, tsort_swap, tsort_remap
 
 def optimize_gates(
 	s: list[set],
@@ -789,7 +801,7 @@ def optimize_gates(
 	verbose: int = 0,
 	*,
 	interactive: bool = False,
-	sort: bool = True
+	sort: str = "slow"
 ) -> tuple[dict[int, set], list[set], bool]:
 	"""
 	first stage uses n-wise greedy optimization.
@@ -801,6 +813,9 @@ def optimize_gates(
 	if interactive, ^C requests the optimizer to stop after the current round.
 	And a second ^C requests it to stop as soon as possible, which is usually
 	immediately unless it is in a critical section.
+
+	sort should be "off", "slow", or "fast".
+	technically "slow" can be anything, so long as it is distinct from the other two.
 
 	returns (tmp vars dictionary, new outputs, exited_early)
 	"""
@@ -824,8 +839,8 @@ def optimize_gates(
 	# always run this in case the nwise optimizer does it too
 	cleanup_aliases(tmp_defs, outputs, strict=False)
 
-	if sort:
-		tsort(tmp_defs, outputs)
+	if sort != "off":
+		tsort(tmp_defs, outputs, fast=sort == "fast")
 
 	return tmp_defs, outputs, early
 
@@ -891,7 +906,7 @@ def logic_depth(
 		# TODO: consider doing a shallow copy instead of a deep copy.
 		tmp_defs = deepcopy(tmp_defs)
 		outputs  = deepcopy(outputs)
-		tsort(tmp_defs, outputs)
+		tsort(tmp_defs, outputs, fast=True)
 
 	tmp_depths: dict[int, int] = {}
 
