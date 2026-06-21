@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 """
 HDL compiler for fully unrolled, fully-combinational CRC functions given a fixed-length, byte-aligned input.
 batch jobs can be created through TOML input.
@@ -6,7 +8,7 @@ requires Python >=3.12.
 requires crcmod-plus if a CRC function other than CRC32 is used.
 
 "info" / "i" formats output curve metadata in a human readable format
-"raw" / "r" formats output the raw graph data as a python object string. it is not valid JSON.
+"ir" / "r" formats output the raw graph data as a python object string. it is not valid JSON.
 "json" / "j" formats output the raw graph data as a JSON object string with sets replaced with lists.
 "m" format gives JSON metrics about the graph reduction without giving the reduced graph.
 "python-test" / "pyt" formats output the same code as "python" / "py", but with some extra functions.
@@ -66,7 +68,7 @@ formats = {
 	("c++", "cpp")                       : "cpp"   ,
 	("metrics",)       : "txt"  , ("m",) : "txt"   ,
 	("info",)          : "txt"  , ("i",) : "txt"   ,
-	("raw",)           : "txt"  , ("r",) : "txt"   ,
+	("ir",)            : "txt"  , ("r",) : "txt"   ,
 	("json",)          : "json" , ("j",) : "json"  ,
 	("nop", "noop")    : "txt"  ,
 }
@@ -1790,7 +1792,7 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 					f"\nxor_out = 0x{xor_out:0{sum_nibs}X}"
 					f"\nreflect = {str(reflected).lower()}"
 				)
-		case "raw" | "r":
+		case "ir" | "r":
 			# NOTE: the output for this is not JSON
 			starting_gates = gf2_cse.count_gates(rows)
 
@@ -1799,7 +1801,7 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 			cse_time_end      = perf_counter_ns()
 
 			ending_gates = gf2_cse.count_gates(tmp_defs, outputs)
-			if syntax == "raw":
+			if syntax == "ir":
 				sep = "\n\t"
 				pad = ' '
 			else:
@@ -1826,10 +1828,10 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 				f'{sep}"max_fanout":{pad}{{"start":{pad}{starting_max_fanout},{pad}"end":{pad}{ending_max_fanout}}},'
 				f'{sep}"gen_time_ns":{pad}{curve_gen_time_end - curve_gen_time_stt},'
 				f'{sep}"cse_time_ns":{pad}{cse_time_end - cse_time_stt}'
-				f"{'\n' if syntax == "raw" else ''}}}"
+				f"{'\n' if syntax == "ir" else ''}}}"
 			)
 
-			print(data if syntax == "raw" else data.replace(' ', ''))
+			print(data if syntax == "ir" else data.replace(' ', ''))
 		case "json" | "j" | "metrics" | "m" | "asm=json":
 			starting_gates = gf2_cse.count_gates(rows)
 
