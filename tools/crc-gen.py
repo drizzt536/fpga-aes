@@ -15,18 +15,24 @@ requires crcmod-plus if a CRC function other than CRC32 is used.
 
 during optimization, ^C makes a soft request to stop after the round ends. ^C a second time makes it stop
 as soon as possible. The program has to be in focus for it to be noticed. ^C before and after optimization
-takes place crashes the program as normal.
+takes place crashes the program as normal. this doesn't work in LNS because LNS sucks.
 """
 
 # TODO: consider adding Veryl or Spade Rust output formats
 # TODO: consider adding FIRRTL and CIRCT IR formats
-# TODO: add assembly formats because that would be freaking awesome
 
 if __name__ != "__main__":
 	raise Exception("crc-gen.py should only be used at the top level.")
 
 import argparse
-import gf2_cse
+try:
+	import gf2_cse
+	import asm_gen
+	import asm_dsl
+except ImportError:
+	# let the compiler work standalone with no other files
+	# these will fail later if they actually matter
+	pass
 import pickle
 import lzma
 import sys
@@ -55,29 +61,56 @@ formats = {
 	("py" , "python")                    : "py"    ,
 	("pyt", "python-test")               : "py"    ,
 	("gv" , "dot", "graphviz")           : "gv"    ,
-	("c"  , "c")                         : "c"     ,
+	("c"  ,)                             : "c"     ,
 	("c++", "cpp")                       : "cpp"   ,
 	("metrics",)       : "txt"  , ("m",) : "txt"   ,
 	("info",)          : "txt"  , ("i",) : "txt"   ,
 	("raw",)           : "txt"  , ("r",) : "txt"   ,
 	("json",)          : "json" , ("j",) : "json"  ,
-	("asm=json",)      : "json" ,
-	("nop", "noop")    : None   ,
+	("nop", "noop")    : "txt"  ,
 }
 
-extension = None
+asm_formats = (
+	"json",
+	"x64-ms-nasm",
+	"ir:<flags>",
+)
+
+asm_ir_settings = {}
+extension       = None
 
 def format_validator(syntax: str) -> str:
-	global extension
+	global extension, asm_ir_settings
 
 	syntax = syntax.strip().lower()
 
-	for aliases in formats:
-		if syntax in aliases:
-			extension = formats[aliases]
-			return aliases[0]
+	if syntax.startswith("asm=ir"):
+		extension = "caf" # CRC Assembly Format
+		l = len("asm=ir")
 
-	flat_formats = [e for t in formats for e in t] # this nested syntax is stupid. it is backwards
+		if len(syntax) == l:
+			return syntax
+
+		if syntax[l] == ':':
+			for expr in syntax[l + 1:].split(':'):
+				key, val = expr.split('=', 1)
+				asm_ir_settings[key] = val
+
+			return syntax[:l]
+	elif syntax.startswith("asm="):
+		if syntax == "asm=json":
+			extension = "json"
+			return syntax
+
+		extension = "asm"
+
+		if syntax[4:] in asm_formats:
+			return syntax
+	else:
+		for aliases in formats:
+			if syntax in aliases:
+				extension = formats[aliases]
+				return aliases[0]
 
 	raise argparse.ArgumentTypeError(f"invalid format '{syntax}'. see `--help=formats` / `-F` for a list of valid formats")
 
@@ -282,6 +315,21 @@ def print_help_formats(formats: tuple[tuple[str, ...], ...] = formats) -> None:
 		print(f" - {' / '.join(e)}")
 
 		i += 1
+
+	print()
+
+	for fmt in asm_formats:
+		print(f" - asm={fmt}")
+
+	print(
+		  "     > type=cisc | risc          (default is cisc)"
+		"\n     > regcount=<int>            (default is 16)"
+		"\n     > regsize=<int>             (default is 32)"
+		"\n     > emit-spacing=<bool>       (default is false)"
+		"\n     > emit-comments=<bool>      (default is false)"
+		"\n     > emit-round-numbers=<bool> (default is false)"
+		"\n     > debug=<bool>              (emit-* master switch, default is false)"
+	)
 
 def print_help_algs() -> None:
 	print("supported named CRCs:")
@@ -744,7 +792,7 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 	# returns the output file handle if it is still open, otherwise it returns None
 	# and the second value is either the file name or None.
 
-	global cache_settings
+	global cache_settings, asm_ir_settings
 
 	if gc_disabled:
 		gc.collect()
@@ -761,6 +809,9 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 	out_port      = args.out_port
 	tmp_sgnl_base = args.tmp_name
 
+	# NOTE: There is no version in the cache key because the version has to do with both the compiler itself
+	#       and the optimizer, so a version change may or may not even mean the outputs have changed. For this
+	#       reason, I have decided against versioning the cache key. if you want it expunged, do it yourself.
 	cache_key = sha256(pickle.dumps((
 		crc_name,
 		poly,
@@ -830,7 +881,7 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 	in_pad        = " "*(max_io_pad - len(in_port))
 	out_pad       = " "*(max_io_pad - len(out_port))
 
-	tmp_port_i = tmp_sgnl_base + " "*(len(in_port) - len(tmp_sgnl_base))
+	tmp_port_i = tmp_sgnl_base + " "*(len(in_port)    - len(tmp_sgnl_base))
 	tmp_port_o = tmp_sgnl_base + " "*(len(local_port) - len(tmp_sgnl_base))
 
 	if data_len < 1:
@@ -952,6 +1003,8 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 
 	reversed_polynomial = int(f"{polynomial:0{sum_bits}b}"[::-1], 2)
 
+	# This bit with the LFSR steps and the row generation thing makes no sense to me, and it was primarily
+	# written by Claude (up until the for loop). I did test it quite a bit and I think it is probably correct.
 	lfsr_mask = (1 << sum_bits) - 1
 
 	if reflected:
@@ -1064,7 +1117,7 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 		wire_max_pad = 0 # only one of the wires is there, so no padding
 
 		# some languages do stuff like `Signals(18)`, while others are only `17 downto 0` type stuff.
-		minus = -1 if inclusive_bound_declarations else 0
+		minus = 0 if inclusive_bound_declarations else -1
 
 		if optimize:
 			wire_max_pad = max(
@@ -1103,6 +1156,7 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 
 		return outfile, (None if outfile is None else outfile.name)
 
+	# main formats
 	if syntax in {"vhd", "v", "sv", "am", "nmg", "ch", "ch3", "sp"}:
 		is_svl = syntax == "sv"
 		is_nmg = syntax == "nmg"
@@ -1229,7 +1283,7 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 			case _:
 				raise Exception("`match` case mismatch with containing logic.")
 
-		make_declarations(tmp_defs, outputs, inclusive_bound_declarations=syntax in {"vhd", "v", "sv"})
+		make_declarations(tmp_defs, outputs, inclusive_bound_declarations=syntax not in {"vhd", "v", "sv"})
 
 		if sum_len == 1:
 			# don't emit a generate block for sum length 1 since it does nothing.
@@ -1298,6 +1352,170 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 		print(footer)
 		return job_ret()
 
+	# assembly formats
+	if syntax.startswith("asm=") and syntax != "asm=json":
+		# it is okay to do this before the match/case because the `case _` branch
+		# should never execute in a production version of the compiler.
+		tmp_defs, outputs = optimize_gates(rows)
+
+		if syntax == "asm=ir":
+			if "type" not in asm_ir_settings:
+				ir_type = "cisc"
+			else:
+				ir_type = asm_ir_settings.pop("type")
+				if ir_type not in {"cisc", "risc"}:
+					raise ValueError("IR option `type` must be 'cisc' or 'risc'")
+
+			if "regcount" not in asm_ir_settings:
+				regcount = 16
+			else:
+				try:
+					regcount = int(asm_ir_settings.pop("regcount"))
+				except ValueError:
+					raise ValueError("IR option `regcount` must be an integer")
+
+			if "regsize" not in asm_ir_settings:
+				regsize = 32
+			else:
+				regsize = asm_ir_settings.pop("regsize")
+
+				try:
+					regsize = int(regsize)
+				except ValueError:
+					raise ValueError("IR option `regsize` must be an integer")
+
+			if "emit-spacing" not in asm_ir_settings:
+				emit_spacing = False
+			else:
+				emit_spacing = asm_ir_settings.pop("emit-spacing")
+				if emit_spacing not in {"true", "false"}:
+					raise ValueError("IR option `emit-spacing` must be a boolean")
+
+				emit_spacing = emit_spacing == "true"
+
+			if "emit-comments" not in asm_ir_settings:
+				emit_comments = False
+			else:
+				emit_comments = asm_ir_settings.pop("emit-comments")
+				if emit_comments not in {"true", "false"}:
+					raise ValueError("IR option `emit-comments` must be a boolean")
+
+				emit_comments = emit_comments == "true"
+
+			if "emit-round-numbers" not in asm_ir_settings:
+				emit_round_numbers = False
+			else:
+				emit_round_numbers = asm_ir_settings.pop("emit-round-numbers")
+				if emit_round_numbers not in {"true", "false"}:
+					raise ValueError("IR option `emit-round-numbers` must be a boolean")
+
+				emit_round_numbers = emit_round_numbers == "true"
+
+			if "debug" in asm_ir_settings:
+				debug = asm_ir_settings.pop("debug")
+
+				if debug not in {"true", "false"}:
+					raise ValueError("IR option `debug` must be a boolean")
+
+				if debug == "true":
+					emit_spacing       = True
+					emit_comments      = True
+					emit_round_numbers = True
+
+			valid_ir_settings = {
+				"type", "regcount", "regsize", "emit-spacing",
+				"emit-comments", "emit-round-numbers", "dense"
+			}
+
+			if asm_ir_settings:
+				raise ValueError(f"unknown flag(s) given to `-fasm=ir:<flags>`: '{"', '".join(asm_ir_settings)}'. must be '{"', '".join(valid_ir_settings)}'")
+
+			asm_ir_settings = {
+				"reg_slots": regcount,
+				"reg_size": regsize,
+				"emit_spacing": emit_spacing,
+				"emit_comments": emit_comments,
+				"emit_round_numbers": emit_round_numbers,
+			}
+
+			print( '\n'.join(asm_gen.gen_ir(
+				tmp_defs,
+				outputs,
+				crc_name,
+				data_len,
+				sum_len,
+				format=ir_type,
+				**asm_ir_settings
+			)) )
+
+			return job_ret()
+
+
+		# HERE: do the stuff that all -fasm syntaxes use
+
+		if syntax == "asm=x64-ms-nasm":
+			asm_ir_settings = {
+				"format"    : "CISC",
+				"reg_slots" : 7,
+				"reg_size"  : 64,
+				"emit_round_numbers": True
+			}
+
+			registers_fullwidth = ["rcx", "rdx", "rax", "r8" , "r9" , "r10" , "r11" ]
+			registers_8bit      = [ "cl",  "dl",  "al", "r8b", "r9b", "r10b", "r11b"]
+
+			program = asm_gen.gen_ir(
+				tmp_defs, outputs,
+				crc_name, data_len, sum_len,
+				**asm_ir_settings
+			)
+
+			#  in[i] => [rsp + idx]
+			# tmp[i] => [rsp + data_bits + idx]
+			# out[i] => [rsp + data_bits + len(tmp_defs) + idx]
+
+			in_ofs  = 0
+			tmp_ofs = data_bits
+			out_ofs = data_bits + len(tmp_defs)
+
+			program = asm_dsl.process(
+				program,
+				grammar={
+					r"@imm\[(\d+)\]": lambda m: m.group(1),
+					r"@jiz (@regb?\[\d+\]), (@label\[\w+\])": lambda m: f"\ttest {m.group(1)}, {m.group(1)}\n\tje {m.group(2)}",
+					r"@add (@reg\[\w+\]), 1\b": lambda m: f"\tinc {m.group(1)}",
+					r"@sub (@reg\[\w+\]), 1\b": lambda m: f"\tdec {m.group(1)}",
+					r"@stb (@reg\[\w+\])": lambda m: f"\tmov byte [{m.group(1)}]",
+					r"@stw (@reg\[\w+\])": lambda m: f"\tmov qword [{m.group(1)}]",
+					r"@ldb (@regb\[\w+\]), (@reg\[\w+\])": lambda m: f"\tmov {m.group(1)}, byte [{m.group(2)}]",
+					r"@ldw (@reg\[\w+\]), (@reg\[\w+\])": lambda m: f"\tmov {m.group(1)}, qword [{m.group(2)}]",
+					r"@mvz (@regb?\[\w+\])": lambda m: f"\txor {m.group(1)}, {m.group(1)}",
+					r"@reg\[(\d+)\]": lambda m: registers_fullwidth[int(m.group(1))],
+					r"@regb\[(\d+)\]": lambda m: registers_8bit[int(m.group(1))],
+					r"@function\[(\w+)\]": lambda m: f"{m.group(1)}:",
+					r"@deflabel\[(\w+)\]": lambda m: f"\n.{m.group(1)}:",
+					r"@label\[(\w+)\]": lambda m: f".{m.group(1)}",
+					r"@in\[(\d+)\]": lambda m: f"byte [@reg[sp] + {in_ofs + int(m.group(1))}]",
+					r"@tmp\[(\d+)\]": lambda m: f"byte [@reg[sp] + {tmp_ofs + int(m.group(1))}]",
+					r"@out\[(\d+)\]": lambda m: f"byte [@reg[sp] + {out_ofs + int(m.group(1))}]",
+					r"@reg\[sp\]": "rsp",
+					r"@add": "\tadd", r"@sub": "\tsub",
+					r"@shl": "\tshl", r"@shr": "\tshr",
+					r"@and": "\tand", r"@or" : "\tor",
+					r"@xor": "\txor", r"@mov": "\tmov",
+					r"@jmp": "\tjmp", r"@ret": "\tret",
+				},
+				pp_vars={"$byteorder": "little"}
+			)
+
+			print(f"; void crc{crc_name}_{data_len}(uint8_t {in_port}[{data_len}], uint{c_type_length(1 << sum_bits)}_t *{out_port});")
+			print('\n'.join(program))
+		else:
+			raise Exception(f"mismatch between argparse syntax list and match/case syntax list. syntax: '{syntax}'")
+
+		return job_ret()
+
+	# secondary formats
 	match syntax:
 		case "pyt" | "py" | "c" | "c++":
 			# compute optimized equation graph
@@ -1677,8 +1895,6 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 		case "nop":
 			if optimize:
 				# just for the output
-
-				cache_settings = '' # no caching
 				optimize_gates(rows)
 		case _:
 			raise Exception(f"mismatch between argparse syntax list and match/case syntax list. syntax: '{syntax}'")
@@ -1874,6 +2090,9 @@ args.data_len = 4      if args.data_len is None else args.data_len
 if syntax == "nop":
 	# ignore `-o`. this is just so it doesn't create any files.
 	output = '-'
+
+	# don't do any caching either
+	cache_settings = ''
 
 outfile = None
 first   = True

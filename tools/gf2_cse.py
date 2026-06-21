@@ -24,7 +24,7 @@ if you increase it enough, it should get better again.
 requires Python >=3.10
 """
 
-__version__ = "2026.06.17.0"
+__version__ = "2026.06.21.0"
 
 __all__ = (
 	# somewhat internal
@@ -35,7 +35,6 @@ __all__ = (
 	"graph_depth", "max_fanout"
 )
 
-from copy   import deepcopy
 from random import Random, SystemRandom
 
 def _eprint(*args, **kwargs) -> None:
@@ -288,7 +287,7 @@ def find_best_nwise(
 
 			for j in range(len(best_i[i])):
 				best  = best_i[i][j], best_s[i][j]
-				tmp_s = deepcopy(s)
+				tmp_s = [s_.copy() for s_ in s]
 
 				add_tmp_list(tmp_s, best, tmp_count)
 
@@ -413,7 +412,7 @@ def optimize_gates_nwise(
 
 	exit_fast_thresh *= exit_fast
 
-	s = deepcopy(s)
+	s = [s_.copy() for s_ in s]
 
 	gate_count      = count_gates(s)
 	prev_gate_count = gate_count
@@ -544,8 +543,8 @@ def brute_force(
 		if verbose >= 2 and depth == 1:
 			_eprint(f"\r# {i}/{len(candidates)}\x1b[K", end="", flush=True)
 
-		td  = deepcopy(tmp_defs)
-		out = deepcopy(outputs)
+		td  = {key: val.copy() for key, val in tmp_defs.items()}
+		out = [s.copy() for s in outputs]
 
 		add_tmp_dict(td, out, candidate, len(td) + 1)
 		td, out = brute_force(td, out, max_depth, depth + 1)
@@ -647,8 +646,8 @@ def optimize_gates_lns(
 		if verbose >= 1:
 			_eprint(f"# LNS round {round}: gates={count_gates(tmp_defs, outputs)}")
 
-		td  = deepcopy(tmp_defs)
-		out = deepcopy(outputs)
+		td  = {key: val.copy() for key, val in tmp_defs.items()}
+		out = [s.copy() for s in outputs]
 
 		for i in range(min(window_size, len(td) - 1)):
 			delete_tmp(td, out, rng.randint(1, len(td)), patch=True)
@@ -904,8 +903,8 @@ def logic_depth(
 
 	if not sorted and tmp_defs is not None:
 		# TODO: consider doing a shallow copy instead of a deep copy.
-		tmp_defs = deepcopy(tmp_defs)
-		outputs  = deepcopy(outputs)
+		tmp_defs = {key: val.copy() for key, val in tmp_defs.items()}
+		outputs  = [s.copy() for s in outputs]
 		tsort(tmp_defs, outputs, fast=True)
 
 	tmp_depths: dict[int, int] = {}
