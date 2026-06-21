@@ -21,8 +21,10 @@ takes place crashes the program as normal. this doesn't work in LNS because LNS 
 # TODO: consider adding Veryl or Spade Rust output formats
 # TODO: consider adding FIRRTL and CIRCT IR formats
 
+prog = "crcc"
+
 if __name__ != "__main__":
-	raise Exception("crc-gen.py should only be used at the top level.")
+	raise Exception(f"{prog}.py should only be used at the top level.")
 
 import argparse
 try:
@@ -43,7 +45,6 @@ from time    import perf_counter_ns
 
 stderr  = sys.stderr
 argv    = sys.argv
-prog    = "crc-gen"
 argv[0] = f"{prog}.py"
 
 __version__ = gf2_cse.__version__
@@ -115,9 +116,11 @@ def format_validator(syntax: str) -> str:
 	raise argparse.ArgumentTypeError(f"invalid format '{syntax}'. see `--help=formats` / `-F` for a list of valid formats")
 
 parser = argparse.ArgumentParser(
+	add_help=False,
 	description=f"%(prog)s {__version__}\n{__doc__}",
 	formatter_class=argparse.RawTextHelpFormatter,
 )
+parser.add_argument("-h", "-?", "--help", "--help=options", action="help", help="show this help message and exit")
 parser.add_argument("--help=formats"   , "-F", action="store_true", help="list available formats and exit")
 parser.add_argument("--help=algorithms", "-A", action="store_true", help="list available algorithms and exit")
 parser.add_argument("--help=toml", action="store_true", help="print out an example TOML program and exit")
@@ -396,6 +399,11 @@ if getattr(args, "help=all"):
 	print_help_algs()
 	print("\n################################## TOML HELP ##################################")
 	print_help_toml()
+	exit(0)
+
+
+if len(argv) == 1:
+	parser.print_help()
 	exit(0)
 
 del parser

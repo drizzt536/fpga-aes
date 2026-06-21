@@ -1,5 +1,5 @@
 """
-dedicated assembly backend for crc-gen.py
+dedicated assembly backend for crcc.py
 
 assembly ISA assumptions:
 1. there are 8 bits in a byte

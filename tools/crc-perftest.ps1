@@ -1,12 +1,12 @@
 <#
 .synopsis
-	performance testing for the optimization stage of crc-gen.py
+	performance testing for the optimization stage of crcc.py
 	for each algorithm, it stops after CSE takes at least 1 minute.
 	it uses the default optimization settings (the lowest)
 
 	requires awk
 .parameter v
-	verbosity level. passed directly to ./crc-gen.py. default is 1
+	verbosity level. passed directly to ./crcc.py. default is 1
 .parameter sleep
 	sleep time in seconds between each operation. default is 2
 .parameter algorithm
@@ -46,7 +46,7 @@ if (-not (test-path -type container perflogs)) {
 }
 
 $algorithms = $algorithm -eq "" -or $listRemaining.isPresent ?
-	(./crc-gen.py -A | sls "(?<=^ - )\w+$").matches.value :
+	(./crcc.py -A | sls "(?<=^ - )\w+$").matches.value :
 	@($algorithm)
 
 if ($listRemaining) {
@@ -95,7 +95,7 @@ foreach ($alg in $algorithms) {
 		for ($i = 1; $i -le $trials; $i++) {
 			wait
 			write-host "running trial $i/$trials"
-			$tmp = ./crc-gen.py -a $alg -l $len -cv $v -fm | convertfrom-json
+			$tmp = ./crcc.py -a $alg -l $len -cv $v -fm | convertfrom-json
 
 			if ($elem -eq $null) {
 				$elem = $tmp
