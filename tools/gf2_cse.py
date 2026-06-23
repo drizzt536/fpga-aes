@@ -24,7 +24,7 @@ if you increase it enough, it should get better again.
 requires Python >=3.10
 """
 
-__version__ = "2026.06.21.2"
+__version__ = "2026.06.23.0"
 
 __all__ = (
 	# somewhat internal
@@ -768,7 +768,7 @@ def _tsort_map_slow(tmp_defs: dict[int, set]) -> dict[int, int]:
 	return pos_map
 
 def tsort(tmp_defs: dict[int, set], outputs: list[set], *, fast: bool = True) -> None:
-	"topological sort using direct remapping. O([V + E] log V)"
+	"topological sort using direct remapping"
 
 	pos_map = (_tsort_map_fast if fast else _tsort_map_slow)(tmp_defs)
 

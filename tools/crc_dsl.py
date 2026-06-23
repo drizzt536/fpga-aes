@@ -1,6 +1,8 @@
 """
 CRC Assembly Format DSL Parser
-Requires Python >=3.10
+Requires Python >=3.10.
+
+the preprocessor is more general than the "runtime".
 
 has global state for variable and macro definitions (not reentrant)
 
@@ -8,19 +10,24 @@ has global state for variable and macro definitions (not reentrant)
 """
 
 import re
+from os.path import expanduser
 
-__version__ = "1.0"
+__version__ = "1.1.0"
 
 FunctionType = type(lambda x: x) # same as types.FunctionType
 
-DEPTH_CAP = 1024      # macro + if/loop/foreach depth
+DEPTH_CAP = 1024      # %macro + %include + %if/%loop/%foreach depth
 ITER_CAP  = 1_000_000 # %loop iteration
 
 def multisub(string: str, replacements: dict[str, str | FunctionType]) -> str:
 	"makes multiple replacements in series based on the dictionary insert order"
 
 	for pattern, repl in replacements.items():
-		string = re.sub(pattern, repl, string)
+		string = re.sub(
+			pattern,
+			'\n'.join(repl) if type(repl) is tuple else repl,
+			string
+		)
 
 	return string
 
@@ -44,7 +51,7 @@ class ExitLoop(BaseException):
 		self.line = line
 
 class ExitProgram(BaseException):
-	"stop parsing more lines but exit gracefully"
+	"stop parsing more lines exit gracefully."
 
 # preprocessor stuff
 default_vars = {"$null": ""}
@@ -132,6 +139,25 @@ def parse_condition(cmd: str, op: str, arg1: str, arg2: str, line_num: int) -> b
 			result = arg1 == arg2
 
 		# integer operations
+		case "inrange" | "notinrange":
+			try:
+				# inclusive of both bounds
+				arg2 = range(int(arg2[0]), int(arg2[1]) + 1)
+			except ValueError:
+				raise ValueError(f"ERROR: line {line_num}: `{cmd}` operator '{op}' argument 1 element {i} is not an integer: '{x1}'{end_help}")
+
+			# check if it is true for all
+			result = True
+			for i, x in enumerate(arg1, 1):
+				try:
+					x1 = int(x1, 0)
+				except ValueError:
+					raise ValueError(f"ERROR: line {line_num}: `{cmd}` operator '{op}' argument 1 element {i} is not an integer: '{x1}'{end_help}")
+
+				if (x1 not in arg2) if op == "inrange" else (x1 in arg2):
+					result = False
+					break
+
 		case "eq" | "ne" | "lt" | "le" | "gt" | "ge":
 			if len(arg1) != len(arg2):
 				raise ValueError(f"ERROR: line {line_num}: `{cmd}` operator '{op}' arguments must be the same length")
@@ -141,6 +167,8 @@ def parse_condition(cmd: str, op: str, arg1: str, arg2: str, line_num: int) -> b
 				"lt": int.__lt__, "ge": int.__ge__,
 				"le": int.__le__, "gt": int.__gt__,
 			}[op]
+
+			# elementwise, they must all be true
 
 			end_help = f". did you mean 'str{op}'?" if op in {"eq", "ne"} else ''
 			result = True
@@ -427,7 +455,7 @@ def _preproc(
 			start = int(start) - 1
 
 			if stop is not None:
-				stop = int(stop) - 1
+				stop = int(stop)
 
 			if step is not None:
 				step = int(step)
@@ -446,6 +474,29 @@ def _preproc(
 			raise ExitMacro(line=line_num)
 		elif (match := re.fullmatch(r"%exit", line)):
 			raise ExitProgram()
+		elif (match := re.fullmatch(r"%include\[(.+)\]", line)):
+			filepath = expanduser(match.group(1))
+
+			try:
+				with open(filepath, "r") as f:
+					include_lines = f.readlines()
+			except FileNotFoundError: raise ValueError(f"ERROR: line {line_num}: '%include': path does not exist")
+			except IsADirectoryError: raise ValueError(f"ERROR: line {line_num}: '%include': path is a directory")
+			except PermissionError:   raise ValueError(f"ERROR: line {line_num}: '%include': no permissions")
+			except OSError:           raise ValueError(f"ERROR: line {line_num}: '%include': path is invalid")
+
+			try:
+				_preproc(
+					in_prgm=include_lines,
+					out_prgm=out_prgm,
+					start_line=1,
+					depth=depth + 1,
+					debug=debug
+				)
+			except ExitProgram:
+				pass
+
+			del include_lines # probably this is large. delete to save memory
 		elif debug:
 			out_prgm.append(f"| UNKNOWN LINE: {line}")
 		else:
@@ -526,5 +577,5 @@ def process(
 	return program
 
 if __name__ == "__main__":
-	print("asm_dsl.py should not be used as a top-level program")
+	print("crc_dsl.py should not be used as a top-level program")
 	exit(1)

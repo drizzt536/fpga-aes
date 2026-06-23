@@ -3,12 +3,11 @@ dedicated assembly backend for crcc.py
 
 assembly ISA assumptions:
 1. there are 8 bits in a byte
-2. you can access unaligned memory bytes
-3. register size is 16, 32, or 64 bits
-4. pointer size is the same as the register size
-5. at least 4 volatile registers
-6. stack grows downwards
-7. pushing to stack is pre-decrement (and popping is post-decrement)
+2. register size is 16, 32, or 64 bits
+3. pointer size is the same as the register size
+4. at least 5 registers (stack pointer + 4 volatile GP)
+5. stack grows downwards
+6. pushing to stack is pre-decrement (and popping is post-decrement)
 
 beyond these assumptions, it is basically the lowest common denominator. the last three are
 the easiest to get around. The first two would require a full rewrite to get around. 3 would
@@ -17,6 +16,9 @@ just be annoying to get around
 register 0 must be the in  parameter (data)
 register 1 must be the out parameter (crc)
 
+if you increase the data length too high, the output program will no longer be valid
+because memory immediate offsets can only be so high
+
 NOTE: the number of registers you give should be the number of volatile registers.
 
 the distinction used between CISC and RISC is not the actual distinction, so it is not 100%
@@ -24,6 +26,20 @@ accurate. it is decided based on if `*mem ^= reg;` can be encoded in a single in
 is classified as CISC if it can, and RISC if it cannot. Some CISC architectures can't, so it
 isn't 100% accurate, but it should only misclassify CISC as RISC and not the other way around.
 """
+
+# TODO: add a parameter for the maximum positive immediate offset that pointers can use,
+#       and then if any of the offsets for a given round exceed that number, redo the round
+#       with one less register, and do manual @reg[sp] adjustments to get around it.
+#       something like @mvl @reg[7], @imm[1234321]. @mvl would need to depend on the
+#       architecture, like x64 can do 64-bit immediate moves in one instruction, but ARM64
+#       has to do it across four instructions
+
+# TODO: add behavior to push and pop some of the registers at the start/end of the function.
+#       this would drop the requirement for >=4 volatile registers. It would not, however,
+#       drop the requirement to have >=4 registers, just they would no longer have to all be
+#       volatile. This would allow x86 to be used, since it only has 3 volatile registers.
+#       also, this will make it so you can use as many of the nonvolatile register as you want,
+#       so for like if the pipeline is very deep, but most of the registers are nonvolatile
 
 from gf2_cse import __version__
 
@@ -119,6 +135,7 @@ def gen_ir_header(
 	reg_size: int,
 	emit_spacing: bool,
 	emit_comments: bool,
+	emit_round_numbers: bool,
 ) -> list[str]:
 	stack_size = (sum_len + data_len << 3) + len(tmp_defs)
 
@@ -219,11 +236,11 @@ def gen_ir_header(
 	output += [
 		f"@mvz @reg[3]",
 		f"@mov @reg[1], @imm[{data_len}]",
-		"",
-		"@deflabel[init]",
-		"\t@jiz @reg[1], @label[round1]",
-		"",
-		"\t%foreach[bit][7,6,5,4,3,2,1,0] do | 8 bits per byte",
+		f"",
+		f"@deflabel[init]",
+		f"\t@jiz @reg[1], @label[{"round1" if emit_round_numbers else "init_done"}]",
+		f"",
+		f"\t%foreach[bit][7,6,5,4,3,2,1,0] do{" | 8 bits per byte" if emit_comments else ''}",
 		"\t\t@ldb @regb[2], @reg[0]",
 		"\t\t@shr @regb[2], @imm[$bit]",
 		"\t\t@and @regb[2], @imm[1]",
@@ -238,7 +255,7 @@ def gen_ir_header(
 		"\t@add @reg[0], @imm[1]",
 		"\t@sub @reg[1], @imm[1]",
 		"\t@jmp @label[init]",
-		"",
+		"" if emit_round_numbers else "@deflabel[init_done]",
 	]
 
 	if not emit_spacing:
@@ -256,6 +273,7 @@ def gen_ir_footer(
 	reg_size: int,
 	emit_spacing: bool,
 	emit_comments: bool,
+	emit_round_numbers: bool, # ignored
 ) -> list[str]:
 	sum_range = ','.join( map(str, range(sum_len)) )
 
@@ -276,13 +294,13 @@ def gen_ir_footer(
 		f"%if[streq][$byteorder][big]",
 		f"\t@add @reg[1], @imm[{sum_len - 1}]",
 		f"%endif",
-		f"%foreach[_][{sum_range}] do",
+		f"%foreach[byte][{sum_range}] do",
 		f"\t@mvz @regb[2]",
 		f"",
-		f"\t%foreach1[bit][0,1,2,3,4,5,6,7] do | 8 bits per byte",
+		f"\t%foreach1[bit][0,1,2,3,4,5,6,7] do{" | 8 bits per byte" if emit_comments else ''}",
 		f"\t\t@ldb @regb[3], @reg[sp]",
 		f"\t\t@shl @regb[3], @imm[$bit]",
-		f"\t\t@or @regb[2], @regb[3]",
+		f"\t\t@orr @regb[2], @regb[3]",
 		f"\t\t@add @reg[sp], @imm[1]",
 		f"\t%endfor1",
 		f"",
@@ -453,6 +471,7 @@ def gen_ir(
 		reg_size,
 		emit_spacing,
 		emit_comments,
+		emit_round_numbers
 	) + dispatch[format.lower()](
 		tmp_defs,
 		outputs,
@@ -466,7 +485,8 @@ def gen_ir(
 		data_len,
 		reg_size,
 		emit_spacing,
-		emit_comments
+		emit_comments,
+		emit_round_numbers
 	)
 
 if __name__ == "__main__":

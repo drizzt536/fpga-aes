@@ -7,36 +7,49 @@ batch jobs can be created through TOML input.
 requires Python >=3.12.
 requires crcmod-plus if a CRC function other than CRC32 is used.
 
-"info" / "i" formats output curve metadata in a human readable format
-"ir" / "r" formats output the raw graph data as a python object string. it is not valid JSON.
-"json" / "j" formats output the raw graph data as a JSON object string with sets replaced with lists.
-"m" format gives JSON metrics about the graph reduction without giving the reduced graph.
-"python-test" / "pyt" formats output the same code as "python" / "py", but with some extra functions.
-"nmigen" / "nmg" formats are the same as "amaranth" / "am" but for the legacy `Elaboratable` API.
-"noop" / "nop" formats output nothing except for the stuff that goes to stderr.
-
-during optimization, ^C makes a soft request to stop after the round ends. ^C a second time makes it stop
-as soon as possible. The program has to be in focus for it to be noticed. ^C before and after optimization
-takes place crashes the program as normal. this doesn't work in LNS because LNS sucks.
+during optimization, ^C makes a soft request to stop after the round ends. ^C a second time makes
+it stop as soon as possible. The program has to be in focus for it to be noticed. ^C before and
+after optimization takes place crashes the program as normal. this doesn't work in LNS.
 """
-
-# TODO: consider adding Veryl or Spade Rust output formats
-# TODO: consider adding FIRRTL and CIRCT IR formats
 
 prog = "crcc"
 
 if __name__ != "__main__":
 	raise Exception(f"{prog}.py should only be used at the top level.")
 
-import argparse
+class MissingPackage:
+	def __init__(self, name) -> None:
+		self.name = name
+
+	def __getattr__(self, attr) -> None:
+		if attr == "__version__":
+			return "(none)"
+
+		# crash on first access
+		raise Exception(f"package `{self.name}` was not found but is required.")
+
+# let the compiler work standalone (mostly) with no other files
+# these will fail later if they actually matter
+# gf2_cse is still always needed though
+
 try:
-	import gf2_cse
 	import asm_gen
-	import asm_dsl
 except ImportError:
-	# let the compiler work standalone with no other files
-	# these will fail later if they actually matter
-	pass
+	# only needed if `-fasm=...` is given
+	asm_gen = MissingPackage("asm_gen")
+
+try:
+	import crc_dsl
+	dsl_avail = True
+except ImportError:
+	# used for some stuff other than assembly, but still optional
+	crc_dsl   = MissingPackage("crc_dsl")
+	dsl_avail = False
+
+del MissingPackage
+
+import argparse
+import gf2_cse
 import pickle
 import lzma
 import sys
@@ -66,16 +79,21 @@ formats = {
 	("gv" , "dot", "graphviz")           : "gv"    ,
 	("c"  ,)                             : "c"     ,
 	("c++", "cpp")                       : "cpp"   ,
-	("metrics",)       : "txt"  , ("m",) : "txt"   ,
-	("info",)          : "txt"  , ("i",) : "txt"   ,
-	("ir",)            : "txt"  , ("r",) : "txt"   ,
-	("json",)          : "json" , ("j",) : "json"  ,
-	("nop", "noop")    : "txt"  ,
+	("i", "info",)                       : "txt"   ,
+	("metrics",)    : "txt"     , ("m",) : "txt"   ,
+	("ir",)         : "txt"     , ("r",) : "txt"   ,
+	("json",)       : "json"    , ("j",) : "json"  ,
+	("nop", "noop") : "txt"     ,
 }
 
 asm_formats = (
-	"json",
-	"x64-ms-nasm",
+	"json / asm=j", # this one is just used for printing
+	"x64-ms-nasm"      , "x64-ms-masm"    , "x64-ms-gas",
+	"x64-stm-nasm"     ,
+	"x64-sysv-nasm"    ,                    "x64-sysv-gas",
+	"x64-apx-ms-nasm"  , "x64-apx-ms-masm", "x64-apx-ms-gas",
+	"x64-apx-stm-nasm" ,
+	"x64-apx-sysv-nasm",                    "x64-apx-sysv-gas",
 	"ir:<flags>",
 )
 
@@ -101,15 +119,29 @@ def format_validator(syntax: str) -> str:
 
 			return syntax[:l]
 	elif syntax.startswith("asm="):
-		if syntax == "asm=json":
+		if syntax in {"asm=json", "asm=j"}:
 			extension = "json"
 			return syntax
 
-		extension = "asm"
+		if syntax != "asm=json / asm=j": # not a real format
+			extension = "asm"
 
-		if syntax[4:] in asm_formats:
-			return syntax
+			if syntax.startswith("asm=x64"):
+				if syntax.endswith("-fasm"):
+					# the NASM output is compatible with FASM
+					syntax = syntax[:-4] + "nasm"
+				elif syntax.endswith("-ms"):   syntax += "-masm"
+				elif syntax.endswith("-stm"):  syntax += "-nasm"
+				elif syntax.endswith("-sysv"): syntax += "-gas"
+				elif syntax in {"asm=x64", "asm=x64-apx"}:
+					syntax += "-sysv-gas"
+				# else: it is already valid
+
+			if syntax[4:] in asm_formats:
+				return syntax
 	else:
+		# not an assembly format
+
 		for aliases in formats:
 			if syntax in aliases:
 				extension = formats[aliases]
@@ -119,13 +151,16 @@ def format_validator(syntax: str) -> str:
 
 parser = argparse.ArgumentParser(
 	add_help=False,
-	description=f"%(prog)s {__version__}\n{__doc__}",
+	description=f"%(prog)s {__version__}\ncrc_dsl {crc_dsl.__version__}\n{__doc__}",
 	formatter_class=argparse.RawTextHelpFormatter,
 )
 parser.add_argument("-h", "-?", "--help", "--help=options", action="help", help="show this help message and exit")
 parser.add_argument("--help=formats"   , "-F", action="store_true", help="list available formats and exit")
 parser.add_argument("--help=algorithms", "-A", action="store_true", help="list available algorithms and exit")
 parser.add_argument("--help=toml", action="store_true", help="print out an example TOML program and exit")
+if dsl_avail:
+	parser.add_argument("--help=dsl", action="store_true", help="print out example DSL preprocessor code and exit")
+parser.add_argument("--help=ir" , action="store_true", help="print IR format help")
 parser.add_argument("--help=all" , action="store_true", help="print all the help stuff at once and exit")
 parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {__version__}")
 
@@ -140,11 +175,17 @@ core_group.add_argument("--verbose", "-v", type=int, help="set verbosity level. 
 format_group = parser.add_argument_group("formatting options")
 format_group.add_argument("--in-port", "--in-var", "-I", type=str, help="input port/variable name. default is 'data'")
 format_group.add_argument("--out-port", "--out-var", "-O", type=str, help="output port/variable name. default is 'crc'")
-format_group.add_argument("--tmp-name", "-t", type=str, help="tmp signal name. default is 'tmp'. may creates name collisions with software language-specific variables.\nif it longer than the local signal name, it will cause misaligned expressions.")
+format_group.add_argument("--tmp-name", "-t", type=str, help="tmp signal name. default is 'tmp'. may creates name collisions with software language-specific\nvariables. if it longer than the local signal name, it will cause misaligned expressions.")
 format_group.add_argument("--indent", "-g", type=str.lower, help=f"indentation level. options are tabs, tab, none, or int n>=-1. default is 'tabs'")
 
-custom_crc_group = parser.add_argument_group("custom CRC overrides", "custom mode triggers if `--polynomial` is given.")
-custom_crc_group.add_argument("--polynomial", "--toml", "-p", type=str, help="polynomial/curve parameters. as an integer, it should include the uppermost bit (e.g. bit 33).\ncan also be a TOML file or inline TOML program (see --help=toml)")
+custom_crc_group = parser.add_argument_group("custom CRC overrides", "custom mode triggers if `-p` / `--toml` / positional is given.")
+program_group    = custom_crc_group.add_mutually_exclusive_group()
+program_group.add_argument("--toml", type=str,
+	help="TOML file or inline TOML program (see --help=toml)." +
+		(" uses DSL preprocessor (see --help=dsl)." if dsl_avail else '')
+)
+program_group.add_argument("positional", nargs="?"          , type=str, help="same as `--toml`")
+program_group.add_argument("--polynomial", "-p", type=str, help="value should include the uppermost bit (e.g. bit 33). mutually exclusive with `--toml`")
 custom_crc_group.add_argument("--init"   ,              "-i", type=int, help="initial value. default is 0")
 custom_crc_group.add_argument("--xor-out",              "-x", type=int, help="final XOR mask. default is 0")
 custom_crc_group.add_argument("--reflect", "-r", action="store_true"  , help="enable reflection. default is off")
@@ -164,20 +205,23 @@ optimize_group.add_argument("--optimize-beam"      , "-b", type=int  , help="ena
 optimize_group.add_argument("--optimize-weight"    , "-w", type=float, help="enable optimization and set the lookahead weighting")
 optimize_group.add_argument("--optimize-seed"      , "-S", type=int  , help="enable optimization, switch to predictable mode, and set the MT19937 seed")
 optimize_group.add_argument("--optimize-n-prefer"  , "-P", type=str  , help="enable optimization and set intersection count tie break preference", choices=("l", "lo", "low", "h", "hi", "high", "m", "mid", "r", "rand", "random"))
-optimize_group.add_argument("--optimize-min-gates" , "-m", type=int  , help="enable optimization. exit optimization early when lookahead only sees gate reductions below this threshold.\nfalse negatives are possible for >2 (it may optimize more than desired)")
+optimize_group.add_argument("--optimize-min-gates" , "-m", type=int  , help="enable optimization. exit optimization early when lookahead only sees gate reductions below\nthis threshold. false negatives are possible for >2 (it may optimize more than desired)")
 optimize_group.add_argument("--optimize-max-tmps"  , "-M", type=int  , help="enable optimization. set tmp signal count for when the optimizer exits early.")
-optimize_group.add_argument("--optimize-lns"       , "-L", action="store_true", help="enable optimization+LNS without touching settings. LNS is skipped on early exits")
+optimize_group.add_argument("--optimize-lns"       , "-L", action="store_true", help="enable optimization+LNS without touching settings. LNS is skipped on early exits.\nreconstruction is brute force")
 optimize_group.add_argument("--optimize-lns-trials", "-T", type=int  , help="enable optimization+LNS and set the count.")
 optimize_group.add_argument("--optimize-lns-window", "-W", type=int  , help="enable optimization+LNS and set the window size.")
 
 cache_group = parser.add_argument_group("caching options")
 cache_dir_group = cache_group.add_mutually_exclusive_group()
-cache_dir_group.add_argument("--cache-dir"   , "-D", type=str  , help="change the cache directory. doesn't enable optimization. '~' and environment variables are expanded.\ndefault is './crc-cache'.")
-cache_dir_group.add_argument("--cache-global", "-G", action="store_true"  , help="use a user global cache directory. cannot appear with `--cache-dir`.")
-cache_group.add_argument("--cache"           , "-C", type=str.lower, help="enable optimization and set cache behavior. combination of c/x: clear/expunge, o: off, r: read, w: write,\nu: use/read+write, d: delete entry. o may only appear with c/x. d must appear by itself. case insensitive.\n`%(prog)s -Cc` will clear the cache and exit. cache entries are never automatically invalidated, so they\nmay return old values if the optimizer is updated. a manual cache clear is required in this case.")
+cache_dir_group.add_argument("--cache-dir"   , "-D", type=str  , help="change the cache directory. doesn't enable optimization. '~' and environment variables are\nexpanded. default is './crc-cache'.")
+cache_dir_group.add_argument("--cache-global", "-G", action="store_true", help="use a user global cache directory. cannot appear with `--cache-dir`.")
+cache_group.add_argument("--cache"           , "-C", type=str.lower, help="enable optimization and set cache behavior. combination of c/x: clear/expunge, o: off,\nr: read, w: write, u: use/read+write, d: delete entry. o may only appear with c/x. d must\nappear by itself. case insensitive. `%(prog)s -Cc` will clear the cache and exit. cache\nentries are never automatically invalidated, so they may return old values if the optimizer\nis updated. a manual cache clear is required in this case.")
 args = parser.parse_args()
 
 del core_group, format_group, custom_crc_group, optimize_group, cache_group, cache_dir_group, argparse
+
+if not dsl_avail:
+	setattr(args, "help=dsl", None)
 
 gc_disabled = not hasattr(sys, "pypy_version_info")
 del sys
@@ -192,6 +236,9 @@ if gc_disabled:
 	import gc
 	gc.disable()
 	gc.collect()
+
+if args.positional is not None:
+	args.toml = args.positional
 
 optimize = any(x not in (None, False) for x in (
 	args.optimize, args.optimize_lns, args.optimize_min_gates,
@@ -224,8 +271,7 @@ if not lns:
 	lns_window = 0
 	lns_trials = 0
 
-# TODO: consider expanding on this line wrap idea?
-GV_DECL_LINE_WRAP = 100
+GV_DECL_LINE_WRAP = 100 # line wrap for only the node declarations. doesn't include the indentation
 
 lut_size = None if args.lut_size == -1 else args.lut_size
 syntax   = args.syntax
@@ -252,25 +298,20 @@ else:
 # these come from crcmod.predefined._crc_definitions_table
 sum_len_map = {
 	"8": 1,
-	"8darc": 1,
-	"8icode": 1,
 	"8itu": 1,
 	"8maxim": 1,
 	"8rohc": 1,
+	"8darc": 1,
+	"8icode": 1,
 	"8wcdma": 1,
 
 	"16": 2,
 	"16buypass": 2,
 	"16dds110": 2,
-	"16dect": 2,
-	"16dnp": 2,
-	"16en13757": 2,
 	"16genibus": 2,
 	"16maxim": 2,
 	"16mcrf4xx": 2,
 	"16riello": 2,
-	"16t10dif": 2,
-	"16teledisk": 2,
 	"16usb": 2,
 	"x25": 2,
 	"xmodem": 2,
@@ -278,30 +319,35 @@ sum_len_map = {
 	"kermit": 2,
 	"ccittfalse": 2,
 	"augccitt": 2,
+	"16dect": 2,
+	"16teledisk": 2,
+	"16dnp": 2,
+	"16en13757": 2,
+	"16t10dif": 2,
 
 	"24": 3,
 	"24flexraya": 3,
 	"24flexrayb": 3,
 
+	"xfer": 4,
+	"32q": 4,
 	"32": 4,
 	"32bzip2": 4,
-	"32c": 4,
 	"32d": 4,
 	"32mpeg": 4,
 	"posix": 4,
-	"32q": 4,
 	"jamcrc": 4,
-	"xfer": 4,
+	"32c": 4,
 
 	"64": 8,
-	"64we": 8,
 	"64jones": 8,
+	"64we": 8,
 }
 
 def print_help_formats(formats: tuple[tuple[str, ...], ...] = formats) -> None:
 	formats = list(formats)
 
-	print("supported output formats (case insensitive):")
+	print("supported basic output formats:")
 
 	i = 0
 	while i < len(formats):
@@ -309,10 +355,9 @@ def print_help_formats(formats: tuple[tuple[str, ...], ...] = formats) -> None:
 
 		# combine stuff like ("info",), ("i",) into one tuple
 		if (
-			i + 1 < len(formats)             # not the last format
-			and len(e) == 1                  # alias list has one element
-			and len(formats[i + 1]) == 1     # next alias list only has one element
-			and e[0][0] == formats[i + 1][0] # next format is the first letter of the current one
+			i + 1 < len(formats)          # not the last format
+			and len(e) == 1               # alias list has one element
+			and len(formats[i + 1]) == 1  # next alias list only has one element
 		):
 			e = formats[i] + formats[i + 1]
 			formats.pop(i + 1)
@@ -321,7 +366,7 @@ def print_help_formats(formats: tuple[tuple[str, ...], ...] = formats) -> None:
 
 		i += 1
 
-	print()
+	print("\nsupported assembly output formats:")
 
 	for fmt in asm_formats:
 		print(f" - asm={fmt}")
@@ -334,17 +379,60 @@ def print_help_formats(formats: tuple[tuple[str, ...], ...] = formats) -> None:
 		"\n     > emit-comments=<bool>      (default is false)"
 		"\n     > emit-round-numbers=<bool> (default is false)"
 		"\n     > debug=<bool>              (emit-* master switch, default is false)"
+		"\n"
+		"\nformat descriptions:"
+		"\n - 'python-test' / 'pyt'  the same code as 'python' / 'py', but with some extra testing functions"
+		"\n - 'json' / 'j'           raw graph data as a JSON object string with sets replaced with lists."
+		"\n - 'ir' / 'r'             raw graph data as a python object string. similar to 'json' / 'j'"
+		"\n - 'metrics' / 'm'        JSON metrics about the graph reduction without giving the graph itself."
+		"\n - 'nmigen' / 'nmg'       the same as 'amaranth' / 'am' but for the legacy `Elaboratable` API."
+		"\n - 'info' / 'i'           curve metadata in a human readable format."
+		"\n - 'noop' / 'nop'         outputs nothing except for stuff that goes to stderr."
+		"\n"
+		"\nfor asm=x64-*:"
+		"\n - 'fasm' can be used instead of 'nasm' in the format names; the output is compatible with both."
+		"\n - dialects are chosen automatically if not given: ms => masm, stm => nasm, sysv => gas"
+		"\n - if no ABI is given, it defaults to sysv"
+		"\n - 'stm' is StackMin ABI (github.com/drizzt536/files/blob/main/NASM/misc/os/docs/calling-convention.md)"
+		"\n"
+		"\nfor raw/json/metrics formats: long name => beautified, short name => minified."
+		"\nall format names and flag names/values are case insensitive"
 	)
 
 def print_help_algs() -> None:
 	print("supported named CRCs:")
 
 	prev_size = 0
-	for key, size in sum_len_map.items():
-		if size != prev_size:
-			prev_size = size
-			print(f"\n{size << 3}-bit CRCs")
-		print(f" - {key}")
+
+	try:
+		import crcmod
+
+		# map sum length to the string length of the longest algorithm name
+		len_max = {1: 0, 2: 0, 3: 0, 4: 0, 8: 0}
+
+		for key, val in sum_len_map.items():
+			if len(key) > len_max[val]:
+				len_max[val] = len(key)
+
+		pad = len_max[1] + 1
+
+		for key, size in sum_len_map.items():
+			if size != prev_size:
+				pad = len_max[size] + 1
+				prev_size = size
+				print(f"\n{size << 3}-bit CRCs")
+
+			poly    = crcmod.predefined._crc_definitions_by_name[key]['poly']
+			density = (poly.bit_count() - 1) / size * 12.5
+
+			print(f" - {key:{pad}}: poly=0x{poly:x}, density={density:4.1f}%")
+	except ImportError:
+		for key, size in sum_len_map.items():
+			if size != prev_size:
+				prev_size = size
+				print(f"\n{size << 3}-bit CRCs")
+
+			print(f" - {key}")
 
 	print("\nnames are case insensitive, are stripped of all spaces and dashes, and can have 'crc' at the start.")
 
@@ -358,7 +446,7 @@ def print_help_toml() -> None:
 	tmp-name = "qwe" # default is "tmp"
 	data-len = 5     # default is 4
 
-	# if there is only one curve, you can do `[curve]` instead of `[[curve]]`, the compiler exits without doing anything
+	# if there is only one curve, you can do `[curve]` instead of `[[curve]]`
 	[[curve]]
 	# these apply to only this curve. it resets back to the global value for the next curve
 	# these override the global ones
@@ -393,18 +481,250 @@ def print_help_toml() -> None:
 	polynomial = 0x18012d591 # attribute order doesn't matter. curve order does though
 	""".replace('\t', '')[1:-1])
 
+def print_help_dsl() -> None:
+	print("""
+		| DSL preprocessor help code (not one coherant program):
+
+		| comments are stripped and variables are expanded before all other line processing
+		| variables and keywords are case sensitive. starting and ending whitespace is stripped
+		| there is no escape character, so a line stops at the first '|' character (or the newline)
+
+		%include[~/init.caf]      | '~' gets expanded out. environment variables do not
+		%include[a\\b\\c.caf]       | the string is parsed raw
+
+		%set[var][x]              | var = "x"
+		%set[var][a,b,c]          | var = ["a", "b", "c"]. still internally just a string
+		| variable names can contain alphanumerics and underscores
+
+		%pop[$null][var]          | var.pop()
+		%shift[asdf][var]         | asdf = var.pop(0)
+		%index[x1][1][$list]      | x1 = list[1]
+		%index[x2][$i][$list]     | x2 = list[i]
+
+		%set[list][x, y, z]       | list = ["x", " y", " z"]. spaces are interpreted raw
+		%len[length][$list,1323]  | length = len(list + ["1323"])
+		%len[length][]            | length = len([])
+		%len[length][asdf]        | length = len(["asdf"])
+
+		%substr[outvar][$start,$stop,$step][expr] | outvar = "expr"[start-1:stop:step] (1-indexed, both inclusive)
+		%substr[outvar][1,3][$asdf] | outvar = asdf[0:3]
+		| NOTE: substr acts on raw strings, so if the input is a list, the output may
+		|       include the comma separators, depending on what the indices are.
+
+		| `%defmacro` macro body is expanded at call time (e.g. $tmp)
+		| `%xdefmacro` is expanded at declaration time, but is otherwise identical. same `%endmacro` to end it.
+		| argument counts cannot be variable.
+
+		%defmacro[asdf][1] as     | `as` is optional. first argument is the name, second is the argument count
+		\t%if[ge][#1][10] then  | `then` is optional. | if #1 >= 10: return
+		\t\t%exitmacro
+		\t%endif
+
+		\t| seteval operation conversion (DSL => python):
+		\t\t| ^   => **
+		\t\t| /   => //
+		\t\t| and => &
+		\t\t| or  => |
+		\t\t| xor => ^
+		\t%seteval[tmp][#1 + 1] | integer evaluated expression
+		\t%log[arg=$tmp]
+		\t%macro[asdf][$tmp]
+		\t%unset[tmp]           | del tmp
+		%endmacro
+
+		| conditionals and loops use tags to find the end, so this is not valid:
+		%if[eq][$a][$b]
+		\t%if[eq][$c][$d]
+		\t\tsomething
+		\t%endif
+		%endif
+		| when the outermost `%if` looks for the `%endif`, it uses the first one it sees
+		| NOTE: tag collisions will give parser errors about a missing `%endif`
+
+		| that matches its tag, so something like this should be used instead:
+		%if[eq][$a][$b]
+		\t%if1[eq][$c][$d]
+		\t\tsomething
+		\t%endif1 | tag=1, matches the inner block
+		%endif | empty tag, matches the outer block
+
+		| tags can either be empty, or any integer
+		| for matching block ends, tags only have to be unique for each type of block.
+		| so %loop and %if have to be unique, but you can nest an %if inside a %loop.
+		| also, uniqueness only matters for nested conditionals, so this is valid:
+
+		%if3[eq][$x][$y]
+		\tsomething
+		%endif3
+
+		%if3[eq][$a][$b]
+		\tsomething else
+		%endif3
+
+		%xdefmacro[asdf][2]
+		\t%log[#1, #2]
+		\t$null$null$null$null | this will expand out to nothing
+		%endmacro
+
+		| multiple macros can exist with the same name if they have different argument counts
+		%macro[asdf][1]    | call version 1
+		%macro[asdf][0]
+		%macro[asdf][1,0]  | call version 2
+		%macro[asdf][2,1]
+
+		%set[x][apple,asdf,abc]  | x = ["apple", "asdf", "abc"]
+
+		| %repl acts on raw strings, it replaces instances of the first string with the second
+		%repl[x][$x][a][b]       | x = ["bpple", "bsdf", "bbc"]
+		%repl[y][$x][,][$null]   | y = ''.join(x)
+
+		| setting like this is basically a bunch of list concatenations, there are only 1d lists
+		%set[x][$x,asdf,$i$i$i,$var1,$var2,qwer,,$null,4]
+
+		%set[i][0]
+		%loop | loop forever
+		\t%if1[ge][$i][10]
+		\t\t%if2[lt][$i][3]
+		\t\t\tdo some stuff
+		\t\t%else2
+		\t\t\t| %break3 | this wouldn't match anything and would throw an error
+		\t\t\t| %break2 | this would match the  `%if2` and break out of the if block.
+		\t\t\t| %break1 | this would match the `%if1` and break out of the if block.
+		\t\t\t%break | matches `%loop` since it has no tag
+		\t\t%endif2
+		\t%endif1
+
+		\t%log[i=$i]
+
+		\t%seteval[i][$i + 1]
+		%endloop | the `%endloop` has to have the same tag as the `%loop`
+
+		| %break is the only thing where tags between %if, %loop, and %foreach are different.
+		| it will match whatever block is closest with a matching tag.
+
+		%unset[i,nonexistent] | unsetting a nonexistent variable just does nothing. no error
+
+		%set[x][1]
+		%foreach3[x][1asdf,2qwer,31234,4abc,5q,6w] do | `do` is optional
+		\t%repl[x][$x][][,] | x = x.split('')
+		\t%shift[i][x]      | (i, x) = x
+		\t%repl[x][$x][,][] | x = ''.join(x)
+
+		\t%log[list[$i] = $x]
+		%endfor3
+		%log[$x] | this will print 1 since x is restored after foreach loops
+		| if $x were undefined before the foreach loop, it will be deleted at the end of the foreach loop.
+
+		%fatal[error message]
+
+		%if[subset][$format][arm32,avr]
+		\t%raw[variables aren't expanded here]
+		%endif
+
+		%exit | basically the same as EOF. preprocessor ignores all subsequent lines
+		| if this was in an %include, it will continue parsing the file it was included from
+
+		| %if conditionals:
+		|---------------------------
+
+		| integer operations: eq, ne, lt, le, gt, ge
+		%if[eq][$a,$b,$c][$x,$y,$z] | if a == x and b == y and c == z
+		%endif
+
+		| also: inrange, notinrange
+		%if[inrange][$x,$y][4,7] | if 4 <= x <= 7 and 4 <= y <= 7
+		%endif
+		| notinrange is just the negated result
+
+		| string operations: streq, strneq
+		%if[streq][asdfqwer][asdf,qwer] | commas are not treated as list separators in this case.
+		\t| this branch won't run
+		%else
+		\t| this branch will run
+		\t| there is %else, but no %elseif or %elif or anything like that.
+		%endif
+
+		| variable operations: def, notdef
+
+		%if[def][a,b,c][] | #if defined(a) && defined(b) && defined(c)
+		\t| the second argument block must be empty. it cannot be omitted.
+		\t| notdef is the negated result.
+		%endif
+
+		| list/set operations: subset, notsubset
+		| these are for loose subsets, so anything is a subset of itself
+
+		%if[subset][1,2,3,4][1,2,5,4,3]
+		\t| true. order doesn't matter
+		%endif
+	""".replace("\n\t\t", "\n")[1:-2])
+
+def print_help_ir() -> None:
+	print(
+		"HDL IR format:"
+		"\n - input is an array of bits and output is an array of bits"
+		"\n - a positive set value corresponds to an input bit, e.g. 2 => in[2]"
+		"\n - a negative set value corresponds to a temporary bit, e.g. -4 => tmp[4]"
+		"\n - input bits are 0-indexed and temporary bits are 1-indexed."
+		"\n - a None / null corresponds to a constant 1 (NOT gate)"
+		"\n - tmp signals are topologically sorted so they can only depend on tmps with lower ids"
+		"\n - a set of {None, 6, 2, -4} corresponds to `1 ^ in[6] ^ in[2] ^ tmp[4]`"
+		"\n - asm=json uses a priority queue instead of a FIFO, so it has different sorting"
+	)
+
+	if not dsl_avail:
+		return
+
+	print(
+		"\nAssembly IR format:"
+		"\n - Uses the same DSL preprocessor as the TOML input (see --help=dsl)"
+		"\n - all instructions use 'dst, src'"
+		"\n - the format is mostly ISA agnostic"
+		"\n - @mvz: move zero to register"
+		"\n - @mov: move value into register (either small a immediate or from memory)"
+		"\n - @mvl: move large immediate into register (cannot be done in one instruction)"
+		"\n - @add/@sub/@shr/@shl/@and/@xor/@jmp/@ret: same as the x86 instructions"
+		"\n - @orr: or two registers together"
+		"\n - @xor: xor a register into memory or xor two registers (depends on cisc vs risc)"
+		"\n - @jiz: jump if zero. same as CBZ on ARM32. usually something like `test` + `je`"
+		"\n - @ldw/@ldb: load word/byte from memory into a register"
+		"\n - @stw/@stb: store word/byte into memory from a register"
+		"\n - @function[...]: definition of a function"
+		"\n - @deflabel[...]: definition of a label"
+		"\n - @label[...]: reference to a label"
+		"\n - @label[...]: reference to a label"
+		"\n - @reg[sp]: stack pointer register"
+		"\n - @reg[...]: full-width register by index"
+		"\n - @regb[...]: 8-bit register by index"
+		"\n - @imm[...]: immediate value operand"
+		"\n - @in[...]: reference to input signal by index"
+		"\n - @tmp[...]: reference to temporary signal by index"
+		"\n - @out[...]: reference to output signal by index"
+	)
+
 if getattr(args, "help=all"):
 	parser.print_help()
+
 	print("\n################################# FORMAT HELP #################################")
 	print_help_formats()
+
 	print("\n################################### ALG HELP ##################################")
 	print_help_algs()
+
 	print("\n################################## TOML HELP ##################################")
 	print_help_toml()
+
+	if dsl_avail:
+		print("\n################################### DSL HELP ##################################")
+		print_help_dsl()
+
+	print("\n################################ IR FORMAT HELP ###############################")
+	print_help_ir()
+
 	exit(0)
 
-
 if len(argv) == 1:
+	# no arguments given.
 	parser.print_help()
 	exit(0)
 
@@ -420,6 +740,14 @@ if getattr(args, "help=algorithms"):
 
 if getattr(args, "help=toml"):
 	print_help_toml()
+	exit(0)
+
+if getattr(args, "help=dsl") and dsl_avail:
+	print_help_dsl()
+	exit(0)
+
+if getattr(args, "help=ir"):
+	print_help_ir()
 	exit(0)
 
 if verbose >= 2:
@@ -641,7 +969,7 @@ syntax_data["pyt"] = syntax_data["py"]
 syntax_data["c++"] = syntax_data["c"]
 syntax_data["nmg"] = syntax_data["am"]
 syntax_data["ch3"] = {key: val for key, val in syntax_data["ch"].items()}
-syntax_data["ch3"]["var_prefix"] = 'io.'
+syntax_data["ch3"]["var_prefix"] = "io."
 
 tokens = syntax_data.get(syntax, {})
 
@@ -658,6 +986,137 @@ comment     = tokens.get("comment")
 begin_logic = tokens.get("begin_logic") # begin actual logic
 vpfx        = tokens.get("var_prefix")
 wire_type   = tokens.get("wire_type")
+
+if syntax.startswith("asm="):
+	t = {
+		"x64-ms-nasm": {
+			"settings": {
+				"format"    : "CISC",
+				"byteorder" : "little",
+				"reg_size"  : 64,
+			},
+			"regw": ("rcx", "rdx", "rax", "r8" , "r9" , "r10" , "r11" ),
+			"regb": ( "cl",  "dl",  "al", "r8b", "r9b", "r10b", "r11b"),
+			"comment": ';',
+			"grammar": {
+				r"@imm\[(\d+)\]": "\\1",
+				r"@jiz (@reg\[\d+\]), (@label\[\w+\])": ("\ttest \\1, \\1", "\tje \\2"),
+				r"@add (@reg\[\w+\]), 1\b": f"\tinc \\1",
+				r"@sub (@reg\[\w+\]), 1\b": f"\tdec \\1",
+				r"@stw (@reg\[\w+\])": "\tmov qword @ptr[\\1]",
+				r"@stb (@reg\[\w+\])": "\tmov byte @ptr[\\1]",
+				r"@ldw (@reg\[\w+\]), (@reg\[\w+\])": "\tmov \\1, qword @ptr[\\2]",
+				r"@ldb (@regb\[\w+\]), (@reg\[\w+\])": "\tmov \\1, byte @ptr[\\2]",
+				r"@mvz (@regb?\[\w+\])": "\txor \\1, \\1",
+				r"@reg\[(\d+)\]" : lambda m, k: k.regw[int(m.group(1))],
+				r"@regb\[(\d+)\]": lambda m, k: k.regb[int(m.group(1))],
+				r"@function\[(\w+)\]": "\\1:",
+				r"@deflabel\[(\w+)\]": "@label[\\1]:",
+				r"@label\[(\w+)\]": ".\\1",
+				r"@in\[(\d+)\]":  lambda m, k: f"byte @ptr[@reg[sp]{f' + {ofs}' if ( ofs := k. in_ofs + int(m.group(1)) ) != 0 else ''}]",
+				r"@tmp\[(\d+)\]": lambda m, k: f"byte @ptr[@reg[sp]{f' + {ofs}' if ( ofs := k.tmp_ofs + int(m.group(1)) ) != 0 else ''}]",
+				r"@out\[(\d+)\]": lambda m, k: f"byte @ptr[@reg[sp]{f' + {ofs}' if ( ofs := k.out_ofs + int(m.group(1)) ) != 0 else ''}]",
+				r"@reg\[sp\]": "rsp",
+				r"@mvl\b": "\tmov",
+				r"@add\b": "\tadd", r"@sub\b": "\tsub",
+				r"@shl\b": "\tshl", r"@shr\b": "\tshr",
+				r"@and\b": "\tand", r"@orr\b": "\tor",
+				r"@xor\b": "\txor", r"@mov\b": "\tmov",
+				r"@jmp\b": "\tjmp", r"@ret\b": "\tret",
+				r"@ptr\b": ''
+			}
+		},
+	}
+
+	x64_ms_apx_regw = ("r16" , "r17" , "r18" , "r19" , "r20" , "r21" , "r22" , "r23" , "r24" , "r25" , "r26" , "r27" , "r28" , "r29" )
+	x64_ms_apx_regb = ("r16b", "r17b", "r18b", "r19b", "r20b", "r21b", "r22b", "r23b", "r24b", "r25b", "r26b", "r27b", "r28b", "r29b")
+
+	x64_sysv_apx_regw = x64_ms_apx_regw + ("r30" , "r31" )
+	x64_sysv_apx_regb = x64_ms_apx_regb + ("r30b", "r31b")
+
+	# Microsoft ABI
+	t["x64-ms-masm"] = t["x64-ms-nasm"].copy()
+	t["x64-ms-masm"]["grammar"] = t["x64-ms-masm"]["grammar"].copy()
+	t["x64-ms-masm"]["grammar"][r"@ptr\b"]          = "ptr "
+	t["x64-ms-masm"]["grammar"][r"@label\[(\w+)\]"] = lambda m, k: f"{k.function}_{m.group(1)}"
+
+	t["x64-ms-gas"] = t["x64-ms-nasm"].copy()
+	t["x64-ms-gas"]["grammar"] = {
+		r"(@\w+\[.+?\]), (@\w+\[.+?\])": "\\2, \\1", # swap from 'dst, src' to 'src, dst'
+		r"@imm\[(\d+)\]": "$\\1",
+		r"@jiz (@label\[\w+\]), (@reg\[\d+\])": ("\ttestq \\2, \\2", "\tje \\1"),
+		r"@add \$1, (@reg\[\w+\])": "\tincq \\1",
+		r"@sub \$1, (@reg\[\w+\])": "\tdecq \\1",
+		r"@stw (@reg\[\d+\]), (@reg\[\w+\])": "\tmovq \\1, (\\2)",
+		r"@stb (@regb\[\d+\]), (@reg\[\w+\])": "\tmovb \\1, (\\2)",
+		r"@ldw (@reg\[\w+\])": "\tmovq (\\1)",
+		r"@ldb (@reg\[\w+\])": "\tmovb (\\1)",
+		r"@mvz (@reg\[\d+\])": "\txorq \\1, \\1",
+		r"@mvz (@regb\[\d+\])": "\txorb \\1, \\1",
+		r"@reg\[(\d+)\]" : lambda m, k: '%' + k.regw[int(m.group(1))],
+		r"@regb\[(\d+)\]": lambda m, k: '%' + k.regb[int(m.group(1))],
+		r"@function\[(\w+)\]": "\\1:",
+		r"@deflabel\[(\w+)\]": "@label[\\1]:",
+		r"@label\[(\w+)\]": ".\\1",
+		r"@in\[(\d+)\]":  lambda m, k: f"{ofs if ( ofs := k. in_ofs + int(m.group(1)) ) != 0 else ''}(@reg[sp])",
+		r"@tmp\[(\d+)\]": lambda m, k: f"{ofs if ( ofs := k.tmp_ofs + int(m.group(1)) ) != 0 else ''}(@reg[sp])",
+		r"@out\[(\d+)\]": lambda m, k: f"{ofs if ( ofs := k.out_ofs + int(m.group(1)) ) != 0 else ''}(@reg[sp])",
+		r"@reg\[sp\]": "%rsp",
+
+		r"@add": "\taddq", r"@sub": "\tsubq",
+		r"@shl": "\tshlq", r"@shr": "\tshrq",
+		r"@and": "\tandb", r"@orr": "\torb",
+		r"@mov(?=.+b)": "\tmovb",
+		r"@mov": "\tmovq",
+		r"@xor": "\txorb",
+		r"@jmp": "\tjmp",
+		r"@ret": "\tret",
+	}
+
+	if "-ms-" in syntax:
+		t["x64-apx-ms-nasm"] = t["x64-ms-nasm"].copy()
+		t["x64-apx-ms-nasm"]["regw"] += x64_ms_apx_regw
+		t["x64-apx-ms-nasm"]["regb"] += x64_ms_apx_regb
+
+		t["x64-apx-ms-masm"] = t["x64-ms-masm"].copy()
+		t["x64-apx-ms-masm"]["regw"] += x64_ms_apx_regw
+		t["x64-apx-ms-masm"]["regb"] += x64_ms_apx_regb
+
+		t["x64-apx-ms-gas"] = t["x64-ms-gas"].copy()
+		t["x64-apx-ms-gas"]["regw"] += x64_ms_apx_regw
+		t["x64-apx-ms-gas"]["regb"] += x64_ms_apx_regb
+
+	# StackMin ABI. only NASM supported because I hate AT&T syntax and it isn't Windows
+	if "-stm-" in syntax:
+		t["x64-stm-nasm"] = t["x64-ms-nasm"].copy()
+		t["x64-stm-nasm"]["regw"] = ("rax", "rbx", "rcx", "rdx", "rdi" , "rsi" )
+		t["x64-stm-nasm"]["regb"] = ( "al",  "bl",  "cl",  "dl",  "dil",  "sil")
+
+		t["x64-apx-stm-nasm"] = t["x64-stm-nasm"].copy()
+		t["x64-apx-stm-nasm"]["regw"] += ("r16" , "r17" , "r18" , "r19" , "r20" , "r21" )
+		t["x64-apx-stm-nasm"]["regb"] += ("r16b", "r17b", "r18b", "r19b", "r20b", "r21b")
+
+	# System V ABI
+	if "-sysv-" in syntax:
+		t["x64-sysv-nasm"] = t["x64-ms-nasm"].copy()
+		t["x64-sysv-nasm"]["regw"] = ("rdi" , "rsi" , "rax", "rcx", "rdx", "r8" , "r9" , "r10" , "r11" )
+		t["x64-sysv-nasm"]["regb"] = ( "dil",  "sil",  "al",  "cl",  "dl", "r8b", "r9b", "r10b", "r11b")
+
+		t["x64-sysv-gas"] = t["x64-sysv-nasm"].copy()
+		t["x64-sysv-gas"]["grammar"] = t["x64-ms-gas"]["grammar"]
+
+		t["x64-apx-sysv-nasm"] = t["x64-sysv-nasm"].copy()
+		t["x64-apx-sysv-nasm"]["regw"] += x64_sysv_apx_regw
+		t["x64-apx-sysv-nasm"]["regb"] += x64_sysv_apx_regb
+
+		t["x64-apx-sysv-gas"] = t["x64-sysv-gas"].copy()
+		t["x64-apx-sysv-gas"]["regw"] += x64_sysv_apx_regw
+		t["x64-apx-sysv-gas"]["regb"] += x64_sysv_apx_regb
+
+	# x86 System V and Microsoft ABI both only have 3 volatile registers, so they don't work at the moment.
+
+	asm_format_data = t.get(syntax[4:])
+	del t, x64_ms_apx_regw, x64_ms_apx_regb, x64_sysv_apx_regw, x64_sysv_apx_regb
 
 import re
 VHDL_IDENT    = re.compile(r"(?ai)^[a-z]\w*$")
@@ -923,7 +1382,7 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 		try:
 			import crcmod
 		except ImportError:
-			raise Exception("CRCs other than crc32 require the `crcmod-plus` package.")
+			raise Exception(f"CRCs other than crc32 require the `crcmod-plus` package. crc_name: {crc_name}")
 
 		if crc_name is None:
 			crc_name = '32'
@@ -936,8 +1395,8 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 		crc_name = crcmod.predefined._simplify_name(crc_name)
 		crc = crcmod.predefined.mkCrcFun(crc_name)
 
-		reflected  = crcmod.predefined._get_definition_by_name(crc_name)["reverse"]
-		polynomial = crcmod.predefined._get_definition_by_name(crc_name)["poly"]
+		reflected  = crcmod.predefined._crc_definitions_by_name[crc_name]["reverse"]
+		polynomial = crcmod.predefined._crc_definitions_by_name[crc_name]["poly"]
 		polynomial ^= 1 << (polynomial.bit_length() - 1)
 
 	in_port_i = in_port + " "*(len(tmp_port_i) - len(in_port)) if optimize else in_port
@@ -1095,9 +1554,9 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 		outfile = None
 	else:
 		if output == "auto":
-			outfile = open(f"crc{crc_name}_{data_len}.{extension}", "w")
+			outfile = open(f"crc{crc_name}_{data_len}.{extension}", "w", newline='')
 		elif outfile is None:
-			outfile = open(output, "w")
+			outfile = open(output, "w", newline='')
 
 	def get_terms(eqn: set) -> str:
 		if None in eqn:
@@ -1363,10 +1822,12 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 		return job_ret()
 
 	# assembly formats
-	if syntax.startswith("asm=") and syntax != "asm=json":
+	if syntax.startswith("asm=") and syntax not in {"asm=json", "asm=j"}:
 		# it is okay to do this before the match/case because the `case _` branch
 		# should never execute in a production version of the compiler.
 		tmp_defs, outputs = optimize_gates(rows)
+
+		asm_ir_settings = {key.replace('_', '-'): val for key, val in asm_ir_settings.items()}
 
 		if syntax == "asm=ir":
 			if "type" not in asm_ir_settings:
@@ -1460,69 +1921,57 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 
 			return job_ret()
 
-
-		# HERE: do the stuff that all -fasm syntaxes use
-
-		if syntax == "asm=x64-ms-nasm":
-			asm_ir_settings = {
-				"format"    : "CISC",
-				"reg_slots" : 7,
-				"reg_size"  : 64,
-				"emit_round_numbers": True
-			}
-
-			registers_fullwidth = ["rcx", "rdx", "rax", "r8" , "r9" , "r10" , "r11" ]
-			registers_8bit      = [ "cl",  "dl",  "al", "r8b", "r9b", "r10b", "r11b"]
-
-			program = asm_gen.gen_ir(
-				tmp_defs, outputs,
-				crc_name, data_len, sum_len,
-				**asm_ir_settings
-			)
-
-			#  in[i] => [rsp + idx]
-			# tmp[i] => [rsp + data_bits + idx]
-			# out[i] => [rsp + data_bits + len(tmp_defs) + idx]
-
-			in_ofs  = 0
-			tmp_ofs = data_bits
-			out_ofs = data_bits + len(tmp_defs)
-
-			program = asm_dsl.process(
-				program,
-				grammar={
-					r"@imm\[(\d+)\]": lambda m: m.group(1),
-					r"@jiz (@regb?\[\d+\]), (@label\[\w+\])": lambda m: f"\ttest {m.group(1)}, {m.group(1)}\n\tje {m.group(2)}",
-					r"@add (@reg\[\w+\]), 1\b": lambda m: f"\tinc {m.group(1)}",
-					r"@sub (@reg\[\w+\]), 1\b": lambda m: f"\tdec {m.group(1)}",
-					r"@stb (@reg\[\w+\])": lambda m: f"\tmov byte [{m.group(1)}]",
-					r"@stw (@reg\[\w+\])": lambda m: f"\tmov qword [{m.group(1)}]",
-					r"@ldb (@regb\[\w+\]), (@reg\[\w+\])": lambda m: f"\tmov {m.group(1)}, byte [{m.group(2)}]",
-					r"@ldw (@reg\[\w+\]), (@reg\[\w+\])": lambda m: f"\tmov {m.group(1)}, qword [{m.group(2)}]",
-					r"@mvz (@regb?\[\w+\])": lambda m: f"\txor {m.group(1)}, {m.group(1)}",
-					r"@reg\[(\d+)\]": lambda m: registers_fullwidth[int(m.group(1))],
-					r"@regb\[(\d+)\]": lambda m: registers_8bit[int(m.group(1))],
-					r"@function\[(\w+)\]": lambda m: f"{m.group(1)}:",
-					r"@deflabel\[(\w+)\]": lambda m: f"\n.{m.group(1)}:",
-					r"@label\[(\w+)\]": lambda m: f".{m.group(1)}",
-					r"@in\[(\d+)\]": lambda m: f"byte [@reg[sp] + {in_ofs + int(m.group(1))}]",
-					r"@tmp\[(\d+)\]": lambda m: f"byte [@reg[sp] + {tmp_ofs + int(m.group(1))}]",
-					r"@out\[(\d+)\]": lambda m: f"byte [@reg[sp] + {out_ofs + int(m.group(1))}]",
-					r"@reg\[sp\]": "rsp",
-					r"@add": "\tadd", r"@sub": "\tsub",
-					r"@shl": "\tshl", r"@shr": "\tshr",
-					r"@and": "\tand", r"@or" : "\tor",
-					r"@xor": "\txor", r"@mov": "\tmov",
-					r"@jmp": "\tjmp", r"@ret": "\tret",
-				},
-				pp_vars={"$byteorder": "little"}
-			)
-
-			print(f"; void crc{crc_name}_{data_len}(uint8_t {in_port}[{data_len}], uint{c_type_length(1 << sum_bits)}_t *{out_port});")
-			print('\n'.join(program))
-		else:
+		if asm_format_data is None:
 			raise Exception(f"mismatch between argparse syntax list and match/case syntax list. syntax: '{syntax}'")
 
+		asm_ir_settings = asm_format_data["settings"]
+		byteorder = asm_ir_settings.pop("byteorder")
+		grammar   = asm_format_data["grammar"]
+
+		asm_ir_settings["reg_slots"]          = len(asm_format_data["regw"])
+		asm_ir_settings["emit_round_numbers"] = True
+
+		if verbose >= 1:
+			eprint("# scheduling instructions")
+
+		program = asm_gen.gen_ir(
+			tmp_defs, outputs,
+			crc_name, data_len, sum_len,
+			**asm_ir_settings
+		)
+
+		if verbose >= 1:
+			eprint("# processing IR code")
+
+		# basically just a static namespace
+		class gd: # grammar data
+			pass
+
+		gd.regw     = asm_format_data["regw"]
+		gd.regb     = asm_format_data["regb"]
+		gd.in_ofs   = 0
+		gd.tmp_ofs  = data_bits
+		gd.out_ofs  = data_bits + len(tmp_defs)
+		gd.function = f"crc{crc_name}_{data_len}"
+		gd.crc_name = crc_name
+		gd.data_len = data_len
+		gd.comment  = asm_format_data["comment"]
+
+		from functools import partial
+
+		for key, val in grammar.items():
+			if callable(val):
+				grammar[key] = partial(val, k=gd)
+
+		program = crc_dsl.process(
+			program,
+			grammar,
+			pp_vars={"$byteorder": byteorder},
+			strict=False # TODO: probbly remove this once it isn't needed for testing
+		)
+
+		print(f"{gd.comment} void {gd.function}(uint8_t {in_port}[{data_len}], uint{c_type_length(1 << sum_bits)}_t *{out_port});")
+		print('\n'.join(program))
 		return job_ret()
 
 	# secondary formats
@@ -1832,7 +2281,7 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 			)
 
 			print(data if syntax == "ir" else data.replace(' ', ''))
-		case "json" | "j" | "metrics" | "m" | "asm=json":
+		case "json" | "j" | "metrics" | "m" | "asm=json" | "asm=j":
 			starting_gates = gf2_cse.count_gates(rows)
 
 			cse_time_stt      = perf_counter_ns()
@@ -1840,6 +2289,8 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 			cse_time_end      = perf_counter_ns()
 
 			ending_gates = gf2_cse.count_gates(tmp_defs, outputs)
+
+			tmp_syntax = syntax[4:] if syntax.startswith("asm=") else syntax
 
 			def json_dump_data(data: dict[str, any], indent: str | None, seps: tuple[str, str]) -> str:
 				import json
@@ -1867,13 +2318,13 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 					.replace('\\u0000"', '')
 				)
 
-			indent = '\t'        if len(syntax) > 1 else None
-			seps   = (',', ': ') if len(syntax) > 1 else (',', ':')
-			inseps = (', ', ':') if len(syntax) > 1 else (',', ':')
+			indent = '\t'        if len(tmp_syntax) > 1 else None
+			seps   = (',', ': ') if len(tmp_syntax) > 1 else (',', ':')
+			inseps = (', ', ':') if len(tmp_syntax) > 1 else (',', ':')
 
 			data: dict[str, any] = {}
 
-			if syntax == 'j' or syntax.endswith("json"):
+			if tmp_syntax[0] == 'j':
 				td = {}
 
 				# reindex so keys are in ascending order
@@ -1911,61 +2362,73 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 
 	return job_ret()
 
+def get_toml(source: str):
+	import tomllib
+
+	try:
+		with open(source, "r") as f:
+			source = f.read()
+	except FileNotFoundError, OSError:
+		# `open` can throw other errors, but they don't really matter. just let them propogate.
+		# try and parse it as a TOML line if it didn't parse as a file path.
+		pass
+
+	if "'''" in source or '"""' in source:
+		raise ValueError("TOML input is invalid (contains multiline strings)")
+
+	if dsl_avail:
+		# only use the DSL preprocessor if it exists
+		source = source.split('\n')
+
+		try:
+			source = crc_dsl.preproc(source)
+		except Exception as e:
+			raise ValueError("TOML input is invalid (preprocessing failed)") from e
+
+		source = '\n'.join(source)
+
+	try:
+		return tomllib.loads(source)
+	except TOMLDecodeError:
+		raise ValueError("TOML input is invalid (TOML decode failed)")
+
 def parse_polynomial(args: object) -> list[dict[str, any]]:
 	"calculate the curve dictionary stuff from the TOML file"
 
-	# give the program a structured input language so I can call this a compiler.
-	try:
-		if args.polynomial is None:
+	if args.polynomial is not None:
+		# --polynomial
+		try:
+			# if you have a file path like "12345", then just put `./` at the start.
 			return [{
-				"name":       args.algorithm,
-				"polynomial": None,
-				"init":       None,
-				"xor-out":    None,
-				"reflect":    None,
+				"name":       None,
+				"polynomial": int(args.polynomial, 0),
+				"init":       args.init    or 0,
+				"xor-out":    args.xor_out or 0,
+				"reflect":    args.reflect
 			}]
-
-		# if you have a file path like "12345", then just put `./` at the start.
+		except ValueError:
+			raise ValueError(f"`--polynomial` given a non-integer value: '{args.polynomial}'")
+	elif args.toml is None:
+		# both are none
 		return [{
-			"name":       None,
-			"polynomial": int(args.polynomial, 0),
-			"init":       args.init    or 0,
-			"xor-out":    args.xor_out or 0,
-			"reflect":    args.reflect
+			"name":       args.algorithm, # this being None is handled later
+			"polynomial": None,
+			"init":       None,
+			"xor-out":    None,
+			"reflect":    None,
 		}]
-	except ValueError:
-		# polynomial is not none and the int cast failed.
-		pass
 
-	import tomllib
+	# --toml or positional
+	toml = get_toml(args.toml)
 
-	if '\n' in args.polynomial:
-		try:
-			toml = tomllib.loads(args.polynomial)
-		except tomllib.TOMLDecodeError:
-			raise ValueError("`--polynomial`/`--toml` given invalid TOML program")
-	else:
-		try:
-			with open(args.polynomial, "rb") as f:
-				toml = tomllib.load(f)
-		except FileNotFoundError, OSError:
-			# `open` can throw other errors, but they don't really matter. just let them propogate.
-			# try and parse it as a TOML line if it didn't parse as a file path.
-			try:
-				toml = tomllib.loads(args.polynomial)
-			except tomllib.TOMLDecodeError:
-				raise ValueError("`--polynomial`/`--toml` input is not an integer, file path, or TOML program")
-
-	args.polynomial = None
-
-	if args.in_port   is not None: raise ValueError("`--polynomial=<toml>` and `--in-port` both given")
-	if args.out_port  is not None: raise ValueError("`--polynomial=<toml>` and `--out-port` both given")
-	if args.tmp_name  is not None: raise ValueError("`--polynomial=<toml>` and `--tmp-name` both given")
-	if args.data_len  is not None: raise ValueError("`--polynomial=<toml>` and `--data-len` both given")
-	if args.algorithm is not None: raise ValueError("`--polynomial=<toml>` and `--algorithm` both given")
-	if args.init      is not None: raise ValueError("`--polynomial=<toml>` and `--init` both given")
-	if args.xor_out   is not None: raise ValueError("`--polynomial=<toml>` and `--xor-out` both given")
-	if args.reflect              : raise ValueError("`--polynomial=<toml>` and `--reflect` both given")
+	if args.in_port   is not None: raise ValueError("TOML input and `--in-port` cannot both be given")
+	if args.out_port  is not None: raise ValueError("TOML input and `--out-port` cannot both be given")
+	if args.tmp_name  is not None: raise ValueError("TOML input and `--tmp-name` cannot both be given")
+	if args.data_len  is not None: raise ValueError("TOML input and `--data-len` cannot both be given")
+	if args.algorithm is not None: raise ValueError("TOML input and `--algorithm` cannot both be given")
+	if args.init      is not None: raise ValueError("TOML input and `--init` cannot both be given")
+	if args.xor_out   is not None: raise ValueError("TOML input and `--xor-out` cannot both be given")
+	if args.reflect              : raise ValueError("TOML input and `--reflect` cannot both be given")
 
 	# this can definitely be refactored to have less code, but it really isn't
 	# that much stuff at the moment, so I don't really see a reason to do that

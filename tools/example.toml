@@ -6,7 +6,7 @@ out-port = "zzz" # default is "crc"
 tmp-name = "qwe" # default is "tmp"
 data-len = 5     # default is 4
 
-# if there is only one curve, you can do `[curve]` instead of `[[curve]]`, the compiler exits without doing anything
+# if there is only one curve, you can do `[curve]` instead of `[[curve]]`
 [[curve]]
 # these apply to only this curve. it resets back to the global value for the next curve
 # these override the global ones
