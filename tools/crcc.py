@@ -88,12 +88,14 @@ formats = {
 
 asm_formats = (
 	"json / asm=j", # this one is just used for printing
-	"x64-ms-nasm"      , "x64-ms-masm"    , "x64-ms-gas",
-	"x64-stm-nasm"     ,
-	"x64-sysv-nasm"    ,                    "x64-sysv-gas",
-	"x64-apx-ms-nasm"  , "x64-apx-ms-masm", "x64-apx-ms-gas",
-	"x64-apx-stm-nasm" ,
-	"x64-apx-sysv-nasm",                    "x64-apx-sysv-gas",
+	"x86-ms-nasm"      , "x86-ms-masm"    , "x86-ms-gas"      ,
+	"x86-sysv-nasm"    ,                    "x86-sysv-gas"    ,
+	"x64-ms-nasm"      , "x64-ms-masm"    , "x64-ms-gas"      ,
+	"x64-stm-nasm"                                            ,
+	"x64-sysv-nasm"                       , "x64-sysv-gas"    ,
+	"x64-apx-ms-nasm"  , "x64-apx-ms-masm", "x64-apx-ms-gas"  ,
+	"x64-apx-stm-nasm"                                        ,
+	"x64-apx-sysv-nasm"                   , "x64-apx-sysv-gas",
 	"ir:<flags>",
 )
 
@@ -105,6 +107,10 @@ def format_validator(syntax: str) -> str:
 
 	syntax = syntax.strip().lower()
 
+	if syntax == "asm":
+		extension = "asm"
+		return "asm=x64-sysv-gas"
+
 	if syntax.startswith("asm=ir"):
 		extension = "caf" # CRC Assembly Format
 		l = len("asm=ir")
@@ -115,7 +121,7 @@ def format_validator(syntax: str) -> str:
 		if syntax[l] == ':':
 			for expr in syntax[l + 1:].split(':'):
 				key, val = expr.split('=', 1)
-				asm_ir_settings[key] = val
+				asm_ir_settings[key] = val.replace('_', '-')
 
 			return syntax[:l]
 	elif syntax.startswith("asm="):
@@ -123,22 +129,27 @@ def format_validator(syntax: str) -> str:
 			extension = "json"
 			return syntax
 
-		if syntax != "asm=json / asm=j": # not a real format
-			extension = "asm"
+		extension = "asm"
 
-			if syntax.startswith("asm=x64"):
-				if syntax.endswith("-fasm"):
-					# the NASM output is compatible with FASM
-					syntax = syntax[:-4] + "nasm"
-				elif syntax.endswith("-ms"):   syntax += "-masm"
-				elif syntax.endswith("-stm"):  syntax += "-nasm"
-				elif syntax.endswith("-sysv"): syntax += "-gas"
-				elif syntax in {"asm=x64", "asm=x64-apx"}:
-					syntax += "-sysv-gas"
-				# else: it is already valid
+		if syntax.startswith("asm=x64"):
+			if syntax.endswith("-fasm"):
+				# the NASM output is compatible with FASM
+				syntax = syntax[:-4] + "nasm"
+			elif syntax.endswith("-ms"):   syntax += "-masm"
+			elif syntax.endswith("-stm"):  syntax += "-nasm"
+			elif syntax.endswith("-sysv"): syntax += "-gas"
+			elif syntax in {"asm=x64", "asm=x64-apx"}:
+				syntax += "-sysv-gas"
+		elif syntax.startswith("asm=x86"):
+			if syntax.endswith("-fasm"):
+				# the NASM output is compatible with FASM
+				syntax = syntax[:-4] + "nasm"
+			elif syntax.endswith("-ms"):   syntax += "-masm"
+			elif syntax.endswith("-sysv"): syntax += "-gas"
+			elif syntax == "asm=x86":      syntax += "-sysv-gas"
 
-			if syntax[4:] in asm_formats:
-				return syntax
+		if syntax[4:] in asm_formats:
+			return syntax
 	else:
 		# not an assembly format
 
@@ -366,7 +377,10 @@ def print_help_formats(formats: tuple[tuple[str, ...], ...] = formats) -> None:
 
 		i += 1
 
-	print("\nsupported assembly output formats:")
+	print(
+		"\nsupported assembly output formats:"
+		"\n - asm (defaults to x64)"
+	)
 
 	for fmt in asm_formats:
 		print(f" - asm={fmt}")
@@ -375,6 +389,7 @@ def print_help_formats(formats: tuple[tuple[str, ...], ...] = formats) -> None:
 		  "     > type=cisc | risc          (default is cisc)"
 		"\n     > regcount=<int>            (default is 16)"
 		"\n     > regsize=<int>             (default is 32)"
+		"\n     > save-list=<list[int]>     (default is [], comma separated list)"
 		"\n     > emit-spacing=<bool>       (default is false)"
 		"\n     > emit-comments=<bool>      (default is false)"
 		"\n     > emit-round-numbers=<bool> (default is false)"
@@ -389,11 +404,12 @@ def print_help_formats(formats: tuple[tuple[str, ...], ...] = formats) -> None:
 		"\n - 'info' / 'i'           curve metadata in a human readable format."
 		"\n - 'noop' / 'nop'         outputs nothing except for stuff that goes to stderr."
 		"\n"
-		"\nfor asm=x64-*:"
+		"\nfor x86 and x64:"
 		"\n - 'fasm' can be used instead of 'nasm' in the format names; the output is compatible with both."
 		"\n - dialects are chosen automatically if not given: ms => masm, stm => nasm, sysv => gas"
 		"\n - if no ABI is given, it defaults to sysv"
 		"\n - 'stm' is StackMin ABI (github.com/drizzt536/files/blob/main/NASM/misc/os/docs/calling-convention.md)"
+		"\n - all x86 ABIs are implicitly fastcall"
 		"\n"
 		"\nfor raw/json/metrics formats: long name => beautified, short name => minified."
 		"\nall format names and flag names/values are case insensitive"
@@ -408,7 +424,7 @@ def print_help_algs() -> None:
 		import crcmod
 
 		# map sum length to the string length of the longest algorithm name
-		len_max = {1: 0, 2: 0, 3: 0, 4: 0, 8: 0}
+		len_max = {1:0, 2:0, 3:0, 4:0, 8:0}
 
 		for key, val in sum_len_map.items():
 			if len(key) > len_max[val]:
@@ -968,7 +984,7 @@ syntax_data["sv"]  = syntax_data["v"]
 syntax_data["pyt"] = syntax_data["py"]
 syntax_data["c++"] = syntax_data["c"]
 syntax_data["nmg"] = syntax_data["am"]
-syntax_data["ch3"] = {key: val for key, val in syntax_data["ch"].items()}
+syntax_data["ch3"] = syntax_data["ch"].copy()
 syntax_data["ch3"]["var_prefix"] = "io."
 
 tokens = syntax_data.get(syntax, {})
@@ -993,6 +1009,7 @@ if syntax.startswith("asm="):
 			"settings": {
 				"format"    : "CISC",
 				"byteorder" : "little",
+				"save_list" : None,
 				"reg_size"  : 64,
 			},
 			"regw": ("rcx", "rdx", "rax", "r8" , "r9" , "r10" , "r11" ),
@@ -1024,7 +1041,7 @@ if syntax.startswith("asm="):
 				r"@xor\b": "\txor", r"@mov\b": "\tmov",
 				r"@jmp\b": "\tjmp", r"@ret\b": "\tret",
 				r"@ptr\b": ''
-			}
+			},
 		},
 	}
 
@@ -1062,7 +1079,6 @@ if syntax.startswith("asm="):
 		r"@tmp\[(\d+)\]": lambda m, k: f"{ofs if ( ofs := k.tmp_ofs + int(m.group(1)) ) != 0 else ''}(@reg[sp])",
 		r"@out\[(\d+)\]": lambda m, k: f"{ofs if ( ofs := k.out_ofs + int(m.group(1)) ) != 0 else ''}(@reg[sp])",
 		r"@reg\[sp\]": "%rsp",
-
 		r"@add": "\taddq", r"@sub": "\tsubq",
 		r"@shl": "\tshlq", r"@shr": "\tshrq",
 		r"@and": "\tandb", r"@orr": "\torb",
@@ -1073,7 +1089,43 @@ if syntax.startswith("asm="):
 		r"@ret": "\tret",
 	}
 
-	if "-ms-" in syntax:
+	t["x86-ms-nasm"] = {
+		"settings": {
+			"format"    : "CISC",
+			"byteorder" : "little",
+			"save_list" : [3],
+			"reg_size"  : 32,
+		},
+		"regw": ("ecx", "edx", "eax", "ebx"),
+		"regb": ( "cl",  "dl",  "al",  "bl"),
+		"comment": ';',
+		"grammar": t["x64-ms-nasm"]["grammar"].copy()
+	}
+	t["x86-ms-nasm"]["grammar"][r"@stw (@reg\[\w+\])"]                = "\tmov dword @ptr[\\1]"
+	t["x86-ms-nasm"]["grammar"][r"@ldw (@reg\[\w+\]), (@reg\[\w+\])"] = "\tmov \\1, dword @ptr[\\2]"
+	t["x86-ms-nasm"]["grammar"][r"@reg\[sp\]"]                        = "esp"
+
+	t["x86-ms-masm"] = t["x86-ms-nasm"].copy()
+	t["x86-ms-masm"]["grammar"] = t["x86-ms-masm"]["grammar"].copy()
+	t["x86-ms-masm"]["grammar"][r"@ptr\b"]          = "ptr "
+	t["x86-ms-masm"]["grammar"][r"@label\[(\w+)\]"] = lambda m, k: f"{k.function}_{m.group(1)}"
+
+	t["x86-ms-gas"] = t["x86-ms-nasm"].copy()
+	t["x86-ms-gas"]["grammar"] = t["x64-ms-gas"]["grammar"].copy()
+	t["x86-ms-gas"]["grammar"].update({
+		r"@jiz (@label\[\w+\]), (@reg\[\d+\])": ("\ttestl \\2, \\2", "\tje \\1"),
+		r"@add \$1, (@reg\[\w+\])": "\tincl \\1",
+		r"@sub \$1, (@reg\[\w+\])": "\tdecl \\1",
+		r"@stw (@reg\[\d+\]), (@reg\[\w+\])": "\tmovl \\1, (\\2)",
+		r"@ldw (@reg\[\w+\])": "\tmovl (\\1)",
+		r"@mvz (@reg\[\d+\])": "\txorl \\1, \\1",
+		r"@reg\[sp\]": "%esp",
+		r"@add": "\taddl", r"@sub": "\tsubl",
+		r"@shl": "\tshll", r"@shr": "\tshrl",
+		r"@mov": "\tmovl",
+	})
+
+	if "x64-apx-ms-" in syntax:
 		t["x64-apx-ms-nasm"] = t["x64-ms-nasm"].copy()
 		t["x64-apx-ms-nasm"]["regw"] += x64_ms_apx_regw
 		t["x64-apx-ms-nasm"]["regb"] += x64_ms_apx_regb
@@ -1087,7 +1139,7 @@ if syntax.startswith("asm="):
 		t["x64-apx-ms-gas"]["regb"] += x64_ms_apx_regb
 
 	# StackMin ABI. only NASM supported because I hate AT&T syntax and it isn't Windows
-	if "-stm-" in syntax:
+	if "-stm-nasm" in syntax:
 		t["x64-stm-nasm"] = t["x64-ms-nasm"].copy()
 		t["x64-stm-nasm"]["regw"] = ("rax", "rbx", "rcx", "rdx", "rdi" , "rsi" )
 		t["x64-stm-nasm"]["regb"] = ( "al",  "bl",  "cl",  "dl",  "dil",  "sil")
@@ -1097,14 +1149,17 @@ if syntax.startswith("asm="):
 		t["x64-apx-stm-nasm"]["regb"] += ("r16b", "r17b", "r18b", "r19b", "r20b", "r21b")
 
 	# System V ABI
-	if "-sysv-" in syntax:
-		t["x64-sysv-nasm"] = t["x64-ms-nasm"].copy()
-		t["x64-sysv-nasm"]["regw"] = ("rdi" , "rsi" , "rax", "rcx", "rdx", "r8" , "r9" , "r10" , "r11" )
-		t["x64-sysv-nasm"]["regb"] = ( "dil",  "sil",  "al",  "cl",  "dl", "r8b", "r9b", "r10b", "r11b")
+	t["x64-sysv-nasm"] = t["x64-ms-nasm"].copy()
+	t["x64-sysv-nasm"]["regw"] = ("rdi" , "rsi" , "rax", "rcx", "rdx", "r8" , "r9" , "r10" , "r11" )
+	t["x64-sysv-nasm"]["regb"] = ( "dil",  "sil",  "al",  "cl",  "dl", "r8b", "r9b", "r10b", "r11b")
 
-		t["x64-sysv-gas"] = t["x64-sysv-nasm"].copy()
-		t["x64-sysv-gas"]["grammar"] = t["x64-ms-gas"]["grammar"]
+	t["x64-sysv-gas"] = t["x64-sysv-nasm"].copy()
+	t["x64-sysv-gas"]["grammar"] = t["x64-ms-gas"]["grammar"]
 
+	t["x86-sysv-nasm"] = t["x86-ms-nasm"]
+	t["x86-sysv-gas"]  = t["x86-ms-gas"]
+
+	if "x64-apx-sysv-" in syntax:
 		t["x64-apx-sysv-nasm"] = t["x64-sysv-nasm"].copy()
 		t["x64-apx-sysv-nasm"]["regw"] += x64_sysv_apx_regw
 		t["x64-apx-sysv-nasm"]["regb"] += x64_sysv_apx_regb
@@ -1112,8 +1167,6 @@ if syntax.startswith("asm="):
 		t["x64-apx-sysv-gas"] = t["x64-sysv-gas"].copy()
 		t["x64-apx-sysv-gas"]["regw"] += x64_sysv_apx_regw
 		t["x64-apx-sysv-gas"]["regb"] += x64_sysv_apx_regb
-
-	# x86 System V and Microsoft ABI both only have 3 volatile registers, so they don't work at the moment.
 
 	asm_format_data = t.get(syntax[4:])
 	del t, x64_ms_apx_regw, x64_ms_apx_regb, x64_sysv_apx_regw, x64_sysv_apx_regb
@@ -1827,8 +1880,6 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 		# should never execute in a production version of the compiler.
 		tmp_defs, outputs = optimize_gates(rows)
 
-		asm_ir_settings = {key.replace('_', '-'): val for key, val in asm_ir_settings.items()}
-
 		if syntax == "asm=ir":
 			if "type" not in asm_ir_settings:
 				ir_type = "cisc"
@@ -1854,6 +1905,18 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 					regsize = int(regsize)
 				except ValueError:
 					raise ValueError("IR option `regsize` must be an integer")
+
+			if "save-list" not in asm_ir_settings:
+				save_list = []
+			else:
+				save_list = asm_ir_settings.pop("save-list")
+				if save_list == '':
+					save_list = []
+				else:
+					try:
+						save_list = [int(x) for x in save_list.split(',')]
+					except ValueError:
+						raise ValueError("IR option `save-list` must be a list of integers")
 
 			if "emit-spacing" not in asm_ir_settings:
 				emit_spacing = False
@@ -1894,8 +1957,8 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 					emit_round_numbers = True
 
 			valid_ir_settings = {
-				"type", "regcount", "regsize", "emit-spacing",
-				"emit-comments", "emit-round-numbers", "dense"
+				"type", "regcount", "regsize", "save-list", "emit-spacing",
+				"emit-comments", "emit-round-numbers", "debug"
 			}
 
 			if asm_ir_settings:
@@ -1904,6 +1967,7 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 			asm_ir_settings = {
 				"reg_slots": regcount,
 				"reg_size": regsize,
+				"save_list": save_list,
 				"emit_spacing": emit_spacing,
 				"emit_comments": emit_comments,
 				"emit_round_numbers": emit_round_numbers,

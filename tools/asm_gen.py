@@ -1,13 +1,14 @@
 """
 dedicated assembly backend for crcc.py
 
-assembly ISA assumptions:
+assembly assumptions:
 1. there are 8 bits in a byte
 2. register size is 16, 32, or 64 bits
 3. pointer size is the same as the register size
-4. at least 5 registers (stack pointer + 4 volatile GP)
+4. at least 5 registers (stack pointer + 4 GP)
 5. stack grows downwards
 6. pushing to stack is pre-decrement (and popping is post-decrement)
+7. ABI passes the first two arguments in registers
 
 beyond these assumptions, it is basically the lowest common denominator. the last three are
 the easiest to get around. The first two would require a full rewrite to get around. 3 would
@@ -33,13 +34,6 @@ isn't 100% accurate, but it should only misclassify CISC as RISC and not the oth
 #       something like @mvl @reg[7], @imm[1234321]. @mvl would need to depend on the
 #       architecture, like x64 can do 64-bit immediate moves in one instruction, but ARM64
 #       has to do it across four instructions
-
-# TODO: add behavior to push and pop some of the registers at the start/end of the function.
-#       this would drop the requirement for >=4 volatile registers. It would not, however,
-#       drop the requirement to have >=4 registers, just they would no longer have to all be
-#       volatile. This would allow x86 to be used, since it only has 3 volatile registers.
-#       also, this will make it so you can use as many of the nonvolatile register as you want,
-#       so for like if the pipeline is very deep, but most of the registers are nonvolatile
 
 from gf2_cse import __version__
 
@@ -133,6 +127,7 @@ def gen_ir_header(
 	sum_len: int,
 	data_len: int,
 	reg_size: int,
+	save_list: list[int] | tuple[int, ...],
 	emit_spacing: bool,
 	emit_comments: bool,
 	emit_round_numbers: bool,
@@ -164,11 +159,19 @@ def gen_ir_header(
 
 	output = [
 		f"@function[crc{crc_name}_{data_len}]",
-		f"",
-		# TODO: perhaps this next instruction might cause alignment issues on ISA that care, and
-		#       on ABIs that suck. like if the call misaligns the stack and the callee is intended
-		#       to fix it, this will not work. I don't think it will, but idk for sure. I think
-		#       it is fine since it is assume that the pointer size is the same as the word size.
+		f""
+	]
+
+	if save_list:
+		output += [
+			f"%foreach[save][{','.join(save_list)}] do{" | nonvolatile registers" if emit_comments else ''}",
+			f"\t@sub @reg[sp], @imm[{reg_size >> 3}]",
+			f"\t@stw @reg[sp], @reg[$save]",
+			f"%endfor",
+			f"",
+		]
+
+	output += [
 		f"@sub @reg[sp], @imm[{reg_size >> 3}]",
 		f"@stw @reg[sp], @reg[1]",
 		f"| register 1 is free now",
@@ -271,6 +274,7 @@ def gen_ir_footer(
 	sum_len: int,
 	data_len: int,
 	reg_size: int,
+	save_list: list[int] | tuple[int, ...],
 	emit_spacing: bool,
 	emit_comments: bool,
 	emit_round_numbers: bool, # ignored
@@ -284,6 +288,7 @@ def gen_ir_footer(
 	# reg2 = byte index
 	# reg3 = tmp byte value
 	output = [
+		f"",
 		f"@deflabel[epilogue]",
 		f"| restore the crc pointer",
 		f"@add @reg[sp], @imm[{stack_size}]",
@@ -314,8 +319,19 @@ def gen_ir_footer(
 		f"%endfor",
 		f"",
 		f"@add @reg[sp], @imm[{reg_size >> 3}]",
-		f"@ret",
 	]
+
+	if save_list:
+		output += [
+			f"",
+			f"%foreach[save][{','.join(reversed(save_list))}] do{" | nonvolatile registers" if emit_comments else ''}",
+			f"\t@ldw @reg[$save], @reg[sp]",
+			f"\t@add @reg[sp], @imm[{reg_size >> 3}]",
+			f"%endfor",
+			f"",
+		]
+
+	output.append("@ret")
 
 	if not emit_spacing:
 		output = [line for line in output if line]
@@ -457,11 +473,14 @@ def gen_ir(
 	reg_size: int = 32,
 	*,
 	format: str, # "risc" | "cisc"
+	save_list: list[int] | tuple[int, ...] = None,
 	emit_spacing: bool = False,
 	emit_comments: bool = False,
 	emit_round_numbers: bool = False
 ):
 	dispatch = {"cisc": gen_cisc_ir, "risc": gen_risc_ir}
+
+	save_list = [] if save_list is None else [str(x) for x in save_list]
 
 	return gen_ir_header(
 		tmp_defs,
@@ -469,6 +488,7 @@ def gen_ir(
 		sum_len,
 		data_len,
 		reg_size,
+		save_list,
 		emit_spacing,
 		emit_comments,
 		emit_round_numbers
@@ -484,6 +504,7 @@ def gen_ir(
 		sum_len,
 		data_len,
 		reg_size,
+		save_list,
 		emit_spacing,
 		emit_comments,
 		emit_round_numbers
