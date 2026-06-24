@@ -14,11 +14,8 @@ beyond these assumptions, it is basically the lowest common denominator. the las
 the easiest to get around. The first two would require a full rewrite to get around. 3 would
 just be annoying to get around
 
-register 0 must be the in  parameter (data)
-register 1 must be the out parameter (crc)
-
-if you increase the data length too high, the output program will no longer be valid
-because memory immediate offsets can only be so high
+register 0 must be the in  parameter (data, arg 1)
+register 1 must be the out parameter (crc , arg 2)
 
 NOTE: the number of registers you give should be the number of volatile registers.
 
@@ -28,98 +25,12 @@ is classified as CISC if it can, and RISC if it cannot. Some CISC architectures 
 isn't 100% accurate, but it should only misclassify CISC as RISC and not the other way around.
 """
 
-# TODO: add a parameter for the maximum positive immediate offset that pointers can use,
-#       and then if any of the offsets for a given round exceed that number, redo the round
-#       with one less register, and do manual @reg[sp] adjustments to get around it.
-#       something like @mvl @reg[7], @imm[1234321]. @mvl would need to depend on the
-#       architecture, like x64 can do 64-bit immediate moves in one instruction, but ARM64
-#       has to do it across four instructions
+# TODO: fix the `if emit_comments:` blocks in both the CISC and RISC IR generator functions.
+#       if any of the steps needs the imm register, the comments will be wrong.
 
 from gf2_cse import __version__
 
 __all__ = ["gen_ir"]
-
-def schedule_rounds(
-	tmp_defs: dict[int, set],
-	outputs: list[set],
-	register_slots: int = 8
-) -> list[tuple[str, set]]:
-	# This could potentially be used to generate procedural HDL code as well.
-
-	if register_slots < 1:
-		raise ValueError("there must be at least one register slot")
-
-	td = {}
-
-	# reindex so keys are in ascending order
-	for i in range(1, len(tmp_defs) + 1):
-		td[i] = tmp_defs[i].copy()
-
-	out = [s.copy() for s in outputs]
-
-	max_tmp_finished = 0
-
-	while True:
-		schedule = []
-
-		# NOTE: this is the max one that is finished consecutively from the start.
-		#       so if 1-31 are finished, 32 is not, and 33 is, it will say 31
-		max_tmp_finished = next(iter(td)) - 1 if td else float("inf")
-
-		removable_keys = []
-
-		if max_tmp_finished is not None:
-			for i, eqn in td.items():
-				if len(schedule) == register_slots:
-					break
-
-				has_none = None in eqn
-				eqn.discard(None)
-
-				usable = sorted(dep for dep in eqn if dep >= -max_tmp_finished)
-
-				if has_none:
-					eqn.add(None)
-					usable.append(None)
-
-				if not usable:
-					continue
-
-				schedule.append((-i, usable[0]))
-				eqn.discard(usable[0])
-
-				if not eqn:
-					removable_keys.append(i)
-
-		for key in removable_keys:
-			del td[key]
-
-		for i, eqn in enumerate(out):
-			if len(schedule) == register_slots:
-				break
-
-			has_none = None in eqn
-			eqn.discard(None)
-
-			usable = sorted(dep for dep in eqn if dep >= -max_tmp_finished)
-
-			if has_none:
-				eqn.add(None)
-				usable.append(None)
-
-			if not usable:
-				continue
-
-			schedule.append((i, usable[0]))
-			eqn.discard(usable[0])
-
-		if not schedule:
-			if len(td) or sum(map(len, out)):
-				raise Exception("schedule is empty but td or out is not. a cyclic dependency is likely the cause")
-
-			return
-
-		yield schedule
 
 def gen_ir_header(
 	tmp_defs: dict[int, set],
@@ -341,35 +252,198 @@ def gen_ir_footer(
 
 	return output
 
+def get_offset(id: int | None, type: str, in_ofs: int, tmp_ofs: int, out_ofs: int) -> int:
+	if id is None:
+		if type == "out":
+			# sanity check
+			raise ValueError("constant 1 signal cannot be an output")
+
+		return 0
+
+	if id < 0:
+		return tmp_ofs + id
+
+	return id + (out_ofs if type == "out" else in_ofs)
+
+def schedule_rounds(
+	tmp_defs: dict[int, set],
+	outputs: list[set],
+	reg_slots: int = 8,
+	in_ofs: int = 0,
+	tmp_ofs: int = 0,
+	out_ofs: int = 0,
+	max_ofs: int | float = 0,
+) -> list[tuple[str, set]]:
+	# This could potentially be used to generate procedural HDL code as well.
+
+	if reg_slots < 1:
+		raise ValueError("there must be at least one register slot")
+
+	td = {}
+
+	# reindex so keys are in ascending order
+	for i in range(1, len(tmp_defs) + 1):
+		td[i] = tmp_defs[i].copy()
+
+	out = [s.copy() for s in outputs]
+
+	max_tmp_finished = 0
+
+	while True:
+		schedule = []
+
+		imm_reg_req = False # extra register is required for @mvl
+
+		# NOTE: this is the max one that is finished consecutively from the start.
+		#       so if 1-31 are finished, 32 is not, and 33 is, it will say 31
+		max_tmp_finished = next(iter(td)) - 1 if td else float("inf")
+
+		removable_keys = []
+
+		if max_tmp_finished is not None:
+			# tmp values
+			for i, eqn in td.items():
+				if len(schedule) + imm_reg_req == reg_slots:
+					break
+
+				has_none = None in eqn
+				eqn.discard(None)
+
+				usable = sorted(dep for dep in eqn if dep >= -max_tmp_finished)
+
+				if has_none:
+					eqn.add(None)
+					usable.append(None)
+
+				if not usable:
+					continue
+
+
+				tmp_imm_reg_req = imm_reg_req
+
+				# NOTE: dict key is positive, but the unified tmp id is negative
+
+				if (get_offset(-i, "out", in_ofs, tmp_ofs, out_ofs) > max_ofs or
+					get_offset(usable[0], "in", in_ofs, tmp_ofs, out_ofs) > max_ofs):
+					tmp_imm_reg_req = True
+
+				if tmp_imm_reg_req and not imm_reg_req and len(schedule) + 1 == reg_slots:
+					# example: there are 8 registers, registers 0-6 don't need the imm register,
+					#          and then register 7 does. that would push the register usage to 9,
+					#          which is not allowed. so just try the next optionin this case.
+					continue
+
+				imm_reg_req = tmp_imm_reg_req
+
+				schedule.append((-i, usable[0]))
+				eqn.discard(usable[0])
+
+				if not eqn:
+					removable_keys.append(i)
+
+		for key in removable_keys:
+			del td[key]
+
+		for i, eqn in enumerate(out):
+			if len(schedule) + imm_reg_req == reg_slots:
+				break
+
+			has_none = None in eqn
+			eqn.discard(None)
+
+			usable = sorted(dep for dep in eqn if dep >= -max_tmp_finished)
+
+			if has_none:
+				eqn.add(None)
+				usable.append(None)
+
+			if not usable:
+				continue
+
+			tmp_imm_reg_req = imm_reg_req
+
+			if (get_offset(i, "out", in_ofs, tmp_ofs, out_ofs) > max_ofs or
+				get_offset(usable[0], "in", in_ofs, tmp_ofs, out_ofs) > max_ofs):
+				tmp_imm_reg_req = True
+
+			if tmp_imm_reg_req and not imm_reg_req and len(schedule) + 1 == reg_slots:
+				continue
+
+			imm_reg_req = tmp_imm_reg_req
+
+			schedule.append((i, usable[0]))
+			eqn.discard(usable[0])
+
+		if not schedule:
+			if len(td) or sum(map(len, out)):
+				raise Exception("`schedule` is empty but `td` or `out` is not. a cyclic dependency is likely the cause")
+
+			return
+
+		yield schedule
+
 def gen_cisc_ir(
 	tmp_defs: dict[int, set],
 	outputs: list[set],
 	reg_slots: int = 8,
+	in_ofs: int = 0,
+	tmp_ofs: int = 0,
+	out_ofs: int = 0,
+	max_ofs: int | float = 0,
 	emit_spacing: bool = True,
 	emit_comments: bool = True,
 	emit_round_numbers: bool = True
 ) -> list[str]:
 	output_lines = []
 
+	imm_reg = f"@reg[{reg_slots - 1}]" # the last register
+
 	round_idx = 1
-	for round_schedule in schedule_rounds(tmp_defs, outputs, reg_slots):
+	for round_schedule in schedule_rounds(tmp_defs, outputs, reg_slots, in_ofs, tmp_ofs, out_ofs, max_ofs):
 		dst_pad_len, src_pad_len = (max(len(str(id)) for id in x) for x in zip(*round_schedule))
 
 		max_len = 0
 		lines = []
 
-		# Stage 1: load dependencies
+		# stage 1: load dependencies
 		reg_idx = 0
 		for _, src in round_schedule:
-			src = "@imm[1]" if src is None else f"@tmp[{-src}]" if src < 0 else f"@in[{src}]"
-			lines.append(f"@mov @regb[{reg_idx}], {src}")
+			if src is None:
+				lines.append(f"@mov @regb[{reg_idx}], @imm[1]")
+				reg_idx += 1
+				continue
+
+			ofs = get_offset(src, "in", in_ofs, tmp_ofs, out_ofs)
+
+			if ofs > max_ofs:
+				lines += [
+					f"@mvl {imm_reg}, @imm[{ofs}]",
+					f"@add @reg[sp], {imm_reg}",
+					f"@ldb @regb[{reg_idx}], @reg[sp]",
+					f"@sub @reg[sp], {imm_reg}",
+				]
+			else:
+				src = f"@tmp[{-src}]" if src < 0 else f"@in[{src}]"
+				lines.append(f"@mov @regb[{reg_idx}], {src}")
+
 			reg_idx += 1
 
-		# Stage 2: xor dependencies into outputs
+		# stage 2: xor dependencies into outputs
 		reg_idx = 0
 		for dst, _ in round_schedule:
-			dst = f"@tmp[{-dst}]" if dst < 0 else f"@out[{dst}]"
-			lines.append(f"@xor {dst}, @regb[{reg_idx}]")
+			ofs = get_offset(dst, "out", in_ofs, tmp_ofs, out_ofs)
+
+			if ofs > max_ofs:
+				lines += [
+					f"@mvl {imm_reg}, @imm[{ofs}]",
+					f"@add @reg[sp], {imm_reg}",
+					f"@xor @reg[sp], @regb[{reg_idx}]",
+					f"@sub @reg[sp], {imm_reg}",
+				]
+			else:
+				dst = f"@tmp[{-dst}]" if dst < 0 else f"@out[{dst}]"
+				lines.append(f"@xor {dst}, @regb[{reg_idx}]")
+
 			reg_idx += 1
 
 		max_len = max(len(l) for l in lines)
@@ -399,46 +473,93 @@ def gen_risc_ir(
 	tmp_defs: dict[int, set],
 	outputs: list[set],
 	reg_slots: int = 8,
+	in_ofs: int = 0,
+	tmp_ofs: int = 0,
+	out_ofs: int = 0,
+	max_ofs: int | float = 0,
 	emit_spacing: bool = True,
 	emit_comments: bool = True,
 	emit_round_numbers: bool = True
 ) -> list[str]:
 	output_lines = []
 
-	reg_slots >>= 1
+	imm_reg = f"@reg[{reg_slots - 1}]" # the last register
+
+	# if there is an odd number of registers, the final one cannot be used for anything other
+	# than potentially the imm register
+	reg_slots >>= 1 # half for temporaries and half for read-ins
 
 	round_idx = 1
-	for round_schedule in schedule_rounds(tmp_defs, outputs, reg_slots):
+	for round_schedule in schedule_rounds(tmp_defs, outputs, reg_slots, in_ofs, tmp_ofs, out_ofs, max_ofs):
 		dst_pad_len, src_pad_len = (max(len(str(id)) for id in x) for x in zip(*round_schedule))
 
 		max_len = 0
 		lines = []
 
-		# Stage 1: load temporaries
+		# stage 1: load temporaries
 		reg_idx = 0
 		for dst_, _ in round_schedule:
-			src = f"@tmp[{-dst_}]" if dst_ < 0 else f"@out[{dst_}]"
-			lines.append(f"@ldb @regb[{reg_idx}], {src}")
+			ofs = get_offset(dst_, "out", in_ofs, tmp_ofs, out_ofs)
+
+			if ofs > max_ofs:
+				lines += [
+					f"@mvl {imm_reg}, @imm[{ofs}]",
+					f"@add @reg[sp], {imm_reg}",
+					f"@ldb @regb[{reg_idx}], @reg[sp]",
+					f"@sub @reg[sp], {imm_reg}",
+				]
+			else:
+				src = f"@tmp[{-dst_}]" if dst_ < 0 else f"@out[{dst_}]"
+				lines.append(f"@ldb @regb[{reg_idx}], {src}")
+
 			reg_idx += 1
 
-		# Stage 2: load dependencies
+		# stage 2: load dependencies
 		# don't reset the register index
 		for _, src_ in round_schedule:
-			src = "@imm[1]" if src_ is None else f"@tmp[{-src_}]" if src_ < 0 else f"@in[{src_}]"
-			lines.append(f"{"@mov" if src_ is None else "@ldb"} @regb[{reg_idx}], {src}")
+			if src_ is None:
+				lines.append(f"@mov @regb[{reg_idx}], @imm[1]")
+				reg_idx += 1
+				continue
+
+			ofs = get_offset(src_, "in", in_ofs, tmp_ofs, out_ofs)
+
+			if ofs > max_ofs:
+				lines += [
+					f"@mvl {imm_reg}, @imm[{ofs}]",
+					f"@add @reg[sp], {imm_reg}",
+					f"@ldb @regb[{reg_idx}], @reg[sp]",
+					f"@sub @reg[sp], {imm_reg}",
+				]
+			else:
+				src = f"@tmp[{-src_}]" if src_ < 0 else f"@in[{src_}]"
+				lines.append(f"@ldb @regb[{reg_idx}], {src}")
+
 			reg_idx += 1
 
-		# Stage 3: xor dependencies into temporaries
+		# stage 3: xor dependencies into temporaries
 		reg_idx = 0
 		for _, _ in round_schedule:
+			# this is only registers, so it doesn't need the @mvl stuff
 			lines.append(f"@xor @regb[{reg_idx}], @regb[{reg_idx + reg_slots}]")
 			reg_idx += 1
 
-		# Stage 4: store temporaries back where they came from
+		# stage 4: store temporaries back where they came from
 		reg_idx = 0
 		for dst_, _ in round_schedule:
-			dst = f"@tmp[{-dst_}]" if dst_ < 0 else f"@out[{dst_}]"
-			lines.append(f"@stb {dst}, @regb[{reg_idx}]")
+			ofs = get_offset(dst_, "out", in_ofs, tmp_ofs, out_ofs)
+
+			if ofs > max_ofs:
+				lines += [
+					f"@mvl {imm_reg}, @imm[{ofs}]",
+					f"@add @reg[sp], {imm_reg}",
+					f"@stb @reg[sp], @regb[{reg_idx}]",
+					f"@sub @reg[sp], {imm_reg}",
+				]
+			else:
+				dst = f"@tmp[{-dst_}]" if dst_ < 0 else f"@out[{dst_}]"
+				lines.append(f"@stb {dst}, @regb[{reg_idx}]")
+
 			reg_idx += 1
 
 		max_len = max(len(l) for l in lines)
@@ -472,8 +593,12 @@ def gen_ir(
 	reg_slots: int = 8,
 	reg_size: int = 32,
 	*,
-	format: str, # "risc" | "cisc"
+	format: str = "cisc", # "risc" | "cisc"
 	save_list: list[int] | tuple[int, ...] = None,
+	in_ofs:  int = 0,
+	tmp_ofs: int = 0,
+	out_ofs: int = 0,
+	max_ofs: int | None = None,
 	emit_spacing: bool = False,
 	emit_comments: bool = False,
 	emit_round_numbers: bool = False
@@ -481,6 +606,9 @@ def gen_ir(
 	dispatch = {"cisc": gen_cisc_ir, "risc": gen_risc_ir}
 
 	save_list = [] if save_list is None else [str(x) for x in save_list]
+
+	if max_ofs is None:
+		max_ofs = float("inf")
 
 	return gen_ir_header(
 		tmp_defs,
@@ -496,6 +624,10 @@ def gen_ir(
 		tmp_defs,
 		outputs,
 		reg_slots,
+		in_ofs,
+		tmp_ofs,
+		out_ofs,
+		max_ofs,
 		emit_spacing,
 		emit_comments,
 		emit_round_numbers,

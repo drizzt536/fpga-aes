@@ -12,6 +12,8 @@ it stop as soon as possible. The program has to be in focus for it to be noticed
 after optimization takes place crashes the program as normal. this doesn't work in LNS.
 """
 
+# TODO: perhaps give mean fanout in addition to max fanout? idk if arithmetic or geometric is better though.
+
 prog = "crcc"
 
 if __name__ != "__main__":
@@ -90,12 +92,17 @@ asm_formats = (
 	"json / asm=j", # this one is just used for printing
 	"x86-ms-nasm"      , "x86-ms-masm"    , "x86-ms-gas"      ,
 	"x86-sysv-nasm"    ,                    "x86-sysv-gas"    ,
+
 	"x64-ms-nasm"      , "x64-ms-masm"    , "x64-ms-gas"      ,
 	"x64-stm-nasm"                                            ,
 	"x64-sysv-nasm"                       , "x64-sysv-gas"    ,
 	"x64-apx-ms-nasm"  , "x64-apx-ms-masm", "x64-apx-ms-gas"  ,
 	"x64-apx-stm-nasm"                                        ,
 	"x64-apx-sysv-nasm"                   , "x64-apx-sysv-gas",
+
+	# Microsoft ABI / System V ABI / Apple are give the same output
+	"arm64-gas"        , "arm64-armasm",
+
 	"ir:<flags>",
 )
 
@@ -110,6 +117,9 @@ def format_validator(syntax: str) -> str:
 	if syntax == "asm":
 		extension = "asm"
 		return "asm=x64-sysv-gas"
+
+	if syntax.startswith("asm=amd64"):     syntax = "asm=x64" + syntax[9:]
+	elif syntax.startswith("asm=aarch64"): syntax = "asm=arm64" + syntax[11:]
 
 	if syntax.startswith("asm=ir"):
 		extension = "caf" # CRC Assembly Format
@@ -131,6 +141,9 @@ def format_validator(syntax: str) -> str:
 
 		extension = "asm"
 
+		if syntax.endswith("-clang"):
+			syntax = syntax[:-5] + "gas"
+
 		if syntax.startswith("asm=x64"):
 			if syntax.endswith("-fasm"):
 				# the NASM output is compatible with FASM
@@ -147,6 +160,12 @@ def format_validator(syntax: str) -> str:
 			elif syntax.endswith("-ms"):   syntax += "-masm"
 			elif syntax.endswith("-sysv"): syntax += "-gas"
 			elif syntax == "asm=x86":      syntax += "-sysv-gas"
+		elif syntax.startswith("asm=arm64"):
+			if syntax == "asm=arm64" or syntax.endswith("-sysv") or syntax.endswith("-ms") or syntax.endswith("-apple"):
+				syntax += "-gas"
+
+			if   syntax[10:] in {"ms-gas"   , "sysv-gas"   , "apple-gas"   }: syntax = "asm=arm64-gas"
+			elif syntax[10:] in {"ms-armasm", "sysv-armasm", "apple-armasm"}: syntax = "asm=arm64-armasm"
 
 		if syntax[4:] in asm_formats:
 			return syntax
@@ -191,12 +210,9 @@ format_group.add_argument("--indent", "-g", type=str.lower, help=f"indentation l
 
 custom_crc_group = parser.add_argument_group("custom CRC overrides", "custom mode triggers if `-p` / `--toml` / positional is given.")
 program_group    = custom_crc_group.add_mutually_exclusive_group()
-program_group.add_argument("--toml", type=str,
-	help="TOML file or inline TOML program (see --help=toml)." +
-		(" uses DSL preprocessor (see --help=dsl)." if dsl_avail else '')
-)
-program_group.add_argument("positional", nargs="?"          , type=str, help="same as `--toml`")
 program_group.add_argument("--polynomial", "-p", type=str, help="value should include the uppermost bit (e.g. bit 33). mutually exclusive with `--toml`")
+program_group.add_argument("programs", nargs='*', type=str, help="TOML file(s), inline TOML program(s), or a mix. (see --help=toml)." + (" uses DSL preprocessor (see --help=dsl). files are preprocessed separately" if dsl_avail else '')
+)
 custom_crc_group.add_argument("--init"   ,              "-i", type=int, help="initial value. default is 0")
 custom_crc_group.add_argument("--xor-out",              "-x", type=int, help="final XOR mask. default is 0")
 custom_crc_group.add_argument("--reflect", "-r", action="store_true"  , help="enable reflection. default is off")
@@ -247,9 +263,6 @@ if gc_disabled:
 	import gc
 	gc.disable()
 	gc.collect()
-
-if args.positional is not None:
-	args.toml = args.positional
 
 optimize = any(x not in (None, False) for x in (
 	args.optimize, args.optimize_lns, args.optimize_min_gates,
@@ -390,6 +403,7 @@ def print_help_formats(formats: tuple[tuple[str, ...], ...] = formats) -> None:
 		"\n     > regcount=<int>            (default is 16)"
 		"\n     > regsize=<int>             (default is 32)"
 		"\n     > save-list=<list[int]>     (default is [], comma separated list)"
+		"\n     > max-ofs=<list[int]>       (default is 0, max immediate pointer offset)"
 		"\n     > emit-spacing=<bool>       (default is false)"
 		"\n     > emit-comments=<bool>      (default is false)"
 		"\n     > emit-round-numbers=<bool> (default is false)"
@@ -402,15 +416,22 @@ def print_help_formats(formats: tuple[tuple[str, ...], ...] = formats) -> None:
 		"\n - 'metrics' / 'm'        JSON metrics about the graph reduction without giving the graph itself."
 		"\n - 'nmigen' / 'nmg'       the same as 'amaranth' / 'am' but for the legacy `Elaboratable` API."
 		"\n - 'info' / 'i'           curve metadata in a human readable format."
-		"\n - 'noop' / 'nop'         outputs nothing except for stuff that goes to stderr."
+		"\n - 'noop' / 'nop'         outputs nothing except for stuff that goes to stderr (dry run)."
 		"\n"
-		"\nfor x86 and x64:"
+		"\nx86 and x64:"
+		"\n - 'amd64' is an alias for 'x64'"
 		"\n - 'fasm' can be used instead of 'nasm' in the format names; the output is compatible with both."
 		"\n - dialects are chosen automatically if not given: ms => masm, stm => nasm, sysv => gas"
 		"\n - if no ABI is given, it defaults to sysv"
 		"\n - 'stm' is StackMin ABI (github.com/drizzt536/files/blob/main/NASM/misc/os/docs/calling-convention.md)"
-		"\n - all x86 ABIs are implicitly fastcall"
+		"\n - all x86 ABIs are implicitly fastcall. the regular ABIs pass arguments on the stack"
 		"\n"
+		"\narm64:"
+		"\n - 'aarch64' is an alias for 'arm64'"
+		"\n - 'ms', 'sysv', or 'apple' can be given as an ABI, but they are ignored. other ABIs are invalid"
+		"\n - dialect defaults to gas"
+		"\n"
+		"\ndialect 'clang' aliases dialect 'gas' for all assembly formats"
 		"\nfor raw/json/metrics formats: long name => beautified, short name => minified."
 		"\nall format names and flag names/values are case insensitive"
 	)
@@ -1003,7 +1024,127 @@ begin_logic = tokens.get("begin_logic") # begin actual logic
 vpfx        = tokens.get("var_prefix")
 wire_type   = tokens.get("wire_type")
 
-if syntax.startswith("asm="):
+del syntax_data, tokens
+
+if syntax == "asm=ir":
+	if "type" not in asm_ir_settings:
+		ir_type = "cisc"
+	else:
+		ir_type = asm_ir_settings.pop("type")
+		if ir_type not in {"cisc", "risc"}:
+			raise ValueError("IR option `type` must be 'cisc' or 'risc'")
+
+	if "regcount" not in asm_ir_settings:
+		regcount = 16
+	else:
+		try:
+			regcount = int(asm_ir_settings.pop("regcount"))
+		except ValueError:
+			raise ValueError("IR option `regcount` must be an integer")
+
+		if regcount < 4:
+			raise ValueError("IR option `regcount` must be at least 4")
+
+	if "regsize" not in asm_ir_settings:
+		regsize = 32
+	else:
+		regsize = asm_ir_settings.pop("regsize")
+
+		try:
+			regsize = int(regsize)
+		except ValueError:
+			raise ValueError("IR option `regsize` must be an integer")
+
+	if "save-list" not in asm_ir_settings:
+		save_list = None
+	else:
+		save_list = asm_ir_settings.pop("save-list")
+		if save_list == '':
+			save_list = None
+		else:
+			try:
+				save_list = [int(x) for x in save_list.split(',')]
+			except ValueError:
+				raise ValueError("IR option `save-list` must be a list of integers")
+
+	if "max-ofs" not in asm_ir_settings:
+		max_ofs = 32
+	else:
+		max_ofs = asm_ir_settings.pop("max-ofs")
+
+		if max_ofs == "none":
+			max_ofs = None
+		else:
+			try:
+				max_ofs = int(max_ofs)
+			except ValueError:
+				raise ValueError("IR option `max-ofs` must be an integer")
+
+			if max_ofs < -1:
+				raise ValueError("IR option `max_ofs` must be at least -1")
+
+	if "emit-spacing" not in asm_ir_settings:
+		emit_spacing = False
+	else:
+		emit_spacing = asm_ir_settings.pop("emit-spacing")
+		if emit_spacing not in {"true", "false"}:
+			raise ValueError("IR option `emit-spacing` must be a boolean")
+
+		emit_spacing = emit_spacing == "true"
+
+	if "emit-comments" not in asm_ir_settings:
+		emit_comments = False
+	else:
+		emit_comments = asm_ir_settings.pop("emit-comments")
+		if emit_comments not in {"true", "false"}:
+			raise ValueError("IR option `emit-comments` must be a boolean")
+
+		emit_comments = emit_comments == "true"
+
+	if "emit-round-numbers" not in asm_ir_settings:
+		emit_round_numbers = False
+	else:
+		emit_round_numbers = asm_ir_settings.pop("emit-round-numbers")
+		if emit_round_numbers not in {"true", "false"}:
+			raise ValueError("IR option `emit-round-numbers` must be a boolean")
+
+		emit_round_numbers = emit_round_numbers == "true"
+
+	if "debug" in asm_ir_settings:
+		debug = asm_ir_settings.pop("debug")
+
+		if debug not in {"true", "false"}:
+			raise ValueError("IR option `debug` must be a boolean")
+
+		if debug == "true":
+			emit_spacing       = True
+			emit_comments      = True
+			emit_round_numbers = True
+
+		del debug
+
+	if asm_ir_settings:
+		valid_ir_settings = {
+			"type", "regcount", "regsize", "save-list", "max-ofs",
+			"emit-spacing", "emit-comments", "emit-round-numbers", "debug"
+		}
+
+		raise ValueError(f"unknown flag(s) given to `-fasm=ir:<flags>`: '{"', '".join(asm_ir_settings)}'. must be '{"', '".join(valid_ir_settings)}'")
+
+	asm_ir_settings = {
+		"format"    : ir_type,
+		"reg_slots" : regcount,
+		"reg_size"  : regsize,
+		"save_list" : save_list,
+		"max_ofs"   : max_ofs,
+		"emit_spacing"  : emit_spacing,
+		"emit_comments" : emit_comments,
+		"emit_round_numbers" : emit_round_numbers,
+	}
+
+	del ir_type, regcount, regsize, save_list, max_ofs, emit_spacing, emit_comments, emit_round_numbers
+
+if syntax.startswith("asm=") and syntax != "asm=ir":
 	t = {
 		"x64-ms-nasm": {
 			"settings": {
@@ -1011,15 +1152,16 @@ if syntax.startswith("asm="):
 				"byteorder" : "little",
 				"save_list" : None,
 				"reg_size"  : 64,
+				"max_ofs"   : (1 << 31) - 1
 			},
 			"regw": ("rcx", "rdx", "rax", "r8" , "r9" , "r10" , "r11" ),
 			"regb": ( "cl",  "dl",  "al", "r8b", "r9b", "r10b", "r11b"),
 			"comment": ';',
 			"grammar": {
-				r"@imm\[(\d+)\]": "\\1",
 				r"@jiz (@reg\[\d+\]), (@label\[\w+\])": ("\ttest \\1, \\1", "\tje \\2"),
-				r"@add (@reg\[\w+\]), 1\b": f"\tinc \\1",
-				r"@sub (@reg\[\w+\]), 1\b": f"\tdec \\1",
+				r"@add (@reg\[\w+\]), @imm\[1\]\b": f"\tinc \\1",
+				r"@sub (@reg\[\w+\]), @imm\[1\]\b": f"\tdec \\1",
+				r"@imm\[(\d+)\]": "\\1",
 				r"@stw (@reg\[\w+\])": "\tmov qword @ptr[\\1]",
 				r"@stb (@reg\[\w+\])": "\tmov byte @ptr[\\1]",
 				r"@ldw (@reg\[\w+\]), (@reg\[\w+\])": "\tmov \\1, qword @ptr[\\2]",
@@ -1040,7 +1182,47 @@ if syntax.startswith("asm="):
 				r"@and\b": "\tand", r"@orr\b": "\tor",
 				r"@xor\b": "\txor", r"@mov\b": "\tmov",
 				r"@jmp\b": "\tjmp", r"@ret\b": "\tret",
-				r"@ptr\b": ''
+				r"@ptr\b": '',
+				r"@mvl\b": "\tmov", # even a 64-bit immediate move is still just `mov`
+			},
+		},
+		"arm64-gas": {
+			"settings": {
+				"format"    : "RISC",
+				"byteorder" : "little",
+				"save_list" : None,
+				"reg_size"  : 64,
+				"max_ofs"   : (1 << 12) - 1
+			},
+			"regw": ("x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17"),
+			"regb": ("w0", "w1", "w2", "w3", "w4", "w5", "w6", "w7", "w8", "w9", "w10", "w11", "w12", "w13", "w14", "w15", "w16", "w17"),
+			"comment": "//",
+			"grammar": {
+				r"@jiz": "\tcbz",
+				r"@(add|sub|and|orr) (@regb?\[\w+\])": f"\t\\1 \\2, \\2",
+				r"@sh([lr]) (@regb?\[\w+\])": f"\tls\\1 \\2, \\2",
+				r"@xor (@regb?\[\w+\])": f"\teor \\1, \\1",
+				r"@mvz @regb?(\[\d+\])": "\tmov @reg\\1, xzr",
+				r"@ldw (@reg\[\w+\]), (@reg\[\w+\])": "\tldr \\1, [\\2]",
+				r"@ldb (@regb\[\w+\]), (@reg\[\w+\])": "\tldrb \\1, [\\2]",
+				r"@stw (@reg\[\w+\]), (@reg\[\w+\])": "\tstr \\2, [\\1]",
+				r"@stb (@reg\[\w+\]), (@regb\[\w+\])": "\tstrb \\2, [\\1]",
+				r"@stb (@\w+\[\w+\]), (@regb\[\w+\])": "\tstrb \\2, \\1",
+				r"@function\[(\w+)\]": "\\1:",
+				r"@deflabel\[(\w+)\]": "@label[\\1]:",
+				r"@label\[(\w+)\]": "L\\1",
+				r"@in\[(\d+)\]":  lambda m, k: f"[@reg[sp]{f', @imm[{ofs}]' if ( ofs := k. in_ofs + int(m.group(1)) ) != 0 else ''}]",
+				r"@tmp\[(\d+)\]": lambda m, k: f"[@reg[sp]{f', @imm[{ofs}]' if ( ofs := k.tmp_ofs + int(m.group(1)) ) != 0 else ''}]",
+				r"@out\[(\d+)\]": lambda m, k: f"[@reg[sp]{f', @imm[{ofs}]' if ( ofs := k.out_ofs + int(m.group(1)) ) != 0 else ''}]",
+				r"@imm\[(\d+)\]": "\\1",
+				r"@reg\[(\d+)\]" : lambda m, k: k.regw[int(m.group(1))],
+				r"@regb\[(\d+)\]": lambda m, k: k.regb[int(m.group(1))],
+				r"@reg\[sp\]": "sp",
+				r"@ldb": "\tldrb",
+				r"@mov": "\tmov",
+				r"@ret": "\tret",
+				r"@jmp": "\tb",
+				r"@mvl": "\tmov", # GAS figures out the real instructions
 			},
 		},
 	}
@@ -1093,7 +1275,7 @@ if syntax.startswith("asm="):
 		"settings": {
 			"format"    : "CISC",
 			"byteorder" : "little",
-			"save_list" : [3],
+			"save_list" : (3,),
 			"reg_size"  : 32,
 		},
 		"regw": ("ecx", "edx", "eax", "ebx"),
@@ -1125,28 +1307,26 @@ if syntax.startswith("asm="):
 		r"@mov": "\tmovl",
 	})
 
-	if "x64-apx-ms-" in syntax:
-		t["x64-apx-ms-nasm"] = t["x64-ms-nasm"].copy()
-		t["x64-apx-ms-nasm"]["regw"] += x64_ms_apx_regw
-		t["x64-apx-ms-nasm"]["regb"] += x64_ms_apx_regb
+	t["x64-apx-ms-nasm"] = t["x64-ms-nasm"].copy()
+	t["x64-apx-ms-nasm"]["regw"] += x64_ms_apx_regw
+	t["x64-apx-ms-nasm"]["regb"] += x64_ms_apx_regb
 
-		t["x64-apx-ms-masm"] = t["x64-ms-masm"].copy()
-		t["x64-apx-ms-masm"]["regw"] += x64_ms_apx_regw
-		t["x64-apx-ms-masm"]["regb"] += x64_ms_apx_regb
+	t["x64-apx-ms-masm"] = t["x64-ms-masm"].copy()
+	t["x64-apx-ms-masm"]["regw"] += x64_ms_apx_regw
+	t["x64-apx-ms-masm"]["regb"] += x64_ms_apx_regb
 
-		t["x64-apx-ms-gas"] = t["x64-ms-gas"].copy()
-		t["x64-apx-ms-gas"]["regw"] += x64_ms_apx_regw
-		t["x64-apx-ms-gas"]["regb"] += x64_ms_apx_regb
+	t["x64-apx-ms-gas"] = t["x64-ms-gas"].copy()
+	t["x64-apx-ms-gas"]["regw"] += x64_ms_apx_regw
+	t["x64-apx-ms-gas"]["regb"] += x64_ms_apx_regb
 
 	# StackMin ABI. only NASM supported because I hate AT&T syntax and it isn't Windows
-	if "-stm-nasm" in syntax:
-		t["x64-stm-nasm"] = t["x64-ms-nasm"].copy()
-		t["x64-stm-nasm"]["regw"] = ("rax", "rbx", "rcx", "rdx", "rdi" , "rsi" )
-		t["x64-stm-nasm"]["regb"] = ( "al",  "bl",  "cl",  "dl",  "dil",  "sil")
+	t["x64-stm-nasm"] = t["x64-ms-nasm"].copy()
+	t["x64-stm-nasm"]["regw"] = ("rax", "rbx", "rcx", "rdx", "rdi" , "rsi" )
+	t["x64-stm-nasm"]["regb"] = ( "al",  "bl",  "cl",  "dl",  "dil",  "sil")
 
-		t["x64-apx-stm-nasm"] = t["x64-stm-nasm"].copy()
-		t["x64-apx-stm-nasm"]["regw"] += ("r16" , "r17" , "r18" , "r19" , "r20" , "r21" )
-		t["x64-apx-stm-nasm"]["regb"] += ("r16b", "r17b", "r18b", "r19b", "r20b", "r21b")
+	t["x64-apx-stm-nasm"] = t["x64-stm-nasm"].copy()
+	t["x64-apx-stm-nasm"]["regw"] += ("r16" , "r17" , "r18" , "r19" , "r20" , "r21" )
+	t["x64-apx-stm-nasm"]["regb"] += ("r16b", "r17b", "r18b", "r19b", "r20b", "r21b")
 
 	# System V ABI
 	t["x64-sysv-nasm"] = t["x64-ms-nasm"].copy()
@@ -1159,14 +1339,19 @@ if syntax.startswith("asm="):
 	t["x86-sysv-nasm"] = t["x86-ms-nasm"]
 	t["x86-sysv-gas"]  = t["x86-ms-gas"]
 
-	if "x64-apx-sysv-" in syntax:
-		t["x64-apx-sysv-nasm"] = t["x64-sysv-nasm"].copy()
-		t["x64-apx-sysv-nasm"]["regw"] += x64_sysv_apx_regw
-		t["x64-apx-sysv-nasm"]["regb"] += x64_sysv_apx_regb
+	t["x64-apx-sysv-nasm"] = t["x64-sysv-nasm"].copy()
+	t["x64-apx-sysv-nasm"]["regw"] += x64_sysv_apx_regw
+	t["x64-apx-sysv-nasm"]["regb"] += x64_sysv_apx_regb
 
-		t["x64-apx-sysv-gas"] = t["x64-sysv-gas"].copy()
-		t["x64-apx-sysv-gas"]["regw"] += x64_sysv_apx_regw
-		t["x64-apx-sysv-gas"]["regb"] += x64_sysv_apx_regb
+	t["x64-apx-sysv-gas"] = t["x64-sysv-gas"].copy()
+	t["x64-apx-sysv-gas"]["regw"] += x64_sysv_apx_regw
+	t["x64-apx-sysv-gas"]["regb"] += x64_sysv_apx_regb
+
+	# arm64
+	t["arm64-armasm"] = t["arm64-gas"].copy()
+	t["arm64-armasm"]["grammar"] = t["arm64-armasm"]["grammar"].copy()
+	t["arm64-armasm"]["grammar"][r"@label\[(\w+)\]"] = lambda m, k: f"{k.function}_{m.group(1)}"
+	t["arm64-armasm"]["grammar"][r"@imm\[(\d+)\]"]   = "#\\1"
 
 	asm_format_data = t.get(syntax[4:])
 	del t, x64_ms_apx_regw, x64_ms_apx_regb, x64_sysv_apx_regw, x64_sysv_apx_regb
@@ -1309,12 +1494,17 @@ def c_type_length(count: int) -> int:
 	if bits <= 32: return 32
 	return 64
 
-def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outfile) -> tuple[any, str | None]:
+def run_job(
+	output: str,
+	optimize: bool,
+	args: object, # whatever type argparse.ArgumentParser.parse_args gives you
+	extra_newline: bool,
+	asm_ir_settings: dict,
+	outfile: object # whatever type open returns
+) -> tuple[any, str | None]:
 	"do all the main stuff that has to happen per batch job"
 	# returns the output file handle if it is still open, otherwise it returns None
 	# and the second value is either the file name or None.
-
-	global cache_settings, asm_ir_settings
 
 	if gc_disabled:
 		gc.collect()
@@ -1455,8 +1645,7 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 	in_port_i = in_port + " "*(len(tmp_port_i) - len(in_port)) if optimize else in_port
 
 	def optimize_gates(eqns: list[set]) -> tuple[dict[int, set], list[set]]:
-		nonlocal ending_logic_depth, ending_max_fanout, in_idx_max_pad
-		global optimize, in_port_i
+		nonlocal ending_gates, ending_logic_depth, ending_max_fanout, in_idx_max_pad, optimize, in_port_i
 
 		if not optimize:
 			return {}, rows
@@ -1494,6 +1683,7 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 			optimize  = False
 			in_port_i = in_port
 
+		ending_gates       = gf2_cse.count_gates(tmp_defs, outputs)
 		ending_logic_depth = gf2_cse.logic_depth(tmp_defs, outputs, lut_size, sorted=True)
 		ending_max_fanout  = gf2_cse.max_fanout(tmp_defs, outputs, nodes=False)
 
@@ -1503,27 +1693,30 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 		)
 
 		if verbose >= 1:
-			eprint(f"# LUT{lut_size} logic depth: ~ {starting_logic_depth} => {ending_logic_depth}")
-			eprint(f"# max fanout: {starting_max_fanout} => {ending_max_fanout}")
+			eprint(
+				f"# XOR2 gates: {starting_gates} => {ending_gates}\n"
+				f"# LUT{lut_size} logic depth: ~ {starting_logic_depth} => {ending_logic_depth}\n"
+				f"# max fanout: {starting_max_fanout} => {ending_max_fanout}"
+			)
 
 		return tmp_defs, outputs
 
 	# sum_len is the number of bytes in the checksum
-	sum_bits  = sum_len << 3 # number of bits in the checksum
-	sum_nibs  = sum_len << 1 # number of nibbles in the checksum
+	sum_bits  =  sum_len << 3 # number of bits in the checksum
+	sum_nibs  =  sum_len << 1 # number of nibbles in the checksum
 	data_bits = data_len << 3
 
 	# idx \in [0, bits - 1]
 	in_idx_max_pad  = len(str(data_bits - 1))
-	out_idx_max_pad = len(str(sum_bits - 1))
+	out_idx_max_pad = len(str( sum_bits - 1))
 	idx_max_pad     = max(in_idx_max_pad, out_idx_max_pad)
 
 	# idx + 1 \in [1, bits]
 	in_idxp1_max_pad  = len(str(data_bits))
-	out_idxp1_max_pad = len(str(sum_bits))
+	out_idxp1_max_pad = len(str( sum_bits))
 	idxp1_max_pad     = max(in_idxp1_max_pad, out_idxp1_max_pad)
 
-	reversed_polynomial = int(f"{polynomial:0{sum_bits}b}"[::-1], 2)
+	reversed_polynomial = int(f"{polynomial:0{sum_bits}b}"[::-1], 2) # bit reversal
 
 	# This bit with the LFSR steps and the row generation thing makes no sense to me, and it was primarily
 	# written by Claude (up until the for loop). I did test it quite a bit and I think it is probably correct.
@@ -1537,7 +1730,7 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 	K = crc(bytes(data_len)) # correction vector
 
 	if verbose >= 1:
-		eprint("# generating curve vectors", end="", flush=True)
+		eprint("# generating curve vectors")
 
 	curve_gen_time_stt = perf_counter_ns()
 
@@ -1561,7 +1754,7 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 	del current
 
 	if verbose >= 1:
-		eprint("\r# generating matrix\x1b[K", end="", flush=True)
+		eprint("# generating matrix")
 
 	rows = [
 		{data_bits - 1 - n for n in range(data_bits) if (cols[n] >> bit) & 1}
@@ -1572,13 +1765,14 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 		if (K >> bit) & 1:
 			eqn.add(None)
 
+	starting_gates       = gf2_cse.count_gates(rows)
 	starting_logic_depth = gf2_cse.logic_depth(None, rows, lut_size)
-	ending_logic_depth   = starting_logic_depth
 	starting_max_fanout  = gf2_cse.max_fanout(None, rows, nodes=False)
-	ending_max_fanout    = starting_max_fanout
 
-	if verbose >= 1:
-		eprint("\r# curve generation complete\x1b[K", flush=True)
+	# set these too in case optimization is off
+	ending_gates         = starting_gates
+	ending_logic_depth   = starting_logic_depth
+	ending_max_fanout    = starting_max_fanout
 
 	def print(message: str | None, end: str = '\n') -> None:
 		"""
@@ -1880,106 +2074,33 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 		# should never execute in a production version of the compiler.
 		tmp_defs, outputs = optimize_gates(rows)
 
+		in_ofs  = 0
+		tmp_ofs = data_bits
+		out_ofs = data_bits + len(tmp_defs)
+
 		if syntax == "asm=ir":
-			if "type" not in asm_ir_settings:
-				ir_type = "cisc"
-			else:
-				ir_type = asm_ir_settings.pop("type")
-				if ir_type not in {"cisc", "risc"}:
-					raise ValueError("IR option `type` must be 'cisc' or 'risc'")
+			asm_ir_settings = asm_ir_settings.copy()
 
-			if "regcount" not in asm_ir_settings:
-				regcount = 16
-			else:
-				try:
-					regcount = int(asm_ir_settings.pop("regcount"))
-				except ValueError:
-					raise ValueError("IR option `regcount` must be an integer")
+			if verbose >= 1:
+				eprint(
+					f"# scheduling instructions\n"
+					f"# stack offsets: in={in_ofs}, tmp={tmp_ofs}, out={out_ofs}, max={asm_ir_settings["max_ofs"]}"
+				)
 
-			if "regsize" not in asm_ir_settings:
-				regsize = 32
-			else:
-				regsize = asm_ir_settings.pop("regsize")
+			asm_ir_settings["in_ofs"]  =  in_ofs
+			asm_ir_settings["tmp_ofs"] = tmp_ofs
+			asm_ir_settings["out_ofs"] = out_ofs
 
-				try:
-					regsize = int(regsize)
-				except ValueError:
-					raise ValueError("IR option `regsize` must be an integer")
+			if asm_ir_settings["emit_comments"]:
+				print(
+					f"| Generated with {prog}.py\n"
+					f"| void crc{crc_name}_{data_len}(uint8_t {in_port}[{data_len}], uint{c_type_length(1 << sum_bits)}_t *{out_port});"
+				)
 
-			if "save-list" not in asm_ir_settings:
-				save_list = []
-			else:
-				save_list = asm_ir_settings.pop("save-list")
-				if save_list == '':
-					save_list = []
-				else:
-					try:
-						save_list = [int(x) for x in save_list.split(',')]
-					except ValueError:
-						raise ValueError("IR option `save-list` must be a list of integers")
-
-			if "emit-spacing" not in asm_ir_settings:
-				emit_spacing = False
-			else:
-				emit_spacing = asm_ir_settings.pop("emit-spacing")
-				if emit_spacing not in {"true", "false"}:
-					raise ValueError("IR option `emit-spacing` must be a boolean")
-
-				emit_spacing = emit_spacing == "true"
-
-			if "emit-comments" not in asm_ir_settings:
-				emit_comments = False
-			else:
-				emit_comments = asm_ir_settings.pop("emit-comments")
-				if emit_comments not in {"true", "false"}:
-					raise ValueError("IR option `emit-comments` must be a boolean")
-
-				emit_comments = emit_comments == "true"
-
-			if "emit-round-numbers" not in asm_ir_settings:
-				emit_round_numbers = False
-			else:
-				emit_round_numbers = asm_ir_settings.pop("emit-round-numbers")
-				if emit_round_numbers not in {"true", "false"}:
-					raise ValueError("IR option `emit-round-numbers` must be a boolean")
-
-				emit_round_numbers = emit_round_numbers == "true"
-
-			if "debug" in asm_ir_settings:
-				debug = asm_ir_settings.pop("debug")
-
-				if debug not in {"true", "false"}:
-					raise ValueError("IR option `debug` must be a boolean")
-
-				if debug == "true":
-					emit_spacing       = True
-					emit_comments      = True
-					emit_round_numbers = True
-
-			valid_ir_settings = {
-				"type", "regcount", "regsize", "save-list", "emit-spacing",
-				"emit-comments", "emit-round-numbers", "debug"
-			}
-
-			if asm_ir_settings:
-				raise ValueError(f"unknown flag(s) given to `-fasm=ir:<flags>`: '{"', '".join(asm_ir_settings)}'. must be '{"', '".join(valid_ir_settings)}'")
-
-			asm_ir_settings = {
-				"reg_slots": regcount,
-				"reg_size": regsize,
-				"save_list": save_list,
-				"emit_spacing": emit_spacing,
-				"emit_comments": emit_comments,
-				"emit_round_numbers": emit_round_numbers,
-			}
 
 			print( '\n'.join(asm_gen.gen_ir(
-				tmp_defs,
-				outputs,
-				crc_name,
-				data_len,
-				sum_len,
-				format=ir_type,
+				tmp_defs, outputs,
+				crc_name, data_len, sum_len,
 				**asm_ir_settings
 			)) )
 
@@ -1989,14 +2110,21 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 			raise Exception(f"mismatch between argparse syntax list and match/case syntax list. syntax: '{syntax}'")
 
 		asm_ir_settings = asm_format_data["settings"]
-		byteorder = asm_ir_settings.pop("byteorder")
-		grammar   = asm_format_data["grammar"]
 
-		asm_ir_settings["reg_slots"]          = len(asm_format_data["regw"])
+		asm_ir_settings["reg_slots"] = len(asm_format_data["regw"])
+		asm_ir_settings["in_ofs"]    = in_ofs
+		asm_ir_settings["tmp_ofs"]   = tmp_ofs
+		asm_ir_settings["out_ofs"]   = out_ofs
 		asm_ir_settings["emit_round_numbers"] = True
 
+		grammar   = asm_format_data["grammar"]
+		byteorder = asm_ir_settings.pop("byteorder")
+
 		if verbose >= 1:
-			eprint("# scheduling instructions")
+			eprint(
+				f"# scheduling instructions\n"
+				f"# stack offsets: in={in_ofs}, tmp={tmp_ofs}, out={out_ofs}, max={asm_ir_settings["max_ofs"]}"
+			)
 
 		program = asm_gen.gen_ir(
 			tmp_defs, outputs,
@@ -2013,12 +2141,10 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 
 		gd.regw     = asm_format_data["regw"]
 		gd.regb     = asm_format_data["regb"]
-		gd.in_ofs   = 0
-		gd.tmp_ofs  = data_bits
-		gd.out_ofs  = data_bits + len(tmp_defs)
+		gd.in_ofs   = in_ofs
+		gd.tmp_ofs  = tmp_ofs
+		gd.out_ofs  = out_ofs
 		gd.function = f"crc{crc_name}_{data_len}"
-		gd.crc_name = crc_name
-		gd.data_len = data_len
 		gd.comment  = asm_format_data["comment"]
 
 		from functools import partial
@@ -2027,13 +2153,14 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 			if callable(val):
 				grammar[key] = partial(val, k=gd)
 
-		program = crc_dsl.process(
+		program = crc_dsl.generate(
 			program,
 			grammar,
 			pp_vars={"$byteorder": byteorder},
-			strict=False # TODO: probbly remove this once it isn't needed for testing
+			strict=False # TODO: probably remove this once it isn't needed for testing
 		)
 
+		print(f"{gd.comment} Generated with {prog}.py")
 		print(f"{gd.comment} void {gd.function}(uint8_t {in_port}[{data_len}], uint{c_type_length(1 << sum_bits)}_t *{out_port});")
 		print('\n'.join(program))
 		return job_ret()
@@ -2307,13 +2434,10 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 				)
 		case "ir" | "r":
 			# NOTE: the output for this is not JSON
-			starting_gates = gf2_cse.count_gates(rows)
-
 			cse_time_stt      = perf_counter_ns()
 			tmp_defs, outputs = optimize_gates(rows)
 			cse_time_end      = perf_counter_ns()
 
-			ending_gates = gf2_cse.count_gates(tmp_defs, outputs)
 			if syntax == "ir":
 				sep = "\n\t"
 				pad = ' '
@@ -2346,13 +2470,9 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 
 			print(data if syntax == "ir" else data.replace(' ', ''))
 		case "json" | "j" | "metrics" | "m" | "asm=json" | "asm=j":
-			starting_gates = gf2_cse.count_gates(rows)
-
 			cse_time_stt      = perf_counter_ns()
 			tmp_defs, outputs = optimize_gates(rows)
 			cse_time_end      = perf_counter_ns()
-
-			ending_gates = gf2_cse.count_gates(tmp_defs, outputs)
 
 			tmp_syntax = syntax[4:] if syntax.startswith("asm=") else syntax
 
@@ -2426,15 +2546,25 @@ def run_job(output: str, optimize: bool, args: object, extra_newline: bool, outf
 
 	return job_ret()
 
-def get_toml(source: str):
+def parse_toml(source: str, files_seen: set) -> dict:
+	"""
+	the argument is either a file path to a TOML file, inline TOML, or neither.
+	if it is neither, an error will be thrown, otherwise the TOML object is given.
+	"""
 	import tomllib
 
 	try:
+		path = os.path.realpath(source)
 		with open(source, "r") as f:
 			source = f.read()
+
+		if path in files_seen:
+			raise ValueError(f"duplicate TOML file path given: '{path}'")
+
+		files_seen.add(path)
 	except FileNotFoundError, OSError:
 		# `open` can throw other errors, but they don't really matter. just let them propogate.
-		# try and parse it as a TOML line if it didn't parse as a file path.
+		# try and parse it as inline TOML if it didn't parse as a file path.
 		pass
 
 	if "'''" in source or '"""' in source:
@@ -2453,16 +2583,15 @@ def get_toml(source: str):
 
 	try:
 		return tomllib.loads(source)
-	except TOMLDecodeError:
+	except tomllib.TOMLDecodeError:
 		raise ValueError("TOML input is invalid (TOML decode failed)")
 
-def parse_polynomial(args: object) -> list[dict[str, any]]:
-	"calculate the curve dictionary stuff from the TOML file"
+def parse_input(args: object) -> list[dict[str, any]]:
+	"figure out the curve dictionary stuff from the input TOML files"
 
 	if args.polynomial is not None:
 		# --polynomial
 		try:
-			# if you have a file path like "12345", then just put `./` at the start.
 			return [{
 				"name":       None,
 				"polynomial": int(args.polynomial, 0),
@@ -2472,8 +2601,8 @@ def parse_polynomial(args: object) -> list[dict[str, any]]:
 			}]
 		except ValueError:
 			raise ValueError(f"`--polynomial` given a non-integer value: '{args.polynomial}'")
-	elif args.toml is None:
-		# both are none
+	elif not args.programs:
+		# neither positional nor polynomial is given
 		return [{
 			"name":       args.algorithm, # this being None is handled later
 			"polynomial": None,
@@ -2481,9 +2610,6 @@ def parse_polynomial(args: object) -> list[dict[str, any]]:
 			"xor-out":    None,
 			"reflect":    None,
 		}]
-
-	# --toml or positional
-	toml = get_toml(args.toml)
 
 	if args.in_port   is not None: raise ValueError("TOML input and `--in-port` cannot both be given")
 	if args.out_port  is not None: raise ValueError("TOML input and `--out-port` cannot both be given")
@@ -2494,131 +2620,102 @@ def parse_polynomial(args: object) -> list[dict[str, any]]:
 	if args.xor_out   is not None: raise ValueError("TOML input and `--xor-out` cannot both be given")
 	if args.reflect              : raise ValueError("TOML input and `--reflect` cannot both be given")
 
-	# this can definitely be refactored to have less code, but it really isn't
-	# that much stuff at the moment, so I don't really see a reason to do that
+	files_seen = set()
 
-	# global settings
-	if "in-port" in toml:
-		if args.in_port is not None:
-			raise ValueError("TOML attribute `in-port` and `--in-port` both given")
+	# make sure all the programs preprocess and parse before potentially giving any other errors
+	toml_dicts = [parse_toml(toml, files_seen) for toml in args.programs]
 
-		args.in_port = toml.pop("in-port")
+	## propogate top-level attributes into each curve
 
-		if type(args.in_port) is not str:
-			raise ValueError("TOML attribute `in-port` is not a string")
+	for i, toml in enumerate(toml_dicts, 1):
+		# for each program:
+		if "curve" not in toml:
+			raise ValueError(f"TOML program {i} does not have a `curve` attribute")
 
-	if "out-port" in toml:
-		if args.out_port is not None:
-			raise ValueError("TOML attribute `out-port` and `--out-port` both given")
+		if type(toml["curve"]) is dict:
+			toml["curve"] = [toml["curve"]]
 
-		args.out_port = toml.pop("out-port")
+		if type(toml["curve"]) is not list:
+			raise ValueError(f"TOML program {i} `curve` is not a dictionary or a list")
 
-		if type(args.out_port) is not str:
-			raise ValueError("TOML attribute `out-port` is not a string")
+		for curve in toml["curve"]:
+			# for each curve in the program
 
-	if "tmp-name" in toml:
-		if args.tmp_name is not None:
-			raise ValueError("TOML attribute `tmp-name` and `--tmp-name` both given")
+			for key, val in toml.items():
+				# for each top-level attribute in the program
 
-		args.tmp_name = toml.pop("tmp-name")
+				# curve attributes take precedence over top-level attributes
+				if key != "curve" and key not in curve:
+					curve[key] = val
 
-		if type(args.tmp_name) is not str:
-			raise ValueError("TOML attribute `tmp-name` is not a string")
+	# in 3.15: curves = [*d["curve"] for d in toml_dicts]
+	# I hate this syntax, it is backwards of what it should be
+	curves = [curve for d in toml_dicts for curve in d["curve"]]
 
-	if "data-len" in toml:
-		if args.data_len is not None:
-			raise ValueError("TOML attribute `data-len` and `--data-len` both given")
+	## validate and normalize curve parameters
 
-		args.data_len = toml.pop("data-len")
+	for i, curve in enumerate(curves, 1):
+		remainder = set(curve) - {
+			"in-port", "out-port", "tmp-name", "data-len",
+			"name", "polynomial", "init", "xor-out", "reflect"
+		}
 
-		if type(args.data_len) is not int:
-			raise ValueError("TOML attribute `data-len` is not an integer")
+		if remainder:
+			raise ValueError(f"TOML `[[curve]]` element {i} has unknown attributes: '{"', '".join(remainder)}'")
 
-	# curve parameters
-	if "curve" in toml:
-		curves = toml.pop("curve")
+		if "in-port" in curve and type(curve["in-port"]) is not str:
+			raise ValueError(f"TOML `[[curve]]` element {i} attribute `in-port` is not a string")
 
-		if type(curves) is dict:
-			curves = [curves]
+		if "out-port" in curve and type(curve["out-port"]) is not str:
+			raise ValueError(f"TOML `[[curve]]` element {i} attribute `out-port` is not a string")
 
-		if type(curves) is not list:
-			raise ValueError("TOML attribute `curve` is not a dictionary or a list")
+		if "tmp-name" in curve and type(curve["tmp-name"]) is not str:
+			raise ValueError(f"TOML `[[curve]]` element {i} attribute `tmp-name` is not a string")
 
-		for i, curve in enumerate(curves):
-			if type(curve) is not dict:
-				raise ValueError(f"TOML `[[curve]]` index {i} is not a dictionary")
+		if "data-len" in curve and type(curve["data-len"]) is not int:
+			raise ValueError(f"TOML `[[curve]]` element {i} attribute `data-len` is not an integer")
 
-			if "in-port" in curve:
-				if type(curve["in-port"]) is not str:
-					raise ValueError(f"TOML `[[curve]]` index {i} attribute `in-port` is not a string")
+		if "name" in curve:
+			if type(curve["name"]) is not str:
+				raise ValueError(f"TOML `[[curve]]` element {i} attribute `name` is not a string")
 
-			if "out-port" in curve:
-				if type(curve["out-port"]) is not str:
-					raise ValueError(f"TOML `[[curve]]` index {i} attribute `out-port` is not a string")
+			if any(key in curve for key in ("polynomial", "init", "xor-out", "reflect")):
+				raise ValueError(f"TOML file `[[curve]]` element {i} attribute `name` is not given alone")
 
-			if "tmp-name" in curve:
-				if type(curve["tmp-name"]) is not str:
-					raise ValueError(f"TOML `[[curve]]` index {i} attribute `tmp-name` is not a string")
+			curve["polynomial"] = None
+			curve["init"]       = None
+			curve["xor-out"]    = None
+			curve["reflect"]    = None
+			continue
 
-			if "data-len" in curve:
-				if type(curve["data-len"]) is not int:
-					raise ValueError(f"TOML `[[curve]]` index {i} attribute `data-len` is not an integer")
+		curve["name"] = None
 
-			if "name" in curve:
-				if type(curve["name"]) is not str:
-					raise ValueError(f"TOML `[[curve]]` index {i} attribute `name` is not a string")
+		if "polynomial" not in curve:
+			raise ValueError(f"TOML `[[curve]]` element {i} doesn't have a `name` or `polynomial` attribute")
+		elif type(curve["polynomial"]) is not int:
+			raise ValueError(f"TOML `[[curve]]` element {i} attribute `polynomial` is not an integer")
 
-				if any(key in curve for key in ("polynomial", "init", "xor-out", "reflect")):
-					raise ValueError(f"TOML file `[[curve]]` index {i} attribute `name` is not given alone")
+		if "init" not in curve:
+			curve["init"] = 0
+		elif type(curve["init"]) is not int:
+			raise ValueError(f"TOML `[[curve]]` element {i} attribute `init` is not an integer")
 
-				curve["polynomial"] = None
-				curve["init"]       = None
-				curve["xor-out"]    = None
-				curve["reflect"]    = None
-				continue
-			else:
-				curve["name"] = None
+		if "xor-out" not in curve:
+			curve["xor-out"] = 0
+		elif type(curve["xor-out"]) is not int:
+			raise ValueError(f"TOML `[[curve]]` element {i} attribute `xor-out` is not an integer")
 
-			if "polynomial" in curve:
-				if type(curve["polynomial"]) is not int:
-					raise ValueError(f"TOML `[[curve]]` index {i} attribute `polynomial` is not an integer")
-			else:
-				raise ValueError(f"TOML `[[curve]]` index {i} doesn't have a `name` or `polynomial` attribute")
-
-			if "init" in curve:
-				if type(curve["init"]) is not int:
-					raise ValueError(f"TOML `[[curve]]` index {i} attribute `init` is not an integer")
-			else:
-				curve["init"] = 0
-
-			if "xor-out" in curve:
-				if type(curve["xor-out"]) is not int:
-					raise ValueError(f"TOML `[[curve]]` index {i} attribute `xor-out` is not an integer")
-			else:
-				curve["xor-out"] = 0
-
-			if "reflect" in curve:
-				if type(curve["reflect"]) is not bool:
-					raise ValueError(f"TOML `[[curve]]` index {i} attribute `reflect` is not a boolean")
-			else:
-				curve["reflect"] = False
-
-			remainder = set(curve) - {
-				"in-port", "out-port", "tmp-name", "data-len",
-				"name", "polynomial", "init", "xor-out", "reflect"
-			}
-
-			if remainder:
-				raise ValueError(f"TOML `[[curve]]` index {i} has unknown attributes: '{"', '".join(remainder)}'")
-	else:
-		curves = []
-
-	if toml:
-		raise ValueError(f"TOML has unknown attributes: '{"', '".join(toml)}'")
+		if "reflect" not in curve:
+			curve["reflect"] = False
+		elif type(curve["reflect"]) is not bool:
+			raise ValueError(f"TOML `[[curve]]` element {i} attribute `reflect` is not a boolean")
 
 	return curves
 
-curves = parse_polynomial(args)
+curves = parse_input(args)
+
+del parse_toml, parse_input
+
 args.in_port  = "data" if args.in_port  is None else args.in_port
 args.out_port = "crc"  if args.out_port is None else args.out_port
 args.tmp_name = "tmp"  if args.tmp_name is None else args.tmp_name
@@ -2657,7 +2754,7 @@ for curve in curves:
 	args.xor_out    = curve["xor-out"]
 	args.reflect    = curve["reflect"]
 
-	outfile, filename = run_job(output, optimize, args, not first and output != "auto", outfile)
+	outfile, filename = run_job(output, optimize, args, not first and output != "auto", asm_ir_settings, outfile)
 
 	(args.in_port, args.out_port, args.tmp_name, args.data_len) = save
 	first = False

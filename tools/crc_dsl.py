@@ -12,7 +12,7 @@ has global state for variable and macro definitions (not reentrant)
 import re
 from os.path import expanduser
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 FunctionType = type(lambda x: x) # same as types.FunctionType
 
@@ -252,10 +252,6 @@ def _preproc(
 
 		line_num = start_line + line_idx
 
-
-		if not line:
-			continue
-
 		if line.lstrip().startswith("%raw["):
 			if not line.rstrip().endswith("]"):
 				# raw lines cannot have comments or they won't work.
@@ -267,6 +263,9 @@ def _preproc(
 			continue
 
 		line = strip_line(line) # remove comments and strip whitespace
+
+		if not line:
+			continue
 
 		if line[0] != '%':
 			out_prgm.append(expand_vars(line, line_num))
@@ -548,9 +547,6 @@ def preproc(
 def process(
 	program: list[str],
 	grammar: dict[str, str | FunctionType],
-	pp_vars: dict[str, str] | None = None,
-	*,
-	pp_debug: bool = False,
 	strict: bool = True
 ) -> list[str]:
 	grammar = {
@@ -559,11 +555,7 @@ def process(
 		r"@raw\[(.+)\]": lambda m: m.group(1)
 	}
 
-	program = [
-		re.multisub(line, grammar)
-		for line in
-		preproc(program, pp_vars, pp_debug)
-	]
+	program = [re.multisub(line, grammar) for line in program]
 
 	program = [line for line in program if line]
 
@@ -575,6 +567,24 @@ def process(
 			raise Exception(f"ERROR: grammar is not exhaustive: '{"', '".join(errors)}'")
 
 	return program
+
+def generate(
+	program: list[str],
+	grammar: dict[str, str | FunctionType],
+	pp_vars: dict[str, str] | None = None,
+	*,
+	pp_debug: bool = False,
+	strict: bool = True
+) -> list[str]:
+	return process(
+		preproc(
+			program,
+			pp_vars,
+			pp_debug,
+		),
+		grammar,
+		strict
+	)
 
 if __name__ == "__main__":
 	print("crc_dsl.py should not be used as a top-level program")

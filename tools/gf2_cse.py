@@ -24,7 +24,7 @@ if you increase it enough, it should get better again.
 requires Python >=3.10
 """
 
-__version__ = "2026.06.23.1"
+__version__ = "2026.06.23.2"
 
 __all__ = (
 	# somewhat internal
@@ -479,7 +479,7 @@ def optimize_gates_nwise(
 		early = True # skip LNS if enabled
 
 	# NOTE: if something else throws an error, then the old sigint handler is lost.
-	# TODO: fix this ^^^^^
+	# TODO: consider fixing this ^^^^^
 
 	gate_compression = 0.0 if orig_gate_count == 0.0 else gate_reduction / orig_gate_count
 	tmp_defs = {i: v for i, v in enumerate(reversed(s[0:tmp_count]), 1)}
@@ -487,14 +487,12 @@ def optimize_gates_nwise(
 
 	if verbose >= 2:
 		_eprint(
-			f"# old gate count: {orig_gate_count}"
-			f"\n# new gate count: {gate_count}"
-			f"\n# gate reduction: {gate_reduction}"
+			f"# gate reduction: {gate_reduction}"
 			f"\n# gate compression: {gate_compression}"
 			f"\n# number of tmp signals: {tmp_count}"
 		)
 	elif verbose == 1:
-		_eprint(f"# optimized gate count = {gate_count}")
+		_eprint(f"# number of tmp signals: {tmp_count}")
 
 	if interactive:
 		signal.signal(signal.SIGINT, sigint_orig_handler)
