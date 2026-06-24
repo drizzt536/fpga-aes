@@ -223,7 +223,7 @@ format_group.add_argument("--indent", "-g", type=str.lower, help=f"indentation l
 custom_crc_group = parser.add_argument_group("custom CRC overrides", "custom mode triggers if `-p` / `--toml` / positional is given.")
 program_group    = custom_crc_group.add_mutually_exclusive_group()
 program_group.add_argument("--polynomial", "-p", type=str, help="value should include the uppermost bit (e.g. bit 33). mutually exclusive with `--toml`")
-program_group.add_argument("programs", nargs='*', type=str, help="TOML file(s), inline TOML program(s), or a mix. (see --help=toml)." + (" uses DSL preprocessor (see --help=dsl). files are preprocessed separately" if dsl_avail else '')
+program_group.add_argument("programs", nargs='*', type=str, help="TOML file(s), inline TOML program(s), or a mix. (see --help=toml). piped files will happen first." + ("\nuses DSL preprocessor (see --help=dsl). files are preprocessed separately" if dsl_avail else '')
 )
 custom_crc_group.add_argument("--init"   ,              "-i", type=lambda x: int(x, 0), help="initial value. default is 0")
 custom_crc_group.add_argument("--xor-out",              "-x", type=lambda x: int(x, 0), help="final XOR mask. default is 0")
@@ -263,7 +263,6 @@ if not dsl_avail:
 	setattr(args, "help=dsl", None)
 
 gc_disabled = not hasattr(sys, "pypy_version_info")
-del sys
 
 if gc_disabled:
 	# CPython uses reference counting, and the GC is only for cyclic references.
@@ -779,7 +778,7 @@ if getattr(args, "help=all"):
 
 	exit(0)
 
-if len(argv) == 1:
+if len(argv) == 1 and sys.stdin.isatty():
 	# no arguments given.
 	parser.print_help()
 	exit(0)
@@ -2647,6 +2646,14 @@ def parse_toml(source: str, files_seen: set) -> dict:
 
 def parse_input(args: object) -> list[dict[str, any]]:
 	"figure out the curve dictionary stuff from the input TOML files"
+
+	if not sys.stdin.isatty():
+		if args.polynomial is not None:
+			raise ValueError("pipeline TOML program and `--polynomial` cannot both be given")
+		if args.algorithm is not None:
+			raise ValueError("pipeline TOML program and `--algorithm` cannot both be given")
+
+		args.programs.insert(0, sys.stdin.read())
 
 	if args.polynomial is not None:
 		# --polynomial

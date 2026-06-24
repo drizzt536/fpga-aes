@@ -24,7 +24,7 @@ if you increase it enough, it should get better again.
 requires Python >=3.10
 """
 
-__version__ = "2026.06.24.1"
+__version__ = "2026.06.24.2"
 
 __all__ = (
 	# somewhat internal
