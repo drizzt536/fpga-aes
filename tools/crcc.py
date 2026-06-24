@@ -62,7 +62,7 @@ from time    import perf_counter_ns
 
 stderr  = sys.stderr
 argv    = sys.argv
-argv[0] = f"{prog}.py"
+argv[0] = f"{prog}"
 
 __version__ = gf2_cse.__version__
 
@@ -103,6 +103,10 @@ asm_formats = (
 	# Microsoft ABI / System V ABI / Apple are give the same output
 	"arm64-gas"        , "arm64-armasm",
 
+	"arm32-arm-gas"    , "arm32-arm-armasm", # ARM mode
+	"arm32-thumb2-gas" , "arm32-thumb2-armasm",
+	"arm32-thumb1-gas" , "arm32-thumb1-armasm",
+
 	"ir:<flags>",
 )
 
@@ -118,8 +122,9 @@ def format_validator(syntax: str) -> str:
 		extension = "asm"
 		return "asm=x64-sysv-gas"
 
-	if syntax.startswith("asm=amd64"):     syntax = "asm=x64" + syntax[9:]
+	if   syntax.startswith("asm=amd64"):   syntax = "asm=x64"   + syntax[9:]
 	elif syntax.startswith("asm=aarch64"): syntax = "asm=arm64" + syntax[11:]
+	elif syntax.startswith("asm=aarch32"): syntax = "asm=arm32" + syntax[11:]
 
 	if syntax.startswith("asm=ir"):
 		extension = "caf" # CRC Assembly Format
@@ -166,6 +171,13 @@ def format_validator(syntax: str) -> str:
 
 			if   syntax[10:] in {"ms-gas"   , "sysv-gas"   , "apple-gas"   }: syntax = "asm=arm64-gas"
 			elif syntax[10:] in {"ms-armasm", "sysv-armasm", "apple-armasm"}: syntax = "asm=arm64-armasm"
+		elif syntax.startswith("asm=arm32"):
+			syntax = syntax.replace("t1", "thumb1").replace("t2", "thumb2")
+
+			if syntax == "asm=arm32":
+				syntax += "-thumb2-gas"
+			elif syntax[10:] in {"thumb1", "thumb2", "arm"}:
+				syntax += "-gas"
 
 		if syntax[4:] in asm_formats:
 			return syntax
@@ -213,8 +225,8 @@ program_group    = custom_crc_group.add_mutually_exclusive_group()
 program_group.add_argument("--polynomial", "-p", type=str, help="value should include the uppermost bit (e.g. bit 33). mutually exclusive with `--toml`")
 program_group.add_argument("programs", nargs='*', type=str, help="TOML file(s), inline TOML program(s), or a mix. (see --help=toml)." + (" uses DSL preprocessor (see --help=dsl). files are preprocessed separately" if dsl_avail else '')
 )
-custom_crc_group.add_argument("--init"   ,              "-i", type=int, help="initial value. default is 0")
-custom_crc_group.add_argument("--xor-out",              "-x", type=int, help="final XOR mask. default is 0")
+custom_crc_group.add_argument("--init"   ,              "-i", type=lambda x: int(x, 0), help="initial value. default is 0")
+custom_crc_group.add_argument("--xor-out",              "-x", type=lambda x: int(x, 0), help="final XOR mask. default is 0")
 custom_crc_group.add_argument("--reflect", "-r", action="store_true"  , help="enable reflection. default is off")
 
 optimize_group = parser.add_argument_group(
@@ -402,21 +414,21 @@ def print_help_formats(formats: tuple[tuple[str, ...], ...] = formats) -> None:
 		  "     > type=cisc | risc          (default is cisc)"
 		"\n     > regcount=<int>            (default is 16)"
 		"\n     > regsize=<int>             (default is 32)"
-		"\n     > save-list=<list[int]>     (default is [], comma separated list)"
+		"\n     > save-list=<list[int]>     (default is none, comma separated list)"
 		"\n     > max-ofs=<list[int]>       (default is 0, max immediate pointer offset)"
 		"\n     > emit-spacing=<bool>       (default is false)"
-		"\n     > emit-comments=<bool>      (default is false)"
+		"\n     > emit-comments=<bool>      (default is false, currently broken)"
 		"\n     > emit-round-numbers=<bool> (default is false)"
 		"\n     > debug=<bool>              (emit-* master switch, default is false)"
 		"\n"
 		"\nformat descriptions:"
-		"\n - 'python-test' / 'pyt'  the same code as 'python' / 'py', but with some extra testing functions"
-		"\n - 'json' / 'j'           raw graph data as a JSON object string with sets replaced with lists."
-		"\n - 'ir' / 'r'             raw graph data as a python object string. similar to 'json' / 'j'"
-		"\n - 'metrics' / 'm'        JSON metrics about the graph reduction without giving the graph itself."
-		"\n - 'nmigen' / 'nmg'       the same as 'amaranth' / 'am' but for the legacy `Elaboratable` API."
-		"\n - 'info' / 'i'           curve metadata in a human readable format."
-		"\n - 'noop' / 'nop'         outputs nothing except for stuff that goes to stderr (dry run)."
+		"\n - python-test / pyt  the same code as 'python' / 'py', but with some extra testing functions"
+		"\n - metrics / m        JSON metrics about the graph reduction without giving the graph itself."
+		"\n - nmigen / nmg       the same as 'amaranth' / 'am' but for the legacy `Elaboratable` API."
+		"\n - info  / i          curve metadata in a human readable format."
+		"\n - noop / nop         outputs nothing except for stuff that goes to stderr (dry run)."
+		"\n - json / j           raw graph data as a JSON object string with sets replaced with lists."
+		"\n - ir  / r            raw graph data as a python object string. similar to 'json' / 'j'"
 		"\n"
 		"\nx86 and x64:"
 		"\n - 'amd64' is an alias for 'x64'"
@@ -429,9 +441,16 @@ def print_help_formats(formats: tuple[tuple[str, ...], ...] = formats) -> None:
 		"\narm64:"
 		"\n - 'aarch64' is an alias for 'arm64'"
 		"\n - 'ms', 'sysv', or 'apple' can be given as an ABI, but they are ignored. other ABIs are invalid"
-		"\n - dialect defaults to gas"
+		"\n - dialect defaults to 'gas'"
 		"\n"
-		"\ndialect 'clang' aliases dialect 'gas' for all assembly formats"
+		"\narm32:"
+		"\n - 'aarch32' is an alias for 'arm32'"
+		"\n - 't1' is an alias for 'thumb1' and 't2' is an alias for 'thumb2'"
+		"\n - 't1' is an alias for 'thumb1' and 't2' is an alias for 'thumb2'"
+		"\n - defaults to 'thumb2'"
+		"\n - dialect defaults to 'gas'"
+		"\n"
+		"\nfor all assembly formats, 'clang' dialect aliases 'gas'"
 		"\nfor raw/json/metrics formats: long name => beautified, short name => minified."
 		"\nall format names and flag names/values are case insensitive"
 	)
@@ -719,7 +738,7 @@ def print_help_ir() -> None:
 		"\n - the format is mostly ISA agnostic"
 		"\n - @mvz: move zero to register"
 		"\n - @mov: move value into register (either small a immediate or from memory)"
-		"\n - @mvl: move large immediate into register (cannot be done in one instruction)"
+		"\n - @mvl: move large immediate into register (for on ptr imm overfow)"
 		"\n - @add/@sub/@shr/@shl/@and/@xor/@jmp/@ret: same as the x86 instructions"
 		"\n - @orr: or two registers together"
 		"\n - @xor: xor a register into memory or xor two registers (depends on cisc vs risc)"
@@ -1059,7 +1078,7 @@ if syntax == "asm=ir":
 		save_list = None
 	else:
 		save_list = asm_ir_settings.pop("save-list")
-		if save_list == '':
+		if save_list == '' or save_list == "none":
 			save_list = None
 		else:
 			try:
@@ -1198,7 +1217,7 @@ if syntax.startswith("asm=") and syntax != "asm=ir":
 			"regb": ("w0", "w1", "w2", "w3", "w4", "w5", "w6", "w7", "w8", "w9", "w10", "w11", "w12", "w13", "w14", "w15", "w16", "w17"),
 			"comment": "//",
 			"grammar": {
-				r"@jiz": "\tcbz",
+				r"@jiz (@reg\[\d+\]), (@label\[\w+\])": "\tcbz \\1, \\2",
 				r"@(add|sub|and|orr) (@regb?\[\w+\])": f"\t\\1 \\2, \\2",
 				r"@sh([lr]) (@regb?\[\w+\])": f"\tls\\1 \\2, \\2",
 				r"@xor (@regb?\[\w+\])": f"\teor \\1, \\1",
@@ -1214,6 +1233,7 @@ if syntax.startswith("asm=") and syntax != "asm=ir":
 				r"@in\[(\d+)\]":  lambda m, k: f"[@reg[sp]{f', @imm[{ofs}]' if ( ofs := k. in_ofs + int(m.group(1)) ) != 0 else ''}]",
 				r"@tmp\[(\d+)\]": lambda m, k: f"[@reg[sp]{f', @imm[{ofs}]' if ( ofs := k.tmp_ofs + int(m.group(1)) ) != 0 else ''}]",
 				r"@out\[(\d+)\]": lambda m, k: f"[@reg[sp]{f', @imm[{ofs}]' if ( ofs := k.out_ofs + int(m.group(1)) ) != 0 else ''}]",
+				r"@mvl": "\tmov", # GAS figures out the real instructions
 				r"@imm\[(\d+)\]": "\\1",
 				r"@reg\[(\d+)\]" : lambda m, k: k.regw[int(m.group(1))],
 				r"@regb\[(\d+)\]": lambda m, k: k.regb[int(m.group(1))],
@@ -1222,7 +1242,6 @@ if syntax.startswith("asm=") and syntax != "asm=ir":
 				r"@mov": "\tmov",
 				r"@ret": "\tret",
 				r"@jmp": "\tb",
-				r"@mvl": "\tmov", # GAS figures out the real instructions
 			},
 		},
 	}
@@ -1257,6 +1276,7 @@ if syntax.startswith("asm=") and syntax != "asm=ir":
 		r"@function\[(\w+)\]": "\\1:",
 		r"@deflabel\[(\w+)\]": "@label[\\1]:",
 		r"@label\[(\w+)\]": ".\\1",
+		r"@mov(?= @(?:in|out|tmp))": "\tmovb",
 		r"@in\[(\d+)\]":  lambda m, k: f"{ofs if ( ofs := k. in_ofs + int(m.group(1)) ) != 0 else ''}(@reg[sp])",
 		r"@tmp\[(\d+)\]": lambda m, k: f"{ofs if ( ofs := k.tmp_ofs + int(m.group(1)) ) != 0 else ''}(@reg[sp])",
 		r"@out\[(\d+)\]": lambda m, k: f"{ofs if ( ofs := k.out_ofs + int(m.group(1)) ) != 0 else ''}(@reg[sp])",
@@ -1277,6 +1297,7 @@ if syntax.startswith("asm=") and syntax != "asm=ir":
 			"byteorder" : "little",
 			"save_list" : (3,),
 			"reg_size"  : 32,
+			"max_ofs"   : (1 << 31) - 1
 		},
 		"regw": ("ecx", "edx", "eax", "ebx"),
 		"regb": ( "cl",  "dl",  "al",  "bl"),
@@ -1352,6 +1373,44 @@ if syntax.startswith("asm=") and syntax != "asm=ir":
 	t["arm64-armasm"]["grammar"] = t["arm64-armasm"]["grammar"].copy()
 	t["arm64-armasm"]["grammar"][r"@label\[(\w+)\]"] = lambda m, k: f"{k.function}_{m.group(1)}"
 	t["arm64-armasm"]["grammar"][r"@imm\[(\d+)\]"]   = "#\\1"
+
+	# arm32
+	t["arm32-arm-gas"] = t["arm64-gas"].copy()
+	t["arm32-arm-gas"]["settings"] = t["arm32-arm-gas"]["settings"].copy()
+	t["arm32-arm-gas"]["settings"]["reg_size"] = 32
+	t["arm32-arm-gas"]["regw"]    = ("r0", "r1", "r2", "r3", "r12")
+	t["arm32-arm-gas"]["regb"]    = t["arm32-arm-gas"]["regw"]
+	t["arm32-arm-gas"]["grammar"] = t["arm32-arm-gas"]["grammar"].copy()
+	t["arm32-arm-gas"]["grammar"][r"@jiz (@reg\[\d+\]), (@label\[\w+\])"] = ("\ttst \\1, \\1", "\tbeq \\2")
+	t["arm32-arm-gas"]["grammar"][r"@mvz @regb?(\[\d+\])"]                = "\tmov @reg\\1, @imm[0]"
+	t["arm32-arm-gas"]["grammar"][r"@mvl (@regb?\[\d+\]), (@imm\[\d+\])"] = "\tldr \\1, =\\2"
+	t["arm32-arm-gas"]["grammar"][r"@imm\[(\d+)\]"]                       = "#\\1"
+	t["arm32-arm-gas"]["grammar"][r"@ret"]                                = "\tbx lr"
+
+	t["arm32-arm-armasm"] = t["arm32-arm-gas"].copy()
+	t["arm32-arm-armasm"]["grammar"] = t["arm32-arm-armasm"]["grammar"].copy()
+	t["arm32-arm-armasm"]["grammar"][r"@label\[(\w+)\]"] = lambda m, k: f"{k.function}_{m.group(1)}"
+
+	t["arm32-thumb2-gas"] = t["arm32-arm-gas"].copy()
+	t["arm32-thumb2-gas"]["grammar"] = t["arm32-thumb2-gas"]["grammar"].copy()
+	t["arm32-arm-gas"]["grammar"][r"@jiz (@reg\[\d+\]), (@label\[\w+\])"] = "\tcbz \\1, \\2"
+
+	t["arm32-thumb2-armasm"] = t["arm32-thumb2-gas"].copy()
+	t["arm32-thumb2-armasm"]["grammar"] = t["arm32-thumb2-armasm"]["grammar"].copy()
+	t["arm32-thumb2-armasm"]["grammar"][r"@label\[(\w+)\]"] = lambda m, k: f"{k.function}_{m.group(1)}"
+
+	t["arm32-thumb1-gas"] = t["arm32-thumb2-gas"].copy()
+	t["arm32-thumb1-gas"]["settings"] = t["arm32-thumb1-gas"]["settings"].copy()
+	t["arm32-thumb1-gas"]["settings"]["max_ofs"] = (1 << 5) - 1
+	t["arm32-thumb1-gas"]["regw"] = ("r0", "r1", "r2", "r3")
+	t["arm32-thumb1-gas"]["regb"] = ("r0", "r1", "r2", "r3")
+	t["arm32-thumb1-gas"]["grammar"] = t["arm32-thumb1-gas"]["grammar"].copy()
+	t["arm32-thumb1-gas"]["grammar"][r"@jiz (@reg\[\d+\]), (@label\[\w+\])"] = ("\tcmp \\1, @imm[0]", "\tbeq \\2")
+
+	t["arm32-thumb1-armasm"] = t["arm32-thumb1-gas"].copy()
+	t["arm32-thumb1-armasm"]["grammar"] = t["arm32-thumb1-armasm"]["grammar"].copy()
+	t["arm32-thumb1-armasm"]["grammar"][r"@label\[(\w+)\]"] = lambda m, k: f"{k.function}_{m.group(1)}"
+
 
 	asm_format_data = t.get(syntax[4:])
 	del t, x64_ms_apx_regw, x64_ms_apx_regb, x64_sysv_apx_regw, x64_sysv_apx_regb
