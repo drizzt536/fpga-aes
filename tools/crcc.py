@@ -208,7 +208,7 @@ parser.add_argument("--help=all" , action="store_true", help="print all the help
 parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {__version__}")
 
 core_group = parser.add_argument_group("core options")
-core_group.add_argument("--algorithm", "--alg", "-a", type=lambda s: None if s is None else str.lower(s).strip(), help=f"CRC name (see --help=algorithms / -A). default is 'crc32'")
+core_group.add_argument("--algorithm", "-a", type=lambda s: None if s is None else str.lower(s).strip(), help=f"CRC name (see --help=algorithms / -A). default is 'crc32'")
 core_group.add_argument("--data-len", "-l", type=int, help="bytes length of checksum input data. default is 4")
 core_group.add_argument("--syntax", "--format", "-f", type=format_validator, default="verilog", help=f"output language (see --help=formats / -F). default is 'verilog'")
 core_group.add_argument("--output", "--out", "-o", type=str, default='-', help=f"output file. use 'auto' for automatic naming. default is '-' (stdout)")
@@ -221,9 +221,9 @@ format_group.add_argument("--out-port", "--out-var", "-O", type=str, help="outpu
 format_group.add_argument("--tmp-name", "-t", type=str, help="tmp signal name. default is 'tmp'. may creates name collisions with software language-specific\nvariables. if it longer than the local signal name, it will cause misaligned expressions.")
 format_group.add_argument("--indent", "-g", type=str.lower, help=f"indentation level. options are tabs, tab, none, or int n>=-1. default is 'tabs'")
 
-custom_crc_group = parser.add_argument_group("custom CRC overrides", "custom mode triggers if `-p` / `--toml` / positional is given.")
+custom_crc_group = parser.add_argument_group("custom CRC overrides", "custom mode triggers if `-p` / positional is given.")
 program_group    = custom_crc_group.add_mutually_exclusive_group()
-program_group.add_argument("--polynomial", "-p", type=str, help="value should include the uppermost bit (e.g. bit 33). mutually exclusive with `--toml`")
+program_group.add_argument("--polynomial", "-p", type=str, help="value should include the uppermost bit (e.g. bit 33). mutually exclusive with TOML input")
 program_group.add_argument("programs", nargs='*', type=str, help="TOML file(s), inline TOML program(s), or a mix. (see --help=toml). piped files will happen first." + ("\nuses DSL preprocessor (see --help=dsl). files are preprocessed separately" if dsl_avail else '')
 )
 custom_crc_group.add_argument("--init"   ,              "-i", type=lambda x: int(x, 0), help="initial value. default is 0")
@@ -255,10 +255,17 @@ cache_group = parser.add_argument_group("caching options")
 cache_dir_group = cache_group.add_mutually_exclusive_group()
 cache_dir_group.add_argument("--cache-dir"   , "-D", type=str  , help="change the cache directory. doesn't enable optimization. '~' and environment variables are\nexpanded. default is './crc-cache'.")
 cache_dir_group.add_argument("--cache-global", "-G", action="store_true", help="use a user global cache directory. cannot appear with `--cache-dir`.")
-cache_group.add_argument("--cache"           , "-C", type=str.lower, help="enable optimization and set cache behavior. combination of c/x: clear/expunge, o: off,\nr: read, w: write, u: use/read+write, d: delete entry. o may only appear with c/x. d must\nappear by itself. case insensitive. `%(prog)s -Cc` will clear the cache and exit. cache\nentries are never automatically invalidated, so they may return old values if the optimizer\nis updated. a manual cache clear is required in this case.")
+cache_group.add_argument("--cache"           , "-C", type=str.lower, help="enable optimization and set cache behavior. combination of c/x: clear/expunge, o: off,\nr: read, w: write, u: use/read+write, d: delete entry, l: list. o may only appear with c/x.\nl and d must appear alone. case insensitive. `-Cc` with no non-cache flags will clear the\ncache and exit. cache entries are never automatically invalidated, so they may return old\nvalues if the optimizer is updated. a manual cache clear is required in this case.")
 args = parser.parse_args()
 
-del core_group, format_group, custom_crc_group, optimize_group, cache_group, cache_dir_group, argparse
+cache_parser = argparse.ArgumentParser(add_help=False)
+cache_parser.add_argument("--cache-global", "-G", action="store_true")
+cache_parser.add_argument("--cache-dir", "-D")
+cache_parser.add_argument("--cache", "-C")
+cache_parser.add_argument("remainder", nargs="*")
+
+cache_only = not cache_parser.parse_known_args()[1] # no unknown flags
+del core_group, format_group, custom_crc_group, optimize_group, cache_group, cache_dir_group, cache_parser, argparse
 
 if not dsl_avail:
 	setattr(args, "help=dsl", None)
@@ -426,7 +433,7 @@ def print_help_formats(formats: tuple[tuple[str, ...], ...] = formats) -> None:
 		"\n - metrics/m        JSON metrics about the graph reduction without giving the graph itself."
 		"\n - nmigen/nmg       the same as amaranth/am but for the legacy `Elaboratable` API."
 		"\n - info/i           curve metadata in a human readable format."
-		"\n - noop/nop         outputs nothing except for stuff that goes to stderr (dry run)."
+		"\n - noop/nop         outputs nothing except for stuff that goes to stderr (dry run). does not disable cache behavior."
 		"\n - json/j           raw graph data as a JSON object string with sets replaced with lists."
 		"\n - ir/r             raw graph data as a python object string. similar to json/j"
 		"\n"
@@ -539,7 +546,7 @@ def print_help_toml() -> None:
 
 def print_help_dsl() -> None:
 	print("""
-		| DSL preprocessor help code (not one coherant program):
+		| DSL preprocessor help code (not one coherent program):
 
 		| comments are stripped and variables are expanded before all other line processing
 		| variables and keywords are case sensitive. starting and ending whitespace is stripped
@@ -738,7 +745,7 @@ def print_help_ir() -> None:
 		"\n - the format is mostly ISA agnostic"
 		"\n - @mvz: move zero to register"
 		"\n - @mov: move value into register (either small a immediate or from memory)"
-		"\n - @mvl: move large immediate into register (for on ptr imm overfow)"
+		"\n - @mvl: move large immediate into register (for on ptr imm overflow)"
 		"\n - @add/@sub/@shr/@shl/@and/@xor/@jmp/@ret: same as the x86 instructions"
 		"\n - @orr: or two registers together"
 		"\n - @xor: xor a register into memory or xor two registers (depends on cisc vs risc)"
@@ -835,6 +842,18 @@ cache_dir = os.path.expanduser(os.path.expandvars(args.cache_dir))
 if os.name == "nt":
 	cache_dir = cache_dir.replace('\\', '/')
 
+if args.cache == 'l':
+	if not cache_only:
+		raise ValueError("cache list (-Cl) cannot be given with non-cache flags")
+
+	print(f"{cache_dir}:")
+
+	if os.path.isdir(cache_dir):
+		for file in os.listdir(cache_dir):
+			print(f"\t{file}")
+
+	exit(0)
+
 if args.cache is None:
 	cache_settings = ''
 else:
@@ -868,7 +887,7 @@ else:
 
 	# possible `cache` values after this point: '', 'd', 'r', 'w', 'rw', 'c', 'cw'
 
-	if 'c' in args.cache and syntax != "nop":
+	if 'c' in args.cache:
 		if os.path.isdir(cache_dir):
 			cache_files = os.listdir(cache_dir)
 
@@ -882,27 +901,22 @@ else:
 		elif verbose >= 1:
 			eprint("# removed all 0 cache files")
 
-		if len(args.cache) == 1:
-			argv[1] = argv[1].replace("--cache", "-C").replace('=', '')
-
-			solo_short = len(argv) == 2 and len(argv[1]) == 3
-			solo_long  = len(argv) == 3 and argv[1] == "-C" and argv[2].lower() in "cx"
-
-			if solo_long or solo_short:
-				if os.path.isdir(cache_dir):
-					os.rmdir(cache_dir)
-				exit(0)
-
-			del solo_long, solo_short
+		if args.cache == 'c' and cache_only:
+			if os.path.isdir(cache_dir):
+				os.rmdir(cache_dir)
+			exit(0)
 
 		cache_settings = cache_settings.replace('r', '')
 
 	if cache_settings:
 		optimize = True
 
+if verbose >= 2:
+	eprint(f"# cache dir: {cache_dir!r}")
+
 # possible `cache` values after this point: '', 'd', 'r', 'w', 'rw'
 
-del argv
+del argv, cache_only
 
 syntax_data = {
 	"v": {
@@ -1739,7 +1753,7 @@ def run_job(
 		actual_sum1 = zlib.adler32(d)
 
 		if expect_sum1 != actual_sum1:
-			raise ValueError(f"cache file checksum 1 did not match. key={cache_key}, expected=0x{expect_sum1:08x}, actual=0x{actual_sum1:08x}")
+			raise ValueError(f"cache file checksum 1 did not match. key={cache_key}, expected={expect_sum1:08x}, actual={actual_sum1:08x}")
 
 		if verbose >= 2:
 			eprint(
@@ -2708,7 +2722,7 @@ def parse_toml(source: str, files_seen: set) -> dict:
 
 		files_seen.add(path)
 	except FileNotFoundError, OSError:
-		# `open` can throw other errors, but they don't really matter. just let them propogate.
+		# `open` can throw other errors, but they don't really matter. just let them propagate.
 		# try and parse it as inline TOML if it didn't parse as a file path.
 		pass
 
@@ -2778,7 +2792,7 @@ def parse_input(args: object) -> list[dict[str, any]]:
 	# make sure all the programs preprocess and parse before potentially giving any other errors
 	toml_dicts = [parse_toml(toml, files_seen) for toml in args.programs]
 
-	## propogate top-level attributes into each curve
+	## propagate top-level attributes into each curve
 
 	for i, toml in enumerate(toml_dicts, 1):
 		# for each program:
