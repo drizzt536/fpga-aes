@@ -54,6 +54,7 @@ import argparse
 import gf2_cse
 import pickle
 import lzma
+import zlib
 import sys
 import os
 
@@ -397,7 +398,7 @@ def print_help_formats(formats: tuple[tuple[str, ...], ...] = formats) -> None:
 			e = formats[i] + formats[i + 1]
 			formats.pop(i + 1)
 
-		print(f" - {' / '.join(e)}")
+		print(f" - {" / ".join(e)}")
 
 		i += 1
 
@@ -421,13 +422,13 @@ def print_help_formats(formats: tuple[tuple[str, ...], ...] = formats) -> None:
 		"\n     > debug=<bool>              (emit-* master switch, default is false)"
 		"\n"
 		"\nformat descriptions:"
-		"\n - python-test / pyt  the same code as 'python' / 'py', but with some extra testing functions"
-		"\n - metrics / m        JSON metrics about the graph reduction without giving the graph itself."
-		"\n - nmigen / nmg       the same as 'amaranth' / 'am' but for the legacy `Elaboratable` API."
-		"\n - info  / i          curve metadata in a human readable format."
-		"\n - noop / nop         outputs nothing except for stuff that goes to stderr (dry run)."
-		"\n - json / j           raw graph data as a JSON object string with sets replaced with lists."
-		"\n - ir  / r            raw graph data as a python object string. similar to 'json' / 'j'"
+		"\n - python-test/pyt  the same code as python/py, but with some extra testing functions"
+		"\n - metrics/m        JSON metrics about the graph reduction without giving the graph itself."
+		"\n - nmigen/nmg       the same as amaranth/am but for the legacy `Elaboratable` API."
+		"\n - info/i           curve metadata in a human readable format."
+		"\n - noop/nop         outputs nothing except for stuff that goes to stderr (dry run)."
+		"\n - json/j           raw graph data as a JSON object string with sets replaced with lists."
+		"\n - ir/r             raw graph data as a python object string. similar to json/j"
 		"\n"
 		"\nx86 and x64:"
 		"\n - 'amd64' is an alias for 'x64'"
@@ -477,7 +478,7 @@ def print_help_algs() -> None:
 				prev_size = size
 				print(f"\n{size << 3}-bit CRCs")
 
-			poly    = crcmod.predefined._crc_definitions_by_name[key]['poly']
+			poly    = crcmod.predefined._crc_definitions_by_name[key]["poly"]
 			density = (poly.bit_count() - 1) / size * 12.5
 
 			print(f" - {key:{pad}}: poly=0x{poly:x}, density={density:4.1f}%")
@@ -826,7 +827,7 @@ if args.cache_global:
 			args.cache_dir = f"~/.cache/{prog}"
 
 if args.cache_dir is None:
-	args.cache_dir = './crc-cache'
+	args.cache_dir = "./crc-cache"
 elif args.cache is None:
 	raise Exception("`--cache-dir` cannot be used without `--cache`")
 
@@ -885,7 +886,7 @@ else:
 			argv[1] = argv[1].replace("--cache", "-C").replace('=', '')
 
 			solo_short = len(argv) == 2 and len(argv[1]) == 3
-			solo_long  = len(argv) == 3 and argv[1] == '-C' and argv[2].lower() in 'cx'
+			solo_long  = len(argv) == 3 and argv[1] == "-C" and argv[2].lower() in "cx"
 
 			if solo_long or solo_short:
 				if os.path.isdir(cache_dir):
@@ -998,7 +999,7 @@ syntax_data = {
 		'^'           : '\t',
 		'$'           : '',
 		"footer"      : '}',
-		"comment"     : '//',
+		"comment"     : "//",
 		"begin_logic" : '',
 		"var_prefix"  : '',
 		"wire_type"   : lambda name, size: f"\tval {name.lstrip()} = Wire(Vec({size}, Bool()))",
@@ -1012,9 +1013,9 @@ syntax_data = {
 		'^'           : '\t',
 		'$'           : '',
 		"footer"      : '}',
-		"comment"     : '//',
+		"comment"     : "//",
 		"begin_logic" : '',
-		"var_prefix"  : 'io.',
+		"var_prefix"  : "io.",
 		"wire_type"   : lambda name, size: f"\tval {name.lstrip()} = Bits({size} bits)",
 	}
 }
@@ -1579,55 +1580,6 @@ def run_job(
 	out_port      = args.out_port
 	tmp_sgnl_base = args.tmp_name
 
-	# NOTE: There is no version in the cache key because the version has to do with both the compiler itself
-	#       and the optimizer, so a version change may or may not even mean the outputs have changed. For this
-	#       reason, I have decided against versioning the cache key. if you want it expunged, do it yourself.
-	cache_key = sha256(pickle.dumps((
-		crc_name,
-		poly,
-		init,
-		xor_out,
-		reflected,
-		data_len,
-		lns,
-		optimize_depth,
-		optimize_nmax,
-		optimize_beam,
-		optimize_seed,
-		optimize_weight,
-		optimize_n_prefer,
-		optimize_max_tmps,
-		optimize_min_gates,
-		lns_trials,
-		lns_window
-	), protocol=5)).hexdigest()
-
-	cache_file = f"{cache_dir}/{cache_key}.xz"
-
-	if verbose >= 2:
-		eprint(f"# cache key: '{cache_key}'")
-
-	if cache_settings == 'd' and os.path.isfile(cache_file):
-		if verbose >= 1:
-			eprint("# removed current cache entry")
-
-		os.remove(cache_file)
-
-	def cache_read() -> tuple[dict[int, set], list[set]] | None:
-		if not os.path.isfile(cache_file):
-			return None
-
-		with lzma.open(cache_file, "rb") as f:
-			return pickle.load(f)
-
-	def cache_write(tmp_defs: dict[int, set], outputs: list[set], /) -> None:
-		if not os.path.isdir(cache_dir):
-			os.makedirs(cache_dir, exist_ok=True)
-
-		# if the cache entry exists already, this will just overwrite it.
-		with lzma.open(cache_file, "wb") as f:
-			pickle.dump((tmp_defs, outputs), f, protocol=pickle.HIGHEST_PROTOCOL)
-
 	if in_port == out_port:
 		raise ValueError(f"input port ('{in_port}') and output port ('{out_port}') can't be the same")
 
@@ -1646,13 +1598,14 @@ def run_job(
 	if not valid_varname(tmp_sgnl_base):
 		raise ValueError(f"tmp name ('{tmp_sgnl_base}') is not a valid name in syntax '{syntax}'")
 
-	local_port    = "local_" + out_port
-	max_io_pad    = 1 + max(len(in_port), len(out_port))
-	in_pad        = " "*(max_io_pad - len(in_port))
-	out_pad       = " "*(max_io_pad - len(out_port))
+	local_port = "local_" + out_port
+	max_io_pad = 1 + max(len(in_port), len(out_port))
+	in_pad     = " "*(max_io_pad - len(in_port))
+	out_pad    = " "*(max_io_pad - len(out_port))
 
 	tmp_port_i = tmp_sgnl_base + " "*(len(in_port)    - len(tmp_sgnl_base))
 	tmp_port_o = tmp_sgnl_base + " "*(len(local_port) - len(tmp_sgnl_base))
+	in_port_i  = in_port + " "*(len(tmp_port_i) - len(in_port)) if optimize else in_port
 
 	if data_len < 1:
 		# NOTE: it is probably possible to make sane code for data length 0, but I don't care enough.
@@ -1673,12 +1626,12 @@ def run_job(
 		polynomial = poly ^ (1 << (poly.bit_length() - 1))
 	elif crc_name in {None, "32", "crc32", "crc-32", "crc 32"}:
 		# use zlib.crc32 if possible since it is is built-in, and probably faster.
-		crc_name   = '32'
+		crc_name   = "32"
 		sum_len    = 4
 		reflected  = True
 		polynomial = 0x04c11db7 # this can't be queried from crcmod in case it isn't installed.
 
-		from zlib import crc32 as crc
+		crc = zlib.crc32
 	else:
 		try:
 			import crcmod
@@ -1686,7 +1639,7 @@ def run_job(
 			raise Exception(f"CRCs other than crc32 require the `crcmod-plus` package. crc_name: {crc_name}")
 
 		if crc_name is None:
-			crc_name = '32'
+			crc_name = "32"
 
 		sum_len = sum_len_map.get(crcmod.predefined._simplify_name(crc_name), None)
 
@@ -1700,7 +1653,144 @@ def run_job(
 		polynomial = crcmod.predefined._crc_definitions_by_name[crc_name]["poly"]
 		polynomial ^= 1 << (polynomial.bit_length() - 1)
 
-	in_port_i = in_port + " "*(len(tmp_port_i) - len(in_port)) if optimize else in_port
+	CACHE_SIGNATURE = b"CCF\x02" # CRC Cache Format
+
+	cache_key = sha256(pickle.dumps((
+		crc_name,
+		poly,
+		init,
+		xor_out,
+		reflected,
+		data_len,
+		lns,
+		optimize_depth,
+		optimize_nmax,
+		optimize_beam,
+		optimize_seed,
+		optimize_weight,
+		optimize_n_prefer,
+		optimize_max_tmps,
+		optimize_min_gates,
+		lns_trials,
+		lns_window,
+		CACHE_SIGNATURE,
+	), protocol=5)).hexdigest()
+
+	cache_file = f"{cache_dir}/{cache_key}.ccf"
+
+	if cache_settings == 'd' and os.path.isfile(cache_file):
+		if verbose >= 1:
+			eprint("# removed current cache entry")
+
+		os.remove(cache_file)
+
+	# these settings were determined experimentally to give better compression than the defaults.
+	# LZMA2 make the file a constant few bytes larger than with LZMA1 from header overhead
+	# depth > 4 doesn't give any improvements over depth=4
+	# dict_size >= 256 KiB doesn't give any improvements
+	# pb != 0 and lp != 0 makes it worse
+	# fast mode gives worse compression than normal mode
+	# MF_BT2 is better with crc8, but BT4 is the best for everything else.
+	# nice_len 16 isn't the best for everything, but it is in the close top three for all of them
+	# lc=0 mostly only best for 8-bit CRCs, but also for like 24 and 64we. lc=2 is usually the best
+	lzma_filter = {
+		"id": lzma.FILTER_LZMA1,  # default is FILTER_LZMA2
+		"dict_size": 1024*1024,   # default is 8 MiB
+		"lc": 2*(sum_len != 1),   # default is 3
+		"lp": 0,                  # default is 0
+		"pb": 0,                  # default is 2
+		"mode": lzma.MODE_NORMAL, # default is MODE_NORMAL
+		"nice_len": 16,           # default is 64
+		"mf": lzma.MF_BT4,        # default is MF_BT4
+		"depth": 4,               # default is 24 with BT4, nice=16.
+	}
+
+	def cache_read() -> tuple[dict[int, set], list[set]] | None:
+		if not os.path.isfile(cache_file):
+			return None
+
+		if verbose >= 1:
+			eprint("# graph was found in cache")
+
+		if verbose >= 2:
+			eprint(f"#     key: {cache_key}")
+
+		try:
+			with open(cache_file, "rb") as f:
+				data = memoryview(f.read())
+		except Exception as e:
+			raise Exception(f"cache file could not be read. key={cache_key}") from e
+
+		if data[:4] != CACHE_SIGNATURE:
+			raise ValueError(f"cache file signature did not match. key={cache_key}")
+
+		# skip the signature, polynomial, and data length
+		data = data[4 + sum_len + ((data_len.bit_length() + 7) >> 3):]
+
+		expect_sum2 = int.from_bytes(data[:4], byteorder="big")
+		actual_sum2 = zlib.crc32(data[4:])
+
+		if expect_sum2 != actual_sum2:
+			raise ValueError(f"cache file checksum 2 did not match. key={cache_key}, expected={expect_sum2:08x}, actual={actual_sum2:08x}")
+
+		d = lzma.decompress(data[8:], lzma.FORMAT_RAW, filters=[lzma_filter])
+
+		expect_sum1 = int.from_bytes(data[4:8], byteorder="big")
+		actual_sum1 = zlib.adler32(d)
+
+		if expect_sum1 != actual_sum1:
+			raise ValueError(f"cache file checksum 1 did not match. key={cache_key}, expected=0x{expect_sum1:08x}, actual=0x{actual_sum1:08x}")
+
+		if verbose >= 2:
+			eprint(
+				f"#     sum 1: {expect_sum1:08x}\n"
+				f"#     sum 2: {expect_sum2:08x}"
+			)
+
+		try:
+			return pickle.loads(d)
+		except Exception as e:
+			raise ValueError(f"cache file pickle content could not be parsed. key={cache_key}") from e
+
+	def cache_write(tmp_defs: dict[int, set], outputs: list[set], /) -> None:
+		if not os.path.isdir(cache_dir):
+			os.makedirs(cache_dir, exist_ok=True)
+
+		if verbose >= 1:
+			eprint("# writing graph to cache")
+
+		if verbose >= 2:
+			eprint(f"#     key: {cache_key}")
+
+		d = pickle.dumps((tmp_defs, outputs), pickle.HIGHEST_PROTOCOL)
+
+		sum1 = zlib.adler32(d)
+
+		if verbose >= 2:
+			eprint(f"#     sum 1: {sum1:08x}")
+
+		sum1 = sum1.to_bytes(4, byteorder="big")
+
+		c = lzma.compress(d, lzma.FORMAT_RAW, filters=[lzma_filter])
+
+		sum2 = zlib.crc32(c, zlib.crc32(sum1))
+
+		if verbose >= 2:
+			eprint(f"#     sum 2: {sum2:08x}")
+
+		sum2 = sum2.to_bytes(4, byteorder="big")
+
+		# if the cache entry exists already, this will just overwrite it.
+		try:
+			with open(cache_file, "wb") as f:
+				f.write(CACHE_SIGNATURE)
+				f.write(polynomial.to_bytes(sum_len, byteorder="big"))
+				f.write(data_len.to_bytes((data_len.bit_length() + 7) >> 3, byteorder="big"))
+				f.write(sum2)
+				f.write(sum1)
+				f.write(c)
+		except Exception as e:
+			raise Exception(f"cache file could not be written. key={cache_key}") from e
 
 	def optimize_gates(eqns: list[set]) -> tuple[dict[int, set], list[set]]:
 		nonlocal ending_gates, ending_logic_depth, ending_max_fanout, in_idx_max_pad, optimize, in_port_i
@@ -1708,15 +1798,12 @@ def run_job(
 		if not optimize:
 			return {}, rows
 
-		if 'r' in cache_settings and (cache_value := cache_read()) is not None:
-			if verbose >= 1:
-				eprint("# optimized graph was found in cache")
+		if verbose >= 1:
+			eprint("# starting optimization")
 
+		if 'r' in cache_settings and (cache_value := cache_read()) is not None:
 			tmp_defs, outputs = cache_value
 		else:
-			if verbose >= 1:
-				eprint("# starting optimization")
-
 			tmp_defs, outputs, _ = gf2_cse.optimize_gates(
 				eqns,
 				optimize_depth,
@@ -1777,13 +1864,13 @@ def run_job(
 	reversed_polynomial = int(f"{polynomial:0{sum_bits}b}"[::-1], 2) # bit reversal
 
 	# This bit with the LFSR steps and the row generation thing makes no sense to me, and it was primarily
-	# written by Claude (up until the for loop). I did test it quite a bit and I think it is probably correct.
-	lfsr_mask = (1 << sum_bits) - 1
+	# written by Claude (up until the for loop). I did test it quite a bit though
+	sum_mask = (1 << sum_bits) - 1
 
 	if reflected:
 		lfsr_step = lambda s: (s >> 1) ^ (reversed_polynomial if s & 1 else 0)
 	else:
-		lfsr_step = lambda s: ((s << 1) ^ polynomial if s >> (sum_bits - 1) else s << 1) & lfsr_mask
+		lfsr_step = lambda s: ((s << 1) ^ polynomial if s >> (sum_bits - 1) else s << 1) & sum_mask
 
 	K = crc(bytes(data_len)) # correction vector
 
@@ -2790,9 +2877,6 @@ args.data_len = 4      if args.data_len is None else args.data_len
 if syntax == "nop":
 	# ignore `-o`. this is just so it doesn't create any files.
 	output = '-'
-
-	# don't do any caching either
-	cache_settings = ''
 
 outfile = None
 first   = True
