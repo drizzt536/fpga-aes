@@ -12,7 +12,7 @@ has global state for variable and macro definitions (not reentrant)
 import re
 from os.path import expanduser
 
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 
 FunctionType = type(lambda x: x) # same as types.FunctionType
 
@@ -63,7 +63,7 @@ def expand_vars_repl(match: re.Match, *, line_num: int) -> str:
 	key = match.group()
 
 	if key not in vars:
-		raise ValueError(f"ERROR: line {line_num}: undefined variable: '{key}'")
+		raise ValueError(f"ERROR: line {line_num}: undefined variable: {key!r}")
 
 	return vars[key]
 
@@ -107,7 +107,7 @@ def find_block_end(start: str, end: str, tag: str, in_prgm: list[str], line_idx:
 
 def parse_condition(cmd: str, op: str, arg1: str, arg2: str, line_num: int) -> bool:
 	if not arg1:
-		raise ValueError(f"ERROR: line {line_num}: `{cmd}` operator '{op}' argument 1 cannot be empty")
+		raise ValueError(f"ERROR: line {line_num}: `{cmd}` operator {op!r} argument 1 cannot be empty")
 
 	if op not in {"streq", "strne"}:
 		arg1 = arg1.split(',')
@@ -119,7 +119,7 @@ def parse_condition(cmd: str, op: str, arg1: str, arg2: str, line_num: int) -> b
 		# variable operations
 		case "def" | "undef":
 			if arg2.strip():
-				raise ValueError(f"ERROR: line {line_num}: `{cmd}` operator '{op}' argument 2 must be empty")
+				raise ValueError(f"ERROR: line {line_num}: `{cmd}` operator {op!r} argument 2 must be empty")
 
 			result = True
 			for var in arg1:
@@ -144,7 +144,7 @@ def parse_condition(cmd: str, op: str, arg1: str, arg2: str, line_num: int) -> b
 				# inclusive of both bounds
 				arg2 = range(int(arg2[0]), int(arg2[1]) + 1)
 			except ValueError:
-				raise ValueError(f"ERROR: line {line_num}: `{cmd}` operator '{op}' argument 1 element {i} is not an integer: '{x1}'{end_help}")
+				raise ValueError(f"ERROR: line {line_num}: `{cmd}` operator {op!r} argument 1 element {i} is not an integer: {x1!r}{end_help}")
 
 			# check if it is true for all
 			result = True
@@ -152,7 +152,7 @@ def parse_condition(cmd: str, op: str, arg1: str, arg2: str, line_num: int) -> b
 				try:
 					x1 = int(x1, 0)
 				except ValueError:
-					raise ValueError(f"ERROR: line {line_num}: `{cmd}` operator '{op}' argument 1 element {i} is not an integer: '{x1}'{end_help}")
+					raise ValueError(f"ERROR: line {line_num}: `{cmd}` operator {op!r} argument 1 element {i} is not an integer: {x1!r}{end_help}")
 
 				if (x1 not in arg2) if op == "inrange" else (x1 in arg2):
 					result = False
@@ -160,7 +160,7 @@ def parse_condition(cmd: str, op: str, arg1: str, arg2: str, line_num: int) -> b
 
 		case "eq" | "ne" | "lt" | "le" | "gt" | "ge":
 			if len(arg1) != len(arg2):
-				raise ValueError(f"ERROR: line {line_num}: `{cmd}` operator '{op}' arguments must be the same length")
+				raise ValueError(f"ERROR: line {line_num}: `{cmd}` operator {op!r} arguments must be the same length")
 
 			cmp = {
 				"eq": int.__eq__, "ne": int.__ne__,
@@ -176,19 +176,19 @@ def parse_condition(cmd: str, op: str, arg1: str, arg2: str, line_num: int) -> b
 				try:
 					x1 = int(x1, 0)
 				except ValueError:
-					raise ValueError(f"ERROR: line {line_num}: `{cmd}` operator '{op}' argument 1 element {i} is not an integer: '{x1}'{end_help}")
+					raise ValueError(f"ERROR: line {line_num}: `{cmd}` operator {op!r} argument 1 element {i} is not an integer: {x1!r}{end_help}")
 
 				try:
 					x2 = int(x2, 0)
 				except ValueError:
-					raise ValueError(f"ERROR: line {line_num}: `{cmd}` operator '{op}' argument 2 element {i} is not an integer: '{x2}'{end_help}")
+					raise ValueError(f"ERROR: line {line_num}: `{cmd}` operator {op!r} argument 2 element {i} is not an integer: {x2!r}{end_help}")
 
 				if not cmp(x1, x2):
 					result = False
 					break
 
 		case _:
-			raise ValueError(f"ERROR: line {line_num}: unknown `{cmd}` operator: '{op}'")
+			raise ValueError(f"ERROR: line {line_num}: unknown `{cmd}` operator: {op!r}")
 
 	return result
 
@@ -383,7 +383,7 @@ def _preproc(
 			macro_line, macro_def = macros.get(f"{name}-{argc}", (None, None, None))
 
 			if macro_def is None:
-				raise ValueError(f"ERROR: line {line_num}: macro '{name}' with {argc} arguments does not exist.")
+				raise ValueError(f"ERROR: line {line_num}: macro {name!r} with {argc} arguments does not exist.")
 
 			try:
 				args = args.split(',')
@@ -393,7 +393,7 @@ def _preproc(
 					for line in macro_def
 				]
 			except IndexError:
-				raise ValueError(f"ERROR: line {macro_line}: macro '{name}' contains an invalid argument reference")
+				raise ValueError(f"ERROR: line {macro_line}: macro {name!r} contains an invalid argument reference")
 
 			try:
 				_preproc(
@@ -441,7 +441,7 @@ def _preproc(
 			try:
 				vars[f"${outvar}"] = expr[int(index)]
 			except IndexError:
-				raise ValueError(f"ERROR: line {line_num}: '%index': list index '{index}' is outside of list bounds [1,{len(expr)}]")
+				raise ValueError(f"ERROR: line {line_num}: '%index': list index {index!r} is outside of list bounds [1,{len(expr)}]")
 		elif (match := re.fullmatch(r"%len\[(\w+)\]\[(.*)\]", line)):
 			outvar, expr = match.groups()
 			vars[f"${outvar}"] = str(expr.count(',') + 1 if expr else 0)

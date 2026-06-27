@@ -24,7 +24,7 @@ if you increase it enough, it should get better again.
 requires Python >=3.10
 """
 
-__version__ = "2026.06.25.1"
+__version__ = "2026.06.27.0"
 
 __all__ = (
 	# somewhat internal
@@ -74,7 +74,7 @@ def count_gates(x: list[set] | dict[int, set], y: list[set] | dict[int, set] | N
 	if type(x) is dict:
 		return sum(map(len, x.values())) - len(x)
 
-	raise Exception(f"invalid type input to `count_gates: '{type(x)}'")
+	raise Exception(f"invalid type input to `count_gates`: {type(x)}")
 
 def add_tmp_list(
 	s: list[set],
@@ -223,7 +223,7 @@ def _resolve_best(
 
 			best = best_i[best_n], best_s[best_n]
 		case _:
-			raise Exception(f"invalid tie break preference: '{prefer}'. valid options are 'high', 'low', 'mid', 'random'")
+			raise Exception(f"invalid tie break preference: {prefer!r}. valid options are 'high', 'low', 'mid', 'random'")
 
 	return max(0, max_score), best
 
