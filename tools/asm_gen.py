@@ -651,6 +651,6 @@ def gen_ir(
 	)
 
 if __name__ == "__main__":
-	from sys import stderr
+	from sys import stderr, exit
 	print(f"crc_asm (v{__version__}) is not a top level program", file=stderr)
 	exit(1)

@@ -12,7 +12,7 @@ has global state for variable and macro definitions (not reentrant)
 import re
 from os.path import expanduser
 
-__version__ = "1.2.1"
+__version__ = "1.2.2"
 
 FunctionType = type(lambda x: x) # same as types.FunctionType
 
@@ -587,5 +587,6 @@ def generate(
 	)
 
 if __name__ == "__main__":
-	print("crc_dsl.py should not be used as a top-level program")
+	from sys import stderr, exit
+	print(f"crc_asm (v{__version__}) is not a top level program", file=stderr)
 	exit(1)

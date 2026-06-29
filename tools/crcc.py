@@ -13,7 +13,6 @@ it stop as soon as possible. The program has to be in focus for it to be noticed
 after optimization takes place crashes the program as normal. this doesn't work in LNS.
 """
 
-# TODO: perhaps give mean fanout in addition to max fanout? idk if arithmetic or geometric is better though.
 # TODO: allow `file = "filename"` inside the input TOML program.
 #       figure out how to make this work with `-o auto` and stuff.
 
@@ -31,7 +30,7 @@ class MissingPackage:
 			return "(none)"
 
 		# crash on first access
-		raise Exception(f"required package `{self.name}` is missing")
+		raise AttributeError(f"required package `{self.name}` is missing")
 
 # let the compiler work standalone with (mostly) no other files
 # these will fail later if they actually matter
@@ -132,7 +131,7 @@ asm_formats = (
 asm_ir_settings = {}
 extension       = None
 
-def format_validator(syntax: str) -> str:
+def validate_format(syntax: str) -> str:
 	global extension, asm_ir_settings
 
 	syntax = syntax.strip().lower()
@@ -306,6 +305,27 @@ def format_validator(syntax: str) -> str:
 
 	raise argparse.ArgumentTypeError(error_msg)
 
+def validate_metric(metric: str) -> str | int:
+	metric = metric.strip().lower()
+
+	if metric in {"g", "gate", "gates"}:
+		return "gates"
+
+	if metric.startswith("lut"):
+		metric = metric[3:]
+
+	try:
+		metric = int(metric) or "gates"
+
+		if metric == 1 or metric != "gates" and metric < 0:
+			raise argparse.ArgumentTypeError(f"LUT{metric} is not valid")
+
+		return metric
+	except ValueError:
+		pass
+
+	raise argparse.ArgumentTypeError(f"invalid metric: {metric!r}. must be g/gate/gates, an integer, or 'lut' followed by an integer")
+
 parser = argparse.ArgumentParser(
 	add_help=False,
 	description=f"%(prog)s {__version__}\ncrc_dsl {crc_dsl.__version__}\n{__doc__}",
@@ -317,16 +337,15 @@ parser.add_argument("--help=algorithms", "-A", action="store_true", help="list a
 parser.add_argument("--help=toml", action="store_true", help="print out an example TOML program and exit")
 if dsl_avail:
 	parser.add_argument("--help=dsl", action="store_true", help="print out example DSL preprocessor code and exit")
-parser.add_argument("--help=ir" , action="store_true", help="print IR format help")
+parser.add_argument("--help=ir" , action="store_true", help="print IR format help and exit")
 parser.add_argument("--help=all" , action="store_true", help="print all the help stuff at once and exit")
 parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {__version__}")
 
 core_group = parser.add_argument_group("core options")
 core_group.add_argument("--algorithm", "-a", type=lambda s: None if s is None else str.lower(s).strip(), help=f"CRC name (see --help=algorithms / -A). default is 'crc32'")
 core_group.add_argument("--data-len", "-l", type=int, help="bytes length of checksum input data. default is 4")
-core_group.add_argument("--format", "--syntax", "-f", type=format_validator, default="verilog", help=f"output language (see --help=formats / -F). default is 'verilog'")
+core_group.add_argument("--format", "--syntax", "-f", type=validate_format, default="verilog", help=f"output language (see --help=formats / -F). default is 'verilog'")
 core_group.add_argument("--output", "-o", type=str, default='-', help=f"output file. use 'auto' for automatic naming. default is '-' (stdout)")
-core_group.add_argument("--lut-size", "-s", type=int, default=4, help="specify the FPGA LUT size. only effects verbose printouts and metrics.\n-1 is treated as infinity. default is 4")
 core_group.add_argument("--verbose", "-v", type=int, help="set verbosity level. >=3 is the same as 2. <0 suppresses warnings.")
 
 format_group = parser.add_argument_group("formatting options")
@@ -346,9 +365,9 @@ custom_crc_group.add_argument("--reflect", "-r", action="store_true"  , help="en
 
 optimize_group = parser.add_argument_group(
 	"optimization settings",
-	"optimizes for XOR2 gate count"
+	"optimizes for area (XOR gates / LUT count)"
 	"\ndefaults:"
-	"\n   basic : off, lookahead depth 0 weight 1, nmax 2, beam size 1, prefer low n, min round reduction 1, no tmp max"
+	"\n   basic : off, lookahead depth 0 weight 1, nmax 2, beam size 1, prefer low n, min round reduction 1, no tmp max, gate metric"
 	"\n   LNS   : off, 3 trials, window size 3, unseeded"
 	"\n   cache : clear off, read off, write off, delete off"
 )
@@ -359,9 +378,10 @@ optimize_group.add_argument("--optimize-beam"      , "-b", type=int  , help="ena
 optimize_group.add_argument("--optimize-weight"    , "-w", type=float, help="enable optimization and set the lookahead weighting")
 optimize_group.add_argument("--optimize-seed"      , "-S", type=int  , help="enable optimization, switch to predictable mode, and set the MT19937 seed")
 optimize_group.add_argument("--optimize-n-prefer"  , "-P", type=str  , help="enable optimization and set intersection count tie break preference", choices=("l", "lo", "low", "h", "hi", "high", "m", "mid", "r", "rand", "random"))
-optimize_group.add_argument("--optimize-min-gates" , "-m", type=int  , help="enable optimization. exit optimization early when lookahead only sees gate reductions below\nthis threshold. false negatives are possible for >2 (it may optimize more than desired)")
-optimize_group.add_argument("--optimize-max-tmps"  , "-M", type=int  , help="enable optimization. set tmp signal count for when the optimizer exits early.")
-optimize_group.add_argument("--optimize-lns"       , "-L", action="store_true", help="enable optimization+LNS without touching settings. LNS is skipped on early exits.\nreconstruction is brute force")
+optimize_group.add_argument("--optimize-min-reduc" , "-m", type=int  , help="enable optimization. exit optimization early when lookahead only sees gate/lut reductions below\nthis threshold. false negatives are possible for >2 (it may optimize more than desired)")
+optimize_group.add_argument("--optimize-max-tmps"  , "-M", type=int  , help="enable optimization and set tmp signal count for when the optimizer exits early.")
+optimize_group.add_argument("--optimize-metric"    , "-k", type=validate_metric, help="enable optimization and set optimization metric.\nmust be gates/gate/g, an integer, or 'lut' followed by an integer. 0 is an alias for 'gates'")
+optimize_group.add_argument("--optimize-lns"       , "-L", action="store_true" , help="enable optimization+LNS without touching settings. LNS is skipped on early exits.\nreconstruction is brute force")
 optimize_group.add_argument("--optimize-lns-trials", "-T", type=int  , help="enable optimization+LNS and set the count.")
 optimize_group.add_argument("--optimize-lns-window", "-W", type=int  , help="enable optimization+LNS and set the window size.")
 
@@ -397,11 +417,19 @@ if gc_disabled:
 	gc.disable()
 	gc.collect()
 
+GV_DECL_LINE_WRAP = 100 # line wrap for only the node declarations. doesn't include the indentation
+
+syntax   = args.format
+output   = args.output
+verbose  = args.verbose or 0
+eprint   = gf2_cse._eprint
+
 optimize = any(x not in (None, False) for x in (
-	args.optimize, args.optimize_lns, args.optimize_min_gates,
+	args.optimize, args.optimize_lns, args.optimize_min_reduc,
 	args.optimize_depth, args.optimize_nmax, args.optimize_beam,
 	args.optimize_lns_trials, args.optimize_lns_window, args.optimize_seed,
 	args.optimize_n_prefer, args.optimize_weight, args.optimize_max_tmps,
+	args.optimize_metric
 ))
 
 lns = args.optimize_lns or args.optimize_lns_trials is not None or args.optimize_lns_window is not None
@@ -412,14 +440,17 @@ optimize_seed      = args.optimize_seed
 optimize_weight    = args.optimize_weight     if args.optimize_weight     is not None else 1
 optimize_n_prefer  = args.optimize_n_prefer   if args.optimize_n_prefer   is not None else "low"
 optimize_max_tmps  = args.optimize_max_tmps
-optimize_min_gates = args.optimize_min_gates or 1
+optimize_min_reduc = args.optimize_min_reduc or 1
+optimize_metric    = args.optimize_metric     if args.optimize_metric     is not None else "gates"
 lns_trials         = args.optimize_lns_trials if args.optimize_lns_trials is not None else 3
 lns_window         = args.optimize_lns_window if args.optimize_lns_window is not None else 3
 
-if optimize_n_prefer == "l" or optimize_n_prefer == "lo"  : optimize_n_prefer = "low"
-if optimize_n_prefer == "h" or optimize_n_prefer == "hi"  : optimize_n_prefer = "high"
-if optimize_n_prefer == "m"                               : optimize_n_prefer = "mid"
-if optimize_n_prefer == "r" or optimize_n_prefer == "rand": optimize_n_prefer = "random"
+lut_size = optimize_metric if type(optimize_metric) is int else None
+
+if   optimize_n_prefer in {"l", "lo"}  : optimize_n_prefer = "low"
+elif optimize_n_prefer in {"h", "hi"}  : optimize_n_prefer = "high"
+elif optimize_n_prefer == "m"          : optimize_n_prefer = "mid"
+elif optimize_n_prefer in {"r", "rand"}: optimize_n_prefer = "random"
 
 if abs(optimize_weight - round(optimize_weight)) < 1e-9:
 	optimize_weight = round(optimize_weight)
@@ -427,14 +458,6 @@ if abs(optimize_weight - round(optimize_weight)) < 1e-9:
 if not lns:
 	lns_window = 0
 	lns_trials = 0
-
-GV_DECL_LINE_WRAP = 100 # line wrap for only the node declarations. doesn't include the indentation
-
-lut_size = None if args.lut_size == -1 else args.lut_size
-syntax   = args.format
-output   = args.output
-verbose  = args.verbose or 0
-eprint   = gf2_cse._eprint
 
 if args.indent is None or args.indent in ("tabs", "tab", "t", "-1"):
 	indent_str = '\t'
@@ -911,34 +934,34 @@ if getattr(args, "help=all"):
 	print("\n################################ IR FORMAT HELP ###############################")
 	print_help_ir()
 
-	exit(0)
+	raise SystemExit
 
 if len(argv) == 1 and sys.stdin.isatty():
 	# no arguments given.
 	parser.print_help()
-	exit(0)
+	raise SystemExit
 
 del parser
 
 if getattr(args, "help=formats"):
 	print_help_formats()
-	exit(0)
+	raise SystemExit
 
 if getattr(args, "help=algorithms"):
 	print_help_algs()
-	exit(0)
+	raise SystemExit
 
 if getattr(args, "help=toml"):
 	print_help_toml()
-	exit(0)
+	raise SystemExit
 
 if getattr(args, "help=dsl") and dsl_avail:
 	print_help_dsl()
-	exit(0)
+	raise SystemExit
 
 if getattr(args, "help=ir"):
 	print_help_ir()
-	exit(0)
+	raise SystemExit
 
 if verbose >= 2:
 	eprint("# command: " + ' '.join(argv))
@@ -979,7 +1002,7 @@ if args.cache == 'l':
 		for file in os.listdir(cache_dir):
 			print(f"\t{file}")
 
-	exit(0)
+	raise SystemExit
 
 if args.cache is None:
 	cache_settings = ''
@@ -1031,7 +1054,7 @@ else:
 		if args.cache == 'c' and cache_only:
 			if os.path.isdir(cache_dir):
 				os.rmdir(cache_dir)
-			exit(0)
+			raise SystemExit
 
 		cache_settings = cache_settings.replace('r', '')
 
@@ -1071,7 +1094,7 @@ if not syntax.startswith("asm="):
 			']'           : ')',
 			'^'           : '\t',
 			'$'           : ';',
-			"footer"      : "end architecture;",
+			"footer"      : lambda name: f"end architecture {name};",
 			"comment"     : "--",
 			"begin_logic" : "begin",
 			"var_prefix"  : '',
@@ -2034,7 +2057,8 @@ def run_job(
 		optimize_weight,
 		optimize_n_prefer,
 		optimize_max_tmps,
-		optimize_min_gates,
+		optimize_min_reduc,
+		optimize_metric,
 		lns_trials,
 		lns_window,
 		CACHE_SIGNATURE,
@@ -2156,8 +2180,9 @@ def run_job(
 		except Exception as e:
 			raise Exception(f"cache file could not be written. key={cache_key}") from e
 
-	def optimize_gates(eqns: list[set]) -> tuple[dict[int, set], list[set]]:
-		nonlocal ending_gates, ending_logic_depth, ending_max_fanout, in_idx_max_pad, optimize, in_port_i
+	def optimize_graph(eqns: list[set]) -> tuple[dict[int, set], list[set]]:
+		nonlocal ending_gates, ending_luts, ending_logic_depth, ending_fanout_stats, ending_fanin_util
+		nonlocal in_idx_max_pad, optimize, in_port_i
 
 		if not optimize:
 			return {}, rows
@@ -2168,7 +2193,7 @@ def run_job(
 		if 'r' in cache_settings and (cache_value := cache_read()) is not None:
 			tmp_defs, outputs = cache_value
 		else:
-			tmp_defs, outputs, _ = gf2_cse.optimize_gates(
+			tmp_defs, outputs, _ = gf2_cse.optimize_graph(
 				eqns,
 				optimize_depth,
 				optimize_nmax,
@@ -2177,7 +2202,8 @@ def run_job(
 				optimize_weight, # lookahead weight
 				lns_window,
 				lns_trials,
-				optimize_min_gates - 1,
+				optimize_min_reduc - 1, # exit_fast
+				"gates" if optimize_metric == "gates" else f"lut{optimize_metric}",
 				optimize_max_tmps,
 				optimize_seed,
 				verbose,
@@ -2192,21 +2218,43 @@ def run_job(
 			optimize  = False
 			in_port_i = in_port
 
-		ending_gates       = gf2_cse.count_gates(tmp_defs, outputs)
-		ending_logic_depth = gf2_cse.logic_depth(tmp_defs, outputs, lut_size, sorted=True)
-		ending_max_fanout  = gf2_cse.max_fanout(tmp_defs, outputs, nodes=False)
+		ending_gates        = gf2_cse.count_gates(tmp_defs, outputs)
+		ending_fanout_stats = gf2_cse.fanout_stats(tmp_defs, outputs)
+		if lut_size is not None:
+			ending_luts        = gf2_cse.count_luts(tmp_defs, outputs, lut_size=lut_size)
+			ending_fanin_util  = gf2_cse.fanin_util(tmp_defs, outputs, lut_size=lut_size)
+			ending_logic_depth = gf2_cse.logic_depth(tmp_defs, outputs, lut_size, sorted=True)
 
 		in_idx_max_pad = max(
 			in_idx_max_pad,
 			len( str(len(tmp_defs)) )
 		)
 
-		if verbose >= 1:
+		if verbose >= 2:
 			eprint(
-				f"# XOR2 gates: {starting_gates} => {ending_gates}\n"
-				f"# LUT{lut_size} logic depth: ~ {starting_logic_depth} => {ending_logic_depth}\n"
-				f"# max fanout: {starting_max_fanout} => {ending_max_fanout}"
+				f"# fanout:\n"
+				f"#     min    : {starting_fanout_stats[0]} => {ending_fanout_stats[0]}\n"
+				f"#     median : {starting_fanout_stats[1]} => {ending_fanout_stats[1]}\n"
+				f"#     max    : {starting_fanout_stats[2]} => {ending_fanout_stats[2]}\n"
+				f"#     mean   : {starting_fanout_stats[3]} => {ending_fanout_stats[3]}\n"
+				f"#     std    : {starting_fanout_stats[4]} => {ending_fanout_stats[4]}"
 			)
+		elif verbose == 1:
+			eprint(f"# fanout bounds: ({starting_fanout_stats[0]}, {starting_fanout_stats[2]}) => ({ending_fanout_stats[0]}, {ending_fanout_stats[2]})")
+
+		if verbose >= 1:
+			if lut_size is not None:
+				eprint(
+					f"# LUT{lut_size} count: {starting_luts} => {ending_luts}\n"
+					f"# LUT{lut_size} input utilization: {starting_fanin_util*100:.{1 + verbose << 1}g}% => {ending_fanin_util*100:.{1 + verbose << 1}g}%"
+				)
+
+				if verbose >= 2:
+					eprint(f"# LUT{lut_size} balanced tree logic depth: {starting_logic_depth} => {ending_logic_depth}")
+				else:
+					eprint(f"# LUT{lut_size} logic depth: ~ {starting_logic_depth} => {ending_logic_depth}")
+			else:
+				eprint(f"# XOR2 gate count: {starting_gates} => {ending_gates}")
 
 		return tmp_defs, outputs
 
@@ -2274,14 +2322,18 @@ def run_job(
 		if (K >> bit) & 1:
 			eqn.add(None)
 
-	starting_gates       = gf2_cse.count_gates(rows)
-	starting_logic_depth = gf2_cse.logic_depth(None, rows, lut_size)
-	starting_max_fanout  = gf2_cse.max_fanout(None, rows, nodes=False)
+	starting_gates        = gf2_cse.count_gates(rows)
+	starting_fanout_stats = gf2_cse.fanout_stats(None, rows)
+	starting_logic_depth  = None if lut_size is None else gf2_cse.logic_depth(None, rows, lut_size)
+	starting_fanin_util   = None if lut_size is None else gf2_cse.fanin_util(rows, lut_size=lut_size)
+	starting_luts         = None if lut_size is None else gf2_cse.count_luts(rows, lut_size=lut_size)
 
 	# set these too in case optimization is off
-	ending_gates         = starting_gates
-	ending_logic_depth   = starting_logic_depth
-	ending_max_fanout    = starting_max_fanout
+	ending_gates          = starting_gates
+	ending_fanout_stats   = starting_fanout_stats
+	ending_logic_depth    = starting_logic_depth
+	ending_fanin_util     = starting_fanin_util
+	ending_luts           = starting_luts
 
 	def print(message: str | None, end: str = '\n') -> None:
 		"""
@@ -2387,7 +2439,7 @@ def run_job(
 		is_nmg = syntax == "nmg"
 		is_ch3 = syntax == "ch3"
 
-		tmp_defs, outputs = optimize_gates(rows)
+		tmp_defs, outputs = optimize_graph(rows)
 
 		# header
 		match syntax:
@@ -2406,7 +2458,7 @@ def run_job(
 					f"\n\t\t{in_port}{in_pad}: in  std_logic_vector({data_bits - 1:{idx_max_pad}} downto 0);"
 					f"\n\t\t{out_port}{out_pad}: out std_logic_vector({sum_bits - 1:{idx_max_pad}} downto 0)"
 					f"\n\t);"
-					f"\nend entity;"
+					f"\nend entity crc{crc_name}_{data_len};"
 					f"\n"
 					f"\narchitecture crc{crc_name}_{data_len}_arch of crc{crc_name}_{data_len} is"
 					f"\n\t-- polynomial: 0x{polynomial:0{sum_nibs}X}"
@@ -2519,7 +2571,7 @@ def run_job(
 			else:
 				print(f"\n{prefix}{out_port}{assign}{local_port}{suffix}")
 
-			print(footer)
+			print(footer(f"crc{crc_name}_{data_len}_arch") if callable(footer) else footer)
 			return job_ret()
 
 		# generate
@@ -2574,14 +2626,14 @@ def run_job(
 			case _:
 				raise Exception("`match` case mismatch with containing logic.")
 
-		print(footer)
+		print(footer(f"crc{crc_name}_{data_len}_arch") if callable(footer) else footer)
 		return job_ret()
 
 	# assembly formats
 	if syntax.startswith("asm=") and syntax not in {"asm=json", "asm=j"}:
 		# it is okay to do this before the match/case because the `case _` branch
 		# should never execute in a production version of the compiler.
-		tmp_defs, outputs = optimize_gates(rows)
+		tmp_defs, outputs = optimize_graph(rows)
 
 		in_ofs  = 0
 		tmp_ofs = data_bits
@@ -2677,7 +2729,7 @@ def run_job(
 	match syntax:
 		case "pyt" | "py" | "c" | "c++":
 			# compute optimized equation graph
-			tmp_defs, outputs = optimize_gates(rows)
+			tmp_defs, outputs = optimize_graph(rows)
 
 			if syntax in {"python-test", "pyt"}:
 				# also give functions for testing the functionality
@@ -2822,7 +2874,7 @@ def run_job(
 			in_port_i = "in"
 
 			starting_gates    = gf2_cse.count_gates(rows)
-			tmp_defs, outputs = optimize_gates(rows)
+			tmp_defs, outputs = optimize_graph(rows)
 
 			print(
 				f"{comment} Generated with {prog}.py"
@@ -2943,7 +2995,7 @@ def run_job(
 		case "ir" | "r":
 			# NOTE: the output for this is not JSON
 			cse_time_stt      = perf_counter_ns()
-			tmp_defs, outputs = optimize_gates(rows)
+			tmp_defs, outputs = optimize_graph(rows)
 			cse_time_end      = perf_counter_ns()
 
 			if syntax == "ir":
@@ -2959,6 +3011,9 @@ def run_job(
 			for i in range(1, len(tmp_defs) + 1):
 				td[i] = tmp_defs[i]
 
+
+			sep2 = sep + ('\t' if sep else '')
+
 			data = (
 				f'{{'
 				f'{sep}"tmp_defs":{pad}{td},'
@@ -2969,8 +3024,24 @@ def run_job(
 				f'{sep}"ending_gates":{pad}{ending_gates},'
 				f'{sep}"gate_reduction":{pad}{starting_gates - ending_gates},'
 				f'{sep}"compression":{pad}{0.0 if starting_gates == 0.0 else 1 - ending_gates / starting_gates},'
-				f'{sep}"logic_depth":{pad}{{"start":{pad}{starting_logic_depth},{pad}"end":{pad}{ending_logic_depth},{pad}"lut_size":{pad}{float("inf") if lut_size is None else lut_size}}},'
-				f'{sep}"max_fanout":{pad}{{"start":{pad}{starting_max_fanout},{pad}"end":{pad}{ending_max_fanout}}},'
+				f'{sep}"lut_size":{pad}{None if lut_size is None else lut_size},'
+				f'{sep}"logic_depth":{pad}{{"start":{pad}{starting_logic_depth},{pad}"end":{pad}{ending_logic_depth}}},'
+				f'{sep}"fanin_util":{pad}{{"start":{pad}{starting_fanin_util},{pad}"end":{pad}{ending_fanin_util}}},'
+				f'{sep}"fanout":{pad}{{'
+					f'{sep2}"start":{pad}{{'
+						f'"min":{pad}{starting_fanout_stats[0]},{pad}'
+						f'"median":{pad}{starting_fanout_stats[1]},{pad}'
+						f'"max":{pad}{starting_fanout_stats[2]},{pad}'
+						f'"mean":{pad}{starting_fanout_stats[3]},{pad}'
+						f'"std":{pad}{starting_fanout_stats[4]}'
+					f'}},{sep2}"end":{pad}{{'
+						f'"min":{pad}{ending_fanout_stats[0]},{pad}'
+						f'"median":{pad}{ending_fanout_stats[1]},{pad}'
+						f'"max":{pad}{ending_fanout_stats[2]},{pad}'
+						f'"mean":{pad}{ending_fanout_stats[3]},{pad}'
+						f'"std":{pad}{ending_fanout_stats[4]}'
+					f'}}'
+				f'{sep}}},'
 				f'{sep}"gen_time_ns":{pad}{curve_gen_time_end - curve_gen_time_stt},'
 				f'{sep}"cse_time_ns":{pad}{cse_time_end - cse_time_stt}'
 				f"{'\n' if syntax == "ir" else ''}}}"
@@ -2979,7 +3050,7 @@ def run_job(
 			print(data if syntax == "ir" else data.replace(' ', ''))
 		case "json" | "j" | "metrics" | "m" | "asm=json" | "asm=j":
 			cse_time_stt      = perf_counter_ns()
-			tmp_defs, outputs = optimize_gates(rows)
+			tmp_defs, outputs = optimize_graph(rows)
 			cse_time_end      = perf_counter_ns()
 
 			tmp_syntax = syntax[4:] if syntax.startswith("asm=") else syntax
@@ -3033,14 +3104,24 @@ def run_job(
 			data["ending_gates"]   = ending_gates
 			data["gate_reduction"] = starting_gates - ending_gates
 			data["compression"]    = 0.0 if starting_gates == 0.0 else 1 - ending_gates / starting_gates
-			data["logic_depth"]    = {
-				"start": starting_logic_depth,
-				"end": ending_logic_depth,
-				"lut_size": float("inf") if lut_size is None else lut_size
-			}
-			data["max_fanout"]     = {
-				"start": starting_max_fanout,
-				"end": ending_max_fanout
+			data["lut_size"]       = None if lut_size is None else lut_size
+			data["logic_depth"]    = { "start": starting_logic_depth, "end": ending_logic_depth }
+			data["fanin_util"]     = { "start": starting_fanin_util , "end": ending_fanin_util }
+			data["fanout"]         = {
+				"start": {
+					"min"   : starting_fanout_stats[0],
+					"median": starting_fanout_stats[1],
+					"max"   : starting_fanout_stats[2],
+					"mean"  : starting_fanout_stats[3],
+					"std"   : starting_fanout_stats[4],
+				},
+				"end": {
+					"min"   : ending_fanout_stats[0],
+					"median": ending_fanout_stats[1],
+					"max"   : ending_fanout_stats[2],
+					"mean"  : ending_fanout_stats[3],
+					"std"   : ending_fanout_stats[4],
+				},
 			}
 			data["gen_time_ns"]    = curve_gen_time_end - curve_gen_time_stt
 			data["cse_time_ns"]    = cse_time_end - cse_time_stt
@@ -3048,7 +3129,7 @@ def run_job(
 		case "nop":
 			if optimize:
 				# just for the output
-				optimize_gates(rows)
+				optimize_graph(rows)
 		case _:
 			raise Exception(f"mismatch between argparse syntax list and match/case syntax list. syntax: {syntax!r}")
 
@@ -3282,4 +3363,4 @@ if bad_filenames and verbose >= 0:
 	eprint(f"\x1b[1;33m# warning: some output files were shadowed\x1b[m: '{"', '".join(bad_filenames)}'")
 
 if verbose >= 2:
-	eprint(f"# filenames: {filenames}")
+	eprint(f"# filenames: {"'" + "', '".join(filenames) + "'" if filenames else 'none'}")
