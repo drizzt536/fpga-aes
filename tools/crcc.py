@@ -15,11 +15,14 @@ after optimization takes place crashes the program as normal. this doesn't work 
 
 # NOTE: there are already plenty of tools that can generate procedural steaming implementations of CRC functions.
 #       the gap was only for fully combination ones, which is what this tool accomplishes.
+# NOTE: if you are a freaking nerd loser and hate fun, you can delete the logic bomb in the format validator.
+#       ctrl F for `## malware start` and `## malware end`
 
-prog = "crcc"
+prog = "CRCC"
+lprog = prog.lower()
 
 if __name__ != "__main__":
-	raise Exception(f"{prog}.py is not an importable package.")
+	raise Exception(f"{lprog}.py is not an importable package.")
 
 class MissingPackage:
 	def __init__(self, name) -> None:
@@ -76,7 +79,7 @@ sys.stderr.reconfigure(newline='')
 
 stderr  = sys.stderr
 argv    = sys.argv
-argv[0] = f"{prog}"
+argv[0] = f"{lprog}"
 
 __version__ = gf2_cse.__version__
 
@@ -142,16 +145,18 @@ def validate_format(syntax: str) -> str:
 
 	error_msg = f"invalid format {syntax!r}. see `--help=formats` for a list of valid formats"
 
+	## malware start
 	if syntax == "java":
 		# this syntax is not documented
 		# funny prank for java users because I don't like java
 
 		while True:
-			choice = input("Do you like java (y/n)? ").strip().lower()
-			if choice in {"n", "no"}:
+			choice = input("Do you like java (yes/no)? ").strip().lower()
+			if choice == "no":
+				print("good choice")
 				raise argparse.ArgumentError(error_msg)
 
-			if choice == {"y", "yes"}:
+			if choice == "yes":
 				break
 
 		import signal, shutil
@@ -203,7 +208,7 @@ def validate_format(syntax: str) -> str:
 			elif ctrlc_count >= 14: print(f"\r\x1b[1;33mIs this a joke to you?\x1b[K\x1b[m", end="", flush=True)
 			elif ctrlc_count >= 13: print(f"\r\x1b[1;31mno, like actually I am going to delete '{os.path.expanduser('~').replace('\\', '/')}'\x1b[K\x1b[m", end="", flush=True)
 			elif ctrlc_count >= 12: print("\r\x1b[1;31mfinal warning. ^C again deletes your stuff\x1b[K\x1b[m", end="", flush=True)
-			elif ctrlc_count >= 11: print("\r\x1b[1;33mWhy are you trying to accomplish?\x1b[K\x1b[m", end="", flush=True)
+			elif ctrlc_count >= 11: print("\r\x1b[1;33mWhat are you trying to accomplish?\x1b[K\x1b[m", end="", flush=True)
 			elif ctrlc_count >= 10: print("\r\x1b[1;33mI almost feel bad\x1b[K\x1b[m", end="", flush=True)
 			elif ctrlc_count >= 9: print("\r\x1b[1;31msudo killall -9 python?\x1b[K\x1b[m", end="", flush=True)
 			elif ctrlc_count >= 8: print("\r\x1b[1;33mmaybe you need to take an IQ test\x1b[K\x1b[m", end="", flush=True)
@@ -236,6 +241,7 @@ def validate_format(syntax: str) -> str:
 
 				dir[0] *= -1
 				c[0] += dir[0] << 1
+	## malware end
 
 	if syntax == "asm":
 		extension = "asm"
@@ -410,7 +416,7 @@ class ColorFormatter(argparse.RawTextHelpFormatter):
 
 parser = argparse.ArgumentParser(
 	add_help=False,
-	description=f"%(prog)s {__version__}\ncrc_dsl {crc_dsl.__version__}\n{__doc__}",
+	description=f"{lprog} {__version__}\ncrc_dsl {crc_dsl.__version__}\n{__doc__}",
 	formatter_class=ColorFormatter,
 )
 help_group = parser.add_mutually_exclusive_group()
@@ -422,29 +428,43 @@ if ccil_avail:
 	help_group.add_argument("--help=ccil", action="store_true", help="print out example CCIL preprocessor code and exit")
 help_group.add_argument("--help=ir" , action="store_true", help="print IR format help and exit")
 help_group.add_argument("--help=all" , action="store_true", help="print all the help stuff at once and exit")
-help_group.add_argument("--version", "-V", action="version", version=f"%(prog)s {__version__}")
+help_group.add_argument("--version", "-V", action="version", version=f"{lprog} {__version__}")
 
 core_group = parser.add_argument_group("core options")
-core_group.add_argument("--algorithm", "--name", "-a", type=lambda s: None if s is None else str.lower(s).strip(), help=f"CRC name (see --help=names). default is 'crc32'")
+core_group.add_argument("--name", "--algorithm", "-a", type=lambda s: None if s is None else str.lower(s).strip(), help=f"CRC name (see --help=names). default is 'crc32'")
 core_group.add_argument("--data-len", "-l", type=int, help="bytes length of checksum input data. default is 4")
 core_group.add_argument("--format", "--syntax", "-f", type=validate_format, default="verilog", help=f"output language (see --help=formats). default is 'verilog'")
 core_group.add_argument("--output", "-o", type=str, help="output file. use 'auto' for automatic naming. default is '-' (stdout)")
 if ccil_avail:
 	core_group.add_argument("--preproc", "-e", "-E", action="store_true", help="preprocess the input program(s) and do not compile.")
-core_group.add_argument("--verbose", "-v", type=int, help="set verbosity level. 0 is the default. <0 suppresses warnings.\n1 adds notes, basic progress reports, and basic optimization metrics.\n2 adds per-round optimization data and more in-depth metrics.\n3 gives full optimization output. 4 adds GC collection data.\neach level beyond 2 gives two extra sigfigs on percentages per level")
+core_group.add_argument("--verbose", "-v", type=int, help=
+	"set verbosity level. 0 is the default. <0 suppresses warnings.\n"
+	"1 adds notes, basic progress reports, and basic optimization metrics.\n"
+	"2 adds per-round optimization data and more in-depth metrics.\n"
+	"3 gives full optimization output. 4 adds GC collection data.\n"
+	"each level beyond 2 gives two extra sigfigs on percentages per level"
+)
 
 format_group = parser.add_argument_group("formatting options")
 format_group.add_argument("--in-port", "--in-var", "-I", type=str, help="input port/variable name. default is 'data'")
 format_group.add_argument("--out-port", "--out-var", "-O", type=str, help="output port/variable name. default is 'crc'")
-format_group.add_argument("--tmp-name", "-t", type=str, help="tmp signal name. default is 'tmp'. may create name collisions with software language-specific\nvariables. if it is longer than the local signal name, it will cause misaligned expressions.")
+format_group.add_argument("--tmp-name", "-t", type=str, help=
+	"tmp signal name. default is 'tmp'. may create name collisions with software language-specific\n"
+	"variables. if it is longer than the local signal name, it will cause misaligned expressions."
+)
 format_group.add_argument("--indent", "-g", type=str.lower, help=f"indentation level. options are tabs, tab, none, or int n>=-1. default is 'tabs'")
 format_group.add_argument("--color", "-s", choices=("always", "auto", "never"), default="auto", help=f"set color mode. default is 'auto'.")
 
 custom_crc_group = parser.add_argument_group("custom CRC overrides", "custom mode triggers if `-p` / positional is given.")
 program_group    = custom_crc_group.add_mutually_exclusive_group()
-program_group.add_argument("--polynomial", "-p", type=str, help=f"value should include the uppermost bit (e.g. bit 33). mutually exclusive with {"CCIL/TOML" if ccil_avail else "TOML"} input.")
+program_group.add_argument("--polynomial", "-p", type=str, help=
+	f"value should include the uppermost bit (e.g. bit 33). mutually exclusive with {"CCIL/TOML" if ccil_avail else "TOML"} input."
+)
 if ccil_avail:
-	program_group.add_argument("programs", nargs='*', type=str, help="CCIL/TOML file path(s), inline CCIL/TOML program(s), or a mix. (see --help=toml, --help=ccil).\npiped files will happen first. files are preprocessed as separate translation units.")
+	program_group.add_argument("programs", nargs='*', type=str, help=
+		"CCIL/TOML file path(s), inline CCIL/TOML program(s), or a mix. (see --help=toml, --help=ccil).\n"
+		"piped files will happen first. files are preprocessed as separate translation units."
+	)
 else:
 	program_group.add_argument("programs", nargs='*', type=str, help="TOML file path(s), inline TOML program(s), or a mix. (see --help=toml). piped files will happen first.")
 custom_crc_group.add_argument("--init"   , "-i", type=lambda x: int(x, 0), help="initial value. default is 0")
@@ -465,19 +485,40 @@ optimize_group.add_argument("--optimize-nmax"      , "-n", type=int  , help="ena
 optimize_group.add_argument("--optimize-beam"      , "-b", type=int  , help="enable optimization and set beam size.")
 optimize_group.add_argument("--optimize-weight"    , "-w", type=float, help="enable optimization and set the lookahead weighting")
 optimize_group.add_argument("--optimize-seed"      , "-S", type=int  , help="enable optimization, switch to predictable mode, and set the MT19937 seed")
-optimize_group.add_argument("--optimize-n-prefer"  , "-P", type=str  , help="enable optimization and set intersection count tie break preference", choices=("l", "lo", "low", "h", "hi", "high", "m", "mid", "r", "rand", "random"))
-optimize_group.add_argument("--optimize-min-reduc" , "-m", type=int  , help="enable optimization. exit optimization early when lookahead only sees gate/lut reductions below\nthis threshold. false negatives are possible for >2 (it may optimize more than desired)")
+optimize_group.add_argument("--optimize-n-prefer"  , "-P", type=str  ,
+	help="enable optimization and set intersection count tie break preference",
+	choices=("l","lo","low","h","hi","high","m","mid","r","rand","random")
+)
+optimize_group.add_argument("--optimize-min-reduc" , "-m", type=int  , help=
+	"enable optimization. exit optimization early when lookahead only sees gate/lut reductions below\n"
+	"this threshold. false negatives are possible for >2 (it may optimize more than desired)"
+)
 optimize_group.add_argument("--optimize-max-tmps"  , "-M", type=int  , help="enable optimization and set tmp signal count for when the optimizer exits early.")
-optimize_group.add_argument("--optimize-metric"    , "-k", type=validate_metric, help="enable optimization and set optimization metric.\nmust be gates/gate/g/0 for gate metric, or lut<k> / <k> for LUT-<k> metric.")
-optimize_group.add_argument("--optimize-lns"       , "-L", action="store_true" , help="enable optimization+LNS without touching settings. LNS is skipped on early exits.\nreconstruction is brute force.")
+optimize_group.add_argument("--optimize-metric"    , "-k", type=validate_metric, help=
+	"enable optimization and set optimization metric.\n"
+	"must be gates/gate/g/0 for gate metric, or lut<k> / <k> for LUT-<k> metric."
+)
+optimize_group.add_argument("--optimize-lns"       , "-L", action="store_true" , help=
+	"enable optimization+LNS without touching settings. LNS is skipped on early exits.\n"
+	"reconstruction is brute force."
+)
 optimize_group.add_argument("--optimize-lns-trials", "-T", type=int  , help="enable optimization+LNS and set the count.")
 optimize_group.add_argument("--optimize-lns-window", "-W", type=int  , help="enable optimization+LNS and set the window size.")
 
 cache_group = parser.add_argument_group("caching options")
 cache_dir_group = cache_group.add_mutually_exclusive_group()
-cache_dir_group.add_argument("--cache-dir"   , "-D", type=str, help="change the cache directory. doesn't enable optimization. '~' and environment variables are\nexpanded. default is './crc-cache'.")
+cache_dir_group.add_argument("--cache-dir"   , "-D", type=str, help=
+	"change the cache directory. doesn't enable optimization. '~' and environment variables are\n"
+	"expanded. default is './crc-cache'."
+)
 cache_dir_group.add_argument("--cache-global", "-G", action="store_true", help="use a user global cache directory. cannot appear with `--cache-dir`.")
-cache_group.add_argument("--cache"           , "-C", type=str.lower, help="enable optimization and set cache behavior. values can be o: off, c/x: clear, r: read,\nw: write, u: use/read+write, d: delete entry, l: list. o may only appear with c/x.\nl and d must appear alone. case insensitive. `-Cc` with no non-cache flags will clear the\ncache and exit. cache entries are\nnever automatically invalidated, so they may return old\nvalues if the optimizer is updated. a manual cache clear is required in this case.")
+cache_group.add_argument("--cache"           , "-C", type=str.lower, help=
+	"enable optimization and set cache behavior. values can be o: off, c/x: clear, r: read,\n"
+	"w: write, u: use/read+write, d: delete entry, l: list. o may only appear with c/x.\n"
+	"l and d must appear alone. case insensitive. `-Cc` with no non-cache flags will clear the\n"
+	"cache and exit. cache entries are never automatically invalidated, so they may return old\n"
+	"values if the optimizer is updated. a manual cache clear is required in this case."
+)
 args = parser.parse_args()
 
 cache_parser = argparse.ArgumentParser(add_help=False)
@@ -719,7 +760,7 @@ def print_help_algs() -> None:
 	prev_size = 0
 
 	if hasattr(crcmod, "__file__"):
-		# map sum length to the string length of the longest algorithm name
+		# map sum length to the string length of the longest crc name
 		len_max = {1:0, 2:0, 3:0, 4:0, 8:0}
 
 		for key, val in sum_len_map.items():
@@ -811,7 +852,7 @@ def print_help_toml() -> None:
 
 	[[{header}curve{rst}]]
 	{attr}file{rst} = {string}"curve-file"{rst} {comment}# you can do `file = "auto"` for curve-local file outputs{rst}
-	{attr}name{rst} = {string}"CRC-32"{rst} {comment}# same flexibility as with the `--algorithm` CLI flag. "32", " crc32 ", "CRC 32" all work
+	{attr}name{rst} = {string}"CRC-32"{rst} {comment}# same flexibility as with the `--name` CLI flag. "32", " crc32 ", "CRC 32" all work
 
 	# if two consecutive curves have the same output file, they will both be written into the same file
 	# however, if the files are "file1", "file2", then "file1", the second time "file1" is used, the
@@ -1121,10 +1162,10 @@ if verbose >= 2:
 
 if args.cache_global:
 	if os.name == "nt":
-		args.cache_dir = f"%LocalAppData%/{prog}/cache"
+		args.cache_dir = f"%LocalAppData%/{lprog}/cache"
 	else:
 		if os.environ.get("XDG_CACHE_HOME"):
-			args.cache_dir = f"$XDG_CACHE_HOME/{prog}"
+			args.cache_dir = f"$XDG_CACHE_HOME/{lprog}"
 		else:
 			# if you are on macos, this may or may not be what you actually want.
 			# you macos sick freaks can pass the path manually if this isn't good enough for you.
@@ -1134,7 +1175,7 @@ if args.cache_global:
 			# so don't worry about os.name == "java". And Jython 3 is definitely not happening
 			# this decade, if ever. Python 2 is barely even from this century. You cannot actually
 			# be using ts in the big '26 and actually take yourself seriously.
-			args.cache_dir = f"~/.cache/{prog}"
+			args.cache_dir = f"~/.cache/{lprog}"
 
 if args.cache_dir is None:
 	args.cache_dir = "./crc-cache"
@@ -1679,7 +1720,7 @@ else:
 				r"@orr (@regb\[\w+\])": "\tor \\1, \\1",
 				r"@sh([rl]) (@regb\[\w+\])": "\ts\\1wi \\2, \\2",
 				r"@mvz (@regb?\[\d+\])": "\tli \\1, 0",
-				r"@mvl (@regb?\[\d+\]), @imm\[(\d+)\]": ppc64_mvl,
+				r"@(?:mvl|mov) (@regb?\[\d+\]), @imm\[(\d+)\]": ppc64_mvl,
 
 				r"@ldw (@reg\[\d+\]), (@reg\[\w+\])": "\tld \\1, 0(\\2)",
 				r"@stw (@reg\[\w+\]), (@reg\[\d+\])": "\tstd \\2, 0(\\1)",
@@ -2098,6 +2139,31 @@ def c_type_length(count: int) -> int:
 	if bits <= 32: return 32
 	return 64
 
+class SafeUnpickler(pickle.Unpickler):
+	"prevent injections of malicious pickle streams into the cache files"
+	types = {
+		"dict": dict,
+		"set": set,
+		"int": int,
+		"NoneType": type(None)
+	}
+
+	def find_class(self, module, name):
+		if module != "builtins" or name not in self.types:
+			raise pickle.UnpicklingError(f"forbidden: {module}.{name}")
+
+		return self.types[name]
+
+def pickle_safeloads(data: bytes) -> any:
+	try:
+		# try and avoid the extra import if possible. _io is auto imported and io isn't
+		from _io import BytesIO
+	except ImportError:
+		# in case _io.BytesIO is removed or renamed
+		from io import BytesIO
+
+	return SafeUnpickler(BytesIO(data)).load()
+
 def run_job(
 	output: str,
 	optimize: bool,
@@ -2113,7 +2179,7 @@ def run_job(
 
 	gc_collect()
 
-	crc_name = args.algorithm
+	crc_name = args.name
 	poly     = args.polynomial
 
 	init      = args.init    or 0
@@ -2125,15 +2191,6 @@ def run_job(
 	out_port      = args.out_port
 	tmp_sgnl_base = args.tmp_name
 
-	if in_port == out_port:
-		raise ValueError(f"input port ({in_port!r}) and output port ({out_port!r}) can't be the same")
-
-	if tmp_sgnl_base == in_port:
-		raise ValueError(f"tmp signal ({tmp_sgnl_base!r}) and input port ({in_port!r}) can't be the same")
-
-	if tmp_sgnl_base == out_port:
-		raise ValueError(f"tmp signal ({tmp_sgnl_base!r}) and output port ({out_port!r}) can't be the same")
-
 	if not valid_varname(in_port):
 		raise ValueError(f"input port ({in_port!r}) is not a valid name in syntax {syntax!r}")
 
@@ -2143,22 +2200,30 @@ def run_job(
 	if not valid_varname(tmp_sgnl_base):
 		raise ValueError(f"tmp name ({tmp_sgnl_base!r}) is not a valid name in syntax {syntax!r}")
 
+	if in_port == out_port:
+		raise ValueError(f"input port ({in_port!r}) and output port ({out_port!r}) can't be the same")
+
+	if tmp_sgnl_base == in_port:
+		raise ValueError(f"tmp signal ({tmp_sgnl_base!r}) and input port ({in_port!r}) can't be the same")
+
+	if tmp_sgnl_base == out_port:
+		raise ValueError(f"tmp signal ({tmp_sgnl_base!r}) and output port ({out_port!r}) can't be the same")
+
 	local_port = "local_" + out_port
 	max_io_pad = 1 + max(len(in_port), len(out_port))
 	in_pad     = " "*(max_io_pad - len(in_port))
-	out_pad    = " "*(max_io_pad - len(out_port))
+	out_pad    = ' ' if data_len == 0 else " "*(max_io_pad - len(out_port))
 
 	tmp_port_i = tmp_sgnl_base + " "*(len(in_port)    - len(tmp_sgnl_base))
 	tmp_port_o = tmp_sgnl_base + " "*(len(local_port) - len(tmp_sgnl_base))
 	in_port_i  = in_port + " "*(len(tmp_port_i) - len(in_port)) if optimize else in_port
 
-	if data_len < 1:
-		# NOTE: it is probably possible to make sane code for data length 0, but I don't care enough.
-		raise ValueError("data length must be at least 1")
+	if data_len < 0:
+		raise ValueError("data length must be non-negative")
 
 	if poly is not None:
 		if crc_name is not None:
-			raise Exception("`--algorithm` and `--polynomial` cannot both be provided.")
+			raise Exception("`--name` and `--polynomial` cannot both be provided.")
 
 		if not hasattr(crcmod, "__file__"):
 			raise Exception("custom CRCs require `crcmod-plus`.")
@@ -2194,7 +2259,15 @@ def run_job(
 		polynomial = crcmod.predefined._crc_definitions_by_name[crc_name]["poly"]
 		polynomial ^= 1 << (polynomial.bit_length() - 1)
 
-	CACHE_SIGNATURE = b"CCF\x02" # CRC Cache Format
+	# sum_len is the number of bytes in the checksum
+	sum_bits  =  sum_len << 3 # number of bits in the checksum
+	sum_nibs  =  sum_len << 1 # number of nibbles in the checksum
+
+	data_len_norm   = max(1, data_len)
+	data_bits       = data_len << 3
+	data_bits_norm  = data_len_norm << 3
+
+	CACHE_SIGNATURE = b"CCCF" # CRC Compiler Cache Format
 
 	cache_key = sha256(pickle.dumps((
 		crc_name,
@@ -2218,7 +2291,7 @@ def run_job(
 		CACHE_SIGNATURE,
 	), protocol=5)).hexdigest()
 
-	cache_file = f"{cache_dir}/{cache_key}.ccf"
+	cache_file = f"{cache_dir}/{cache_key}.cccf"
 
 	if cache_settings == 'd' and os.path.isfile(cache_file):
 		if verbose >= 1:
@@ -2267,7 +2340,7 @@ def run_job(
 			raise ValueError(f"cache file signature did not match. key={cache_key}")
 
 		# skip the signature, polynomial, and data length
-		data = data[4 + sum_len + ((data_len.bit_length() + 7) >> 3):]
+		data = data[4 + sum_len + (data_len_norm.bit_length() + 7 >> 3):]
 
 		expect_sum2 = int.from_bytes(data[:4], byteorder="big")
 		actual_sum2 = zlib.crc32(data[4:])
@@ -2290,7 +2363,7 @@ def run_job(
 			)
 
 		try:
-			return pickle.loads(d)
+			return pickle_safeloads(d)
 		except Exception as e:
 			raise ValueError(f"cache file pickle content could not be parsed. key={cache_key}") from e
 
@@ -2327,7 +2400,7 @@ def run_job(
 			with open(cache_file, "wb") as f:
 				f.write(CACHE_SIGNATURE)
 				f.write(polynomial.to_bytes(sum_len, byteorder="big"))
-				f.write(data_len.to_bytes((data_len.bit_length() + 7) >> 3, byteorder="big"))
+				f.write(data_len.to_bytes((data_len_norm.bit_length() + 7 >> 3), byteorder="big"))
 				f.write(sum2)
 				f.write(sum1)
 				f.write(c)
@@ -2412,18 +2485,13 @@ def run_job(
 
 		return tmp_defs, outputs
 
-	# sum_len is the number of bytes in the checksum
-	sum_bits  =  sum_len << 3 # number of bits in the checksum
-	sum_nibs  =  sum_len << 1 # number of nibbles in the checksum
-	data_bits = data_len << 3
-
 	# idx \in [0, bits - 1]
-	in_idx_max_pad  = len(str(data_bits - 1))
+	in_idx_max_pad  = len(str(data_bits_norm - 1))
 	out_idx_max_pad = len(str( sum_bits - 1))
 	idx_max_pad     = max(in_idx_max_pad, out_idx_max_pad)
 
 	# idx + 1 \in [1, bits]
-	in_idxp1_max_pad  = len(str(data_bits))
+	in_idxp1_max_pad  = len(str(data_bits_norm))
 	out_idxp1_max_pad = len(str( sum_bits))
 	idxp1_max_pad     = max(in_idxp1_max_pad, out_idxp1_max_pad)
 
@@ -2446,18 +2514,18 @@ def run_job(
 	curve_gen_time_stt = perf_counter_ns()
 
 	base_i  = 7 if reflected else 0
-	cols    = [0] * data_bits
-	current = crc((1 << base_i).to_bytes(data_len, byteorder="big")) ^ K
+	cols    = [0] * data_bits_norm
+	current = crc((1 << base_i).to_bytes(data_len_norm, byteorder="big")) ^ K
 	cols[base_i] = current
 
 	del base_i
 
 	if reflected:
-		for k in range(data_len):
+		for k in range(data_len_norm):
 			for j in range(6 if k == 0 else 7, -1, -1):
 				cols[(k << 3) + j] = current = lfsr_step(current)
 	else:
-		for i in range(1, data_bits):
+		for i in range(1, data_bits_norm):
 			cols[i] = current = lfsr_step(current)
 
 	curve_gen_time_end = perf_counter_ns()
@@ -2609,7 +2677,7 @@ def run_job(
 		match syntax:
 			case "vhd":
 				print(
-					f"-- Generated with {prog}.py"
+					f"-- Generated with {prog}"
 					f"\nlibrary ieee;"
 					f"\nuse ieee.std_logic_1164.all;"
 					f"\n"
@@ -2619,7 +2687,10 @@ def run_job(
 					f"\n\t\tBSWAP : boolean := true"
 					f"\n\t);"
 					f"\n\tport ("
-					f"\n\t\t{in_port}{in_pad}: in  std_logic_vector({data_bits - 1:{idx_max_pad}} downto 0);"
+					f"{(
+						'' if data_len == 0 else
+						f"\n\t\t{in_port}{in_pad}: in  std_logic_vector({data_bits - 1:{idx_max_pad}} downto 0);"
+					)}"
 					f"\n\t\t{out_port}{out_pad}: out std_logic_vector({sum_bits - 1:{idx_max_pad}} downto 0)"
 					f"\n\t);"
 					f"\nend entity crc{crc_name}_{data_len};"
@@ -2631,7 +2702,7 @@ def run_job(
 				)
 			case "v" | "sv":
 				print(
-					f"// Generated with {prog}.py"
+					f"// Generated with {prog}"
 					f"\n// polynomial: 0x{polynomial:0{sum_nibs}X}"
 					f"\n// crc{crc_name}(0): 0x{K:0{sum_nibs}X}"
 					f"\n"
@@ -2639,7 +2710,10 @@ def run_job(
 					f"\n\t// 1 => little endian, 0 => big endian"
 					f"\n\tparameter{" bit" if is_svl else ""} BSWAP = 1"
 					f"\n) ("
-					f"\n\tinput  [{data_bits - 1:{idx_max_pad}} : 0] {in_port},"
+					f"{(
+						'' if data_len == 0 else
+						f"\n\tinput  [{data_bits - 1:{idx_max_pad}} : 0] {in_port},"
+					)}"
 					f"\n\toutput [{sum_bits - 1:{idx_max_pad}} : 0] {out_port}"
 					f"\n);"
 					f"\n"
@@ -2655,25 +2729,34 @@ def run_job(
 						"from amaranth.lib.wiring import Component, In, Out"
 						"\nfrom amaranth import Module, Signal"
 					)}"
+					f"\n"
 					f"\nclass Crc{crc_name}_{data_len}({"Elaboratable" if is_nmg else "Component"}):"
 					f"\n\t\"\"\""
-					f"\n\tGenerated with {prog}.py"
+					f"\n\tGenerated with {prog}"
 					f"\n\tpolynomial: 0x{polynomial:0{sum_nibs}X}"
 					f"\n\tcrc{crc_name}(0): 0x{K:0{sum_nibs}X}"
 					f"\n"
 					f"\n\tbswap: True => little endian, False => big endian"
 					f"\n\t\"\"\""
 					f"\n"
-					f"\n\t{in_port}{in_pad}: {  "Signal" if is_nmg else f"In  ({data_bits:{idxp1_max_pad}})" }"
+					f"{(
+						'' if data_len == 0 else
+						f"\n\t{in_port}{in_pad}: {  "Signal" if is_nmg else f"In  ({data_bits:{idxp1_max_pad}})" }"
+					)}"
 					f"\n\t{out_port}{out_pad}: {"Signal" if is_nmg else f"Out ({sum_bits :{idxp1_max_pad}})" }"
 					f"\n\t"
 					f"\n\tdef __init__(self, bswap: bool = True) -> None:"
 					f"\n\t\tself.bswap = bswap"
 					f"{(
 						f"\n"
-						f"\n\t\tself.{in_port}{in_pad}= Signal({data_bits:{idxp1_max_pad}})"
+						f"{(
+							'' if data_len == 0 else
+							f"\n\t\tself.{in_port}{in_pad}= Signal({data_bits:{idxp1_max_pad}})"
+						)}"
 						f"\n\t\tself.{out_port}{out_pad}= Signal({sum_bits:{idxp1_max_pad}})"
+
 						if is_nmg else
+
 						f"\n\t\tsuper().__init__()"
 					)}"
 					f"\n"
@@ -2681,13 +2764,16 @@ def run_job(
 					f"\n\t\tm = Module()"
 					f"\n\t\tc = m.d.comb"
 					f"\n"
-					f"\n\t\t{in_port}{in_pad}= self.{in_port}"
+					f"{(
+						'' if data_len == 0 else
+						f"\n\t\t{in_port}{in_pad}= self.{in_port}"
+					)}"
 					f"\n\t\t{out_port}{out_pad}= self.{out_port}"
 					f"\n"
 				)
 			case "ch" | "ch3":
 				print(
-					f"// Generated with {prog}.py"
+					f"// Generated with {prog}"
 					f"\n// polynomial: 0x{polynomial:0{sum_nibs}X}"
 					f"\n// crc{crc_name}(0): 0x{K:0{sum_nibs}X}"
 					f"\n"
@@ -2697,18 +2783,26 @@ def run_job(
 					f"\nclass crc{crc_name}_{data_len}(val bswap: Boolean = true) extends Module {{"
 					f"{(
 						f"\n\tval io = IO(new Bundle {{"
+						f"{(
+						'' if data_len == 0 else
 						f"\n\t\tval {in_port}{in_pad}= Input (UInt({data_bits:{idxp1_max_pad}}.W))"
+						)}"
 						f"\n\t\tval {out_port}{out_pad}= Output(UInt({sum_bits:{idxp1_max_pad}}.W))"
 						f"\n\t}})"
+
 						if is_ch3 else
+
+						f"{(
+						'' if data_len == 0 else
 						f"\n\tval {in_port}{in_pad}= IO(Input (UInt({data_bits:{idxp1_max_pad}}.W)))"
+						)}"
 						f"\n\tval {out_port}{out_pad}= IO(Output(UInt({sum_bits:{idxp1_max_pad}}.W)))"
 					)}"
 					f"\n"
 				)
 			case "sp":
 				print(
-					f"// Generated with {prog}.py"
+					f"// Generated with {prog}"
 					f"\n// polynomial: 0x{polynomial:0{sum_nibs}X}"
 					f"\n// crc{crc_name}(0): 0x{K:0{sum_nibs}X}"
 					f"\n"
@@ -2716,7 +2810,10 @@ def run_job(
 					f"\n"
 					f"\nclass crc{crc_name}_{data_len}(bswap: Boolean = true) extends Component {{"
 					f"\n\tval io = new Bundle {{"
-					f"\n\t\tval {in_port}{in_pad}= in  UInt({data_bits:{idxp1_max_pad}} bits)"
+					f"{(
+						'' if data_len == 0 else
+						f"\n\t\tval {in_port}{in_pad}= in  UInt({data_bits:{idxp1_max_pad}} bits)"
+					)}"
 					f"\n\t\tval {out_port}{out_pad}= out UInt({sum_bits:{idxp1_max_pad}} bits)"
 					f"\n\t}}"
 					f"\n"
@@ -2816,7 +2913,7 @@ def run_job(
 
 			if asm_ir_settings["emit_comments"]:
 				print(
-					f"| Generated with {prog}.py\n"
+					f"| Generated with {prog}\n"
 					f"| void crc{crc_name}_{data_len}(uint8_t {in_port}[{data_len}], uint{c_type_length(1 << sum_bits)}_t *{out_port});"
 				)
 
@@ -2882,7 +2979,7 @@ def run_job(
 			strict=strict
 		)
 
-		print(f"{gd.comment} Generated with {prog}.py")
+		print(f"{gd.comment} Generated with {prog}")
 		print(f"{gd.comment} void {gd.function}(uint8_t {in_port}[{data_len}], uint{c_type_length(1 << sum_bits)}_t *{out_port});")
 		print('\n'.join(program))
 		return job_ret()
@@ -3039,7 +3136,7 @@ def run_job(
 			tmp_defs, outputs = optimize_graph(rows)
 
 			print(
-				f"{comment} Generated with {prog}.py"
+				f"{comment} Generated with {prog}"
 				f"\n{comment} compile: dot -Tpdf -O crc{crc_name}_{data_len}.gv"
 				f"\ndigraph crc{crc_name}_{data_len} {{"
 			)
@@ -3056,9 +3153,9 @@ def run_job(
 			# I only tested crc8, crc16, crc32, and crc64.
 			# I tested data lengths 1, 2, 4, 6, 16, and 32 for each
 			if sum_len == 4:
-				ranksep = data_bits / graph_depth - 0.5
+				ranksep = data_bits_norm / graph_depth - 0.5
 			else:
-				ranksep = (1 + (data_len == 1))*4*data_len / graph_depth - 0.5
+				ranksep = (1 + (data_len_norm == 1))*4*data_len_norm / graph_depth - 0.5
 
 			print(
 				"\tlayout = dot;"
@@ -3138,7 +3235,7 @@ def run_job(
 			print(
 				"CRC Summary:"
 				f"\ncustom      = {str(poly is not None).lower()}"
-				f"\nalgorithm   = {crc_name}"
+				f"\nname        = {crc_name}"
 				f"\ndata len    = {data_len}"
 				f"\nsum len     = {sum_len}"
 				f"\nbase #gates = {gf2_cse.count_gates(rows)}"
@@ -3347,8 +3444,8 @@ def preproc_input(args: object) -> list[dict[str, int | str | None]]:
 	if args.polynomial is not None:
 		raise ValueError("`--preproc` and `--polynomial` cannot both be given")
 
-	if args.algorithm is not None:
-		raise ValueError("`--preproc` and `--algorithm` cannot both be given")
+	if args.name is not None:
+		raise ValueError("`--preproc` and `--name` cannot both be given")
 
 	if not sys.stdin.isatty():
 		args.programs.insert(0, sys.stdin.read())
@@ -3366,8 +3463,8 @@ def parse_input(args: object) -> list[dict[str, int | str | None]]:
 	if not sys.stdin.isatty():
 		if args.polynomial is not None:
 			raise ValueError("pipeline TOML and `--polynomial` cannot both be given")
-		if args.algorithm is not None:
-			raise ValueError("pipeline TOML and `--algorithm` cannot both be given")
+		if args.name is not None:
+			raise ValueError("pipeline TOML and `--name` cannot both be given")
 
 		args.programs.insert(0, sys.stdin.read())
 
@@ -3387,7 +3484,7 @@ def parse_input(args: object) -> list[dict[str, int | str | None]]:
 	elif not args.programs:
 		# neither positional nor polynomial is given
 		return [{
-			"name"       : args.algorithm, # this being None is handled later
+			"name"       : args.name, # this being None is handled later
 			"polynomial" : None,
 			"init"       : None,
 			"xor-out"    : None,
@@ -3397,7 +3494,7 @@ def parse_input(args: object) -> list[dict[str, int | str | None]]:
 
 	# these are part of the curve identity, so an override or fallback doesn't make sense.
 	if args.data_len  is not None: raise ValueError("TOML input and `--data-len` cannot both be given")
-	if args.algorithm is not None: raise ValueError("TOML input and `--algorithm` cannot both be given")
+	if args.name      is not None: raise ValueError("TOML input and `--name` cannot both be given")
 	if args.init      is not None: raise ValueError("TOML input and `--init` cannot both be given")
 	if args.xor_out   is not None: raise ValueError("TOML input and `--xor-out` cannot both be given")
 	if args.reflect              : raise ValueError("TOML input and `--reflect` cannot both be given")
@@ -3569,7 +3666,7 @@ for curve in curves:
 	job_num += 1
 	save = (args.in_port, args.out_port, args.tmp_name, args.data_len, args.output)
 
-	args.algorithm  = curve.pop("name")
+	args.name       = curve.pop("name")
 	args.polynomial = curve.pop("polynomial")
 	args.init       = curve.pop("init")
 	args.xor_out    = curve.pop("xor-out")
@@ -3603,7 +3700,7 @@ for curve in curves:
 	if verbose >= 2:
 		eprint(
 			f"# job parameters:\n"
-			f"#     - curve: name={args.algorithm!r}"
+			f"#     - curve: name={args.name!r}"
 				f", polynomial={hex(args.polynomial) if args.polynomial else args.polynomial}"
 				f", init={hex(args.init) if args.init else args.init}"
 				f", xor-out={hex(args.xor_out) if args.xor_out else args.xor_out}"

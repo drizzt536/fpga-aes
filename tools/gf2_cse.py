@@ -24,7 +24,7 @@ if you increase it enough, it should get better again.
 requires Python >=3.10
 """
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 __all__ = (
 	"count_gates", "count_luts", "optimize_graph", "expand_tmps",

@@ -41,7 +41,6 @@ def gen_ir_header(
 	save_list: list[int] | tuple[int, ...],
 	emit_spacing: bool,
 	emit_comments: bool,
-	emit_round_numbers: bool,
 ) -> list[str]:
 	stack_size = (sum_len + data_len << 3) + len(tmp_defs)
 
@@ -89,6 +88,7 @@ def gen_ir_header(
 		f"",
 	]
 
+	# zero the memory
 	if reg_size in {32, 64}:
 		output += [
 			f"| always use one register for >=32 bits",
@@ -117,7 +117,7 @@ def gen_ir_header(
 				f"",
 				*stack_push_zero("@regb[2]"),
 				f"\t@jmp @label[zero]",
-				f"\t@deflabel[zero_done]",
+				"@deflabel[zero_done]",
 			]
 		else:
 			output += [
@@ -140,6 +140,7 @@ def gen_ir_header(
 				f"@deflabel[zero_push]",
 				*stack_push_zero("@regb[3]"),
 				f"\t@jmp @label[zero]",
+				f"\t@deflabel[zero_done]",
 			]
 
 	# register 0: data (since function entry)
@@ -147,30 +148,32 @@ def gen_ir_header(
 	# register 2: tmp
 	# register 3: idx
 
-	output += [
-		f"@mvz @reg[3]",
-		f"@mvl @reg[1], @imm[{data_len}]",
-		f"",
-		f"@deflabel[init]",
-		f"\t@jiz @reg[1], @label[{"round1" if emit_round_numbers else "init_done"}]",
-		f"",
-		f"\t%foreach[bit][7,6,5,4,3,2,1,0] do{" | 8 bits per byte" if emit_comments else ''}",
-		"\t\t@ldb @regb[2], @reg[0]",
-		"\t\t@shr @regb[2], @imm[$bit]",
-		"\t\t@and @regb[2], @imm[1]",
-		"",
-		"\t\t@add @reg[sp], @reg[3]",
-		"\t\t@stb @reg[sp], @regb[2]",
-		"\t\t@sub @reg[sp], @reg[3]",
-		"",
-		"\t\t@add @reg[3], @imm[1]",
-		"\t%endfor",
-		"",
-		"\t@add @reg[0], @imm[1]",
-		"\t@sub @reg[1], @imm[1]",
-		"\t@jmp @label[init]",
-		"" if emit_round_numbers else "@deflabel[init_done]",
-	]
+	# initialize inputs (packed bytes => bit array)
+	if data_len != 0:
+		output += [
+			f"@mvz @reg[3]",
+			f"@mvl @reg[1], @imm[{data_len}]",
+			f"",
+			f"@deflabel[init]",
+			f"\t@jiz @reg[1], @label[init_done]",
+			f"",
+			f"\t%foreach[bit][7,6,5,4,3,2,1,0] do{" | 8 bits per byte" if emit_comments else ''}",
+			"\t\t@ldb @regb[2], @reg[0]",
+			"\t\t@shr @regb[2], @imm[$bit]",
+			"\t\t@and @regb[2], @imm[1]",
+			"",
+			"\t\t@add @reg[sp], @reg[3]",
+			"\t\t@stb @reg[sp], @regb[2]",
+			"\t\t@sub @reg[sp], @reg[3]",
+			"",
+			"\t\t@add @reg[3], @imm[1]",
+			"\t%endfor",
+			"",
+			"\t@add @reg[0], @imm[1]",
+			"\t@sub @reg[1], @imm[1]",
+			"\t@jmp @label[init]",
+			"@deflabel[init_done]",
+		]
 
 	if not emit_spacing:
 		output = [line for line in output if line]
@@ -188,7 +191,6 @@ def gen_ir_footer(
 	save_list: list[int] | tuple[int, ...],
 	emit_spacing: bool,
 	emit_comments: bool,
-	emit_round_numbers: bool, # ignored
 ) -> list[str]:
 	sum_range = ','.join( map(str, range(sum_len)) )
 
@@ -626,8 +628,7 @@ def gen_ir(
 		reg_size,
 		save_list,
 		emit_spacing,
-		emit_comments,
-		emit_round_numbers
+		emit_comments
 	) + dispatch[format.lower()](
 		tmp_defs,
 		outputs,
@@ -646,8 +647,7 @@ def gen_ir(
 		reg_size,
 		save_list,
 		emit_spacing,
-		emit_comments,
-		emit_round_numbers
+		emit_comments
 	)
 
 if __name__ == "__main__":
