@@ -1,16 +1,25 @@
 # optimization flags apply to all the curves and can only be changed via the CLI.
-# these apply to all curves. they do not have to all be provided
-# if a TOML file/raw input is given, then the CLI flags for these cannot be used
-in-port  = "abc" # default is "data"
-out-port = "zzz" # default is "crc"
-tmp-name = "qwe" # default is "tmp"
-data-len = 5     # default is 4
+
+# these apply to all curves. they do not have to all be provided.
+# CLI flags for these five take precedence over these file-global values,
+# but curve-local settings still have the highest precedence.
+# precedence order: curve-local > CLI flag > file-global
+# if multiple files are given, these only apply to the current file.
+in-port  = "abc"  # default is "data"
+out-port = "zzz"  # default is "crc"
+tmp-name = "qwe"  # default is "tmp"
+data-len = 5      # default is 4
+file     = "file" # default is "-". "auto" is the same as `-o auto`
+
+# all other attributes cannot be given alongside the corresponding CLI flags
+
+# you can also do stuff like `polynomial = 257` at the file level, but that is less useful.
 
 # if there is only one curve, you can do `[curve]` instead of `[[curve]]`
 [[curve]]
 # these apply to only this curve. it resets back to the global value for the next curve
 # these override the global ones
-in-port  = "inp"  # the names have to use dashes, so no `in_port`.
+in-port  = "inp"  # attribute names have to use dashes, so no `in_port` or `out_port`, etc.
 out-port = "outp"
 tmp-name = "net"
 data-len = 2
@@ -19,14 +28,11 @@ data-len = 2
 polynomial = 0x17b # must be given if `name` is not given
 
 # these three only make sense with `polynomial`, and not with `name`.
-init       = 45    # default is 0
-xor-out    = 5     # default is 0
-reflect    = false # default is false
+init    = 45   # default is 0
+xor-out = 5    # default is 0
+reflect = true # default is false
 
-# if no [curve] or [[curve]] attributes exist, the compiler will just do nothing and exit
-
-[[curve]]
-name = "CRC-32" # same flexibility as with the `--algorithm` CLI flag
+# if no [curve] or [[curve]] attributes exist, the compiler will throw an error
 
 [[curve]]
 # this won't name collide with the other one with `-o auto` because the data length is different.
@@ -39,3 +45,12 @@ tmp-name   = "qwe" # this does nothing since it is the same as the global value
 init       = 0xFFFFFFFB
 xor-out    = 0xFFFFFFFB
 polynomial = 0x18012d591 # attribute order doesn't matter. curve order does though
+
+[[curve]]
+file = "curve-file" # you can do `file = "auto"` for curve-local file outputs
+name = "CRC-32" # same flexibility as with the `--algorithm` CLI flag. "32", " crc32 ", "CRC 32" all work
+
+# if two consecutive curves have the same output file, they will both be written into the same file
+# however, if the files are "file1", "file2", then "file1", the second time "file1" is used, the
+# contents will be overwritten and a warning will be given. curves that use their own output file
+# should not be followed by curves that use the default file. it will not work properly

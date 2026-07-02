@@ -24,7 +24,7 @@ if you increase it enough, it should get better again.
 requires Python >=3.10
 """
 
-__version__ = "2026.06.29.1"
+__version__ = "1.0.0"
 
 __all__ = (
 	"count_gates", "count_luts", "optimize_graph", "expand_tmps",
@@ -36,21 +36,35 @@ from functools import partial
 
 ################################### internal functions ###################################
 
-def _eprint(*args, **kwargs) -> None:
-	"print to stderr"
+def _eprint(*args, color: str = "auto", **kwargs) -> None:
+	"""
+	file defaults to stderr. file=None is still stdout though
+	remove some ANSI stuff (m, A-G, J, K) from string args if not printing to a TTY.
+	uses all the same kwargs as the regular `print`.
+	color="never" disables ANSI escape sequences (e.g. color) even if the output is a TTY
+	color="auto" (default) only strips if the file is not a TTY. color="always" never strips.
+	"""
 
-	from sys import stderr
+	from sys import stdout, stderr
 	from re import sub as replace
 
-	if not stderr.isatty() and type(args[0]) is str:
-		print(
-			replace(r'\x1b\[[\d;]*?[mKJ]', '', args[0]),
-			*args[1:],
-			**kwargs,
-			file=stderr
+	if not args:
+		args = ('',)
+
+	if color not in {"always", "auto", "never"}:
+		raise ValueError(f"invalid value for `color`: '{color}'. must be 'always', 'auto', or 'never'")
+
+	# allow passing the file but default to stderr. `None` changes to stdout
+	file = kwargs.pop("file", stderr) or stdout
+
+	if color == "never" or (color == "auto" and not file.isatty()):
+		args = (
+			replace(r'\x1b\[[\d;]*?[mA-GJK]', '', arg)
+			if type(arg) is str else arg
+			for arg in args
 		)
-	else:
-		print(*args, **kwargs, file=stderr)
+
+	print(*args, **kwargs, file=file)
 
 def _get_rng(seed: int | None):
 	# 1. random.Random() uses MT, which has pretty good avalanche (~50% flip) when incrementing the seed
@@ -908,7 +922,7 @@ def optimize_graph_nwise(
 	if verbose >= 2:
 		_eprint(
 			f"# {metric} reduction: {reduction}\n"
-			f"# {metric} compression: {compression*100:.{1 + verbose << 1}g}%"
+			f"# {metric} compression: {compression*100:.{2 + verbose << 1}g}%"
 		)
 
 	if verbose == 1:

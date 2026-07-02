@@ -1,25 +1,37 @@
 """
-CRC Assembly Format DSL Parser
+Parser for CRC Compiler Preprocessor Language (CCPL) and CRC Compiler Assembly Language (CCAL)
 Requires Python >=3.10.
 
-the preprocessor is more general than the "runtime".
+Parsing for CRC Compiler Input Language (CCIL) is done elsewhere
 
-has global state for variable and macro definitions (not reentrant)
-
-'|' is used for comments.
+NOTES:
+ - the preprocessor is more general than the "runtime".
+ - has global state for variable and macro definitions and the depth/iter caps (not reentrant)
+ - $null defaults to an empty string, but it is allowed to be changed like any other variable.
+ - '|' is used for comments.
+ - input programs cannot contain null bytes. these are used as sentinel values during replacements
+ - '\\|' is an escaped pipe. it is replaced with a literal vertical pipe at line expansion.
+ - '\\$' is an escaped dollar sign. it is replaced with a literal dollar sign at line expansion.
+ - '\\#' is an escaped hashtag. it is replaced with a literal hashtag at macro expansion.
+	this happens after variable expansion, so if a variable expands to '\\#', this will take effect too.
+ - escaping does not exist in any other locations, and escape characters cannot themselves be escaped.
 """
 
 import re
 from os.path import expanduser
 
-__version__ = "1.2.2"
+__version__ = "1.3.0"
+__all__ = ("preproc", "process", "generate")
 
 FunctionType = type(lambda x: x) # same as types.FunctionType
 
-DEPTH_CAP = 1024      # %macro + %include + %if/%loop/%foreach depth
-ITER_CAP  = 1_000_000 # %loop iteration
+DEFAULT_DEPTH_CAP = 1024      # %macro + %include + %if/%loop/%foreach depth
+DEFAULT_ITER_CAP  = 1_000_000 # %loop iteration
 
-def multisub(string: str, replacements: dict[str, str | FunctionType]) -> str:
+DEPTH_CAP = DEFAULT_DEPTH_CAP
+ITER_CAP  = DEFAULT_ITER_CAP
+
+def re_multisub(string: str, replacements: dict[str, str | FunctionType]) -> str:
 	"makes multiple replacements in series based on the dictionary insert order"
 
 	for pattern, repl in replacements.items():
@@ -30,11 +42,6 @@ def multisub(string: str, replacements: dict[str, str | FunctionType]) -> str:
 		)
 
 	return string
-
-re.multisub = multisub
-del multisub
-
-__all__ = ["process", "preproc"]
 
 class ExitMacro(BaseException):
 	"line should be 1-indexed"
@@ -59,7 +66,7 @@ default_vars = {"$null": ""}
 vars   = default_vars.copy()
 macros = {}
 
-def expand_vars_repl(match: re.Match, *, line_num: int) -> str:
+def _expand_vars_repl(match: re.Match, *, line_num: int) -> str:
 	key = match.group()
 
 	if key not in vars:
@@ -69,12 +76,23 @@ def expand_vars_repl(match: re.Match, *, line_num: int) -> str:
 
 def expand_vars(line: str, line_num: int) -> str:
 	from functools import partial
-	return re.sub(r"\$\w+", partial(expand_vars_repl, line_num=line_num), line)
+
+	return re.sub(
+		r"\$\w+",
+		partial(_expand_vars_repl, line_num=line_num),
+		line.replace(r"\$", '\0') # no escaping the escape characters
+	).replace('\0', '$')
 
 def strip_line(line: str) -> str:
-	return re.sub(r"\|.*$", '', line).strip()
+	"remove unescaped comments and strip whitespace"
 
-def find_if_bounds(in_prgm: list[str], tag: str, line_idx: int, line_num: int) -> tuple[int | None, int]:
+	return re.sub(
+		r"\|.*$",
+		'',
+		line.replace(r"\|", '\0') # you can't escape the escape character
+	).strip().replace('\0', '|')
+
+def _find_if_bounds(in_prgm: list[str], tag: str, line_idx: int, line_num: int) -> tuple[int | None, int]:
 	# line_num is 1-indexed
 
 	else_idx = None
@@ -95,7 +113,7 @@ def find_if_bounds(in_prgm: list[str], tag: str, line_idx: int, line_num: int) -
 	keyword = "if" if else_idx is None else "else"
 	raise ValueError(f"ERROR: line {line_num}: '%{keyword}{tag}' has no corresponding '%endif{tag}'. There might be nested conditionals with the same tag")
 
-def find_block_end(start: str, end: str, tag: str, in_prgm: list[str], line_idx: int, line_num: int) -> int:
+def _find_block_end(start: str, end: str, tag: str, in_prgm: list[str], line_idx: int, line_num: int) -> int:
 	# line_num is 1-indexed
 
 	for i, line in enumerate(in_prgm[line_idx:], line_idx):
@@ -105,7 +123,7 @@ def find_block_end(start: str, end: str, tag: str, in_prgm: list[str], line_idx:
 	print(in_prgm)
 	raise ValueError(f"ERROR: line {line_num}: '%{start}{tag}' has no corresponding '%{end}{tag}'. There might be nested blocks with the same tag")
 
-def parse_condition(cmd: str, op: str, arg1: str, arg2: str, line_num: int) -> bool:
+def _parse_condition(cmd: str, op: str, arg1: str, arg2: str, line_num: int) -> bool:
 	if not arg1:
 		raise ValueError(f"ERROR: line {line_num}: `{cmd}` operator {op!r} argument 1 cannot be empty")
 
@@ -192,7 +210,7 @@ def parse_condition(cmd: str, op: str, arg1: str, arg2: str, line_num: int) -> b
 
 	return result
 
-def eval_expr(expr: str, line_num: int) -> str:
+def _eval_expr(expr: str, line_num: int) -> str:
 	import ast
 
 	expr = (
@@ -237,6 +255,8 @@ def _preproc(
 	depth: int = 0,
 	debug: bool = False
 ) -> list[line]:
+	global DEPTH_CAP, ITER_CAP
+
 	if depth > DEPTH_CAP:
 		# this is a sum of macro depth plus if condition depth
 		raise Exception(f"evaluation depth cap ({DEPTH_CAP}) exceeded")
@@ -251,6 +271,9 @@ def _preproc(
 			continue
 
 		line_num = start_line + line_idx
+
+		if '\0' in line:
+			raise ValueError(f"ERROR: line {line_num}: line contains a null character")
 
 		if line.lstrip().startswith("%raw["):
 			if not line.rstrip().endswith("]"):
@@ -276,9 +299,9 @@ def _preproc(
 		if (match := re.fullmatch(r"%if(\d*)\[(\w+)\]\[(.*?)\]\[(.*)\](?:\s*then)?", line)):
 			tag, op, arg1, arg2 = match.groups()
 
-			else_idx, endif_idx = find_if_bounds(in_prgm, tag, line_idx, line_num)
+			else_idx, endif_idx = _find_if_bounds(in_prgm, tag, line_idx, line_num)
 
-			result = parse_condition("if", op, arg1, arg2, line_num)
+			result = _parse_condition("if", op, arg1, arg2, line_num)
 
 			# expand out whichever path was correct
 			try:
@@ -303,7 +326,7 @@ def _preproc(
 		elif (match := re.fullmatch(r"%loop(\d*)", line)):
 			tag = match.group(1)
 
-			endloop_idx = find_block_end("loop", "endloop", tag, in_prgm, line_idx, line_num)
+			endloop_idx = _find_block_end("loop", "endloop", tag, in_prgm, line_idx, line_num)
 
 			loopcount = 0
 
@@ -330,7 +353,7 @@ def _preproc(
 		elif (match := re.fullmatch(r"%foreach(\d*)\[(\w+)\]\[(.+)\](?:\s*do)?", line)):
 			tag, var, expr = match.groups()
 
-			endforeach_idx = find_block_end("foreach", "endfor", tag, in_prgm, line_idx, line_num)
+			endforeach_idx = _find_block_end("foreach", "endfor", tag, in_prgm, line_idx, line_num)
 
 			var = f"${var}"
 
@@ -364,7 +387,7 @@ def _preproc(
 			expand, name, argc = match.groups()
 			expand = expand == 'x'
 
-			endmacro_idx = find_block_end("defmacro", "endmacro", '', in_prgm, line_idx, line_num)
+			endmacro_idx = _find_block_end("defmacro", "endmacro", '', in_prgm, line_idx, line_num)
 
 			macro_def = [strip_line(line) for line in in_prgm[line_idx + 1:endmacro_idx]]
 			if expand:
@@ -375,6 +398,9 @@ def _preproc(
 
 			macros[f"{name}-{argc}"] = line_num, macro_def
 			skip_till = endmacro_idx + 1
+		elif (match := re.fullmatch(r"%undefmacro\[(\w+)\]\[(\d+)\]", line)):
+			name, argc = match.groups()
+			del macros[f"{name}-{argc}"]
 		elif (match := re.fullmatch(r"%macro\[(\w+)\]\[(.*)\]", line)):
 			name, args = match.groups()
 
@@ -389,7 +415,11 @@ def _preproc(
 				args = args.split(',')
 
 				macro_def = [
-					re.sub(r"#(\d+)", lambda m: args[int(m.group(1)) - 1], line)
+					re.sub(
+						r"#(\d+)",
+						lambda m: args[int(m.group(1)) - 1],
+						line.replace(r"\#", '\0') # no escaping the escape characters
+					).replace('\0', '#')
 					for line in macro_def
 				]
 			except IndexError:
@@ -413,6 +443,15 @@ def _preproc(
 		elif (match := re.fullmatch(r"%unset\[([\w,]+)\]", line)):
 			for var in match.group(1).split(','):
 				vars.pop(f"${var}", None)
+		elif (match := re.fullmatch(r"%setcap\[(depth|iter)\]\[(\d*|default)\]", line)):
+			setting, cap = match.groups()
+
+			if setting == "depth":
+				DEPTH_CAP = DEFAULT_DEPTH_CAP if cap == "default" else float("inf") if cap == '' else int(cap)
+			else:
+				ITER_CAP  = DEFAULT_ITER_CAP  if cap == "default" else float("inf") if cap == '' else int(cap)
+
+			del setting, cap
 		elif (match := re.fullmatch(r"%(pop|shift)\[(\w*)\]\[(\w+)\]", line)):
 			cmd, outvar, invar = match.groups()
 
@@ -462,7 +501,7 @@ def _preproc(
 			vars[f"${outvar}"] = expr[start:stop:step]
 		elif (match := re.fullmatch(r"%seteval\[(\w+)\]\[(.+)\]", line)):
 			var, expr = match.groups()
-			vars[f"${var}"] = eval_expr(expr, line_num)
+			vars[f"${var}"] = _eval_expr(expr, line_num)
 		elif (match := re.fullmatch(r"%log\[(.+)\]", line)):
 			print(match.group(1))
 		elif (match := re.fullmatch(r"%fatal\[(.+)\]", line)):
@@ -507,8 +546,8 @@ def preproc(
 	in_prgm: list[str],
 	start_vars: dict[str, str] | None = None,
 	debug: bool = False,
-	depth_cap: int | None = DEPTH_CAP,
-	iter_cap: int | None = ITER_CAP,
+	depth_cap: int | None = DEFAULT_DEPTH_CAP,
+	iter_cap: int | None = DEFAULT_ITER_CAP,
 ) -> list[str]:
 	"takes in the program as a list of lines, preprocesses and outputs as a list of lines"
 	global vars, macros, DEPTH_CAP, ITER_CAP
@@ -518,11 +557,8 @@ def preproc(
 
 	out_prgm = []
 
-	old_depth_cap = DEPTH_CAP
-	old_iter_cap  = ITER_CAP
-
-	DEPTH_CAP = float('inf') if depth_cap is None else depth_cap
-	ITER_CAP  = float('inf') if  iter_cap is None else  iter_cap
+	DEPTH_CAP = float("inf") if depth_cap is None else depth_cap
+	ITER_CAP  = float("inf") if  iter_cap is None else  iter_cap
 
 	try:
 		return _preproc(
@@ -541,8 +577,8 @@ def preproc(
 	finally:
 		vars = default_vars.copy()
 		macros.clear()
-		DEPTH_CAP = old_depth_cap
-		ITER_CAP = old_iter_cap
+		DEPTH_CAP = DEFAULT_DEPTH_CAP
+		ITER_CAP  = DEFAULT_ITER_CAP
 
 def process(
 	program: list[str],
@@ -555,7 +591,7 @@ def process(
 		r"@raw\[(.+)\]": lambda m: m.group(1)
 	}
 
-	program = [re.multisub(line, grammar) for line in program]
+	program = [re_multisub(line, grammar) for line in program]
 
 	program = [line for line in program if line]
 
@@ -588,5 +624,8 @@ def generate(
 
 if __name__ == "__main__":
 	from sys import stderr, exit
-	print(f"crc_asm (v{__version__}) is not a top level program", file=stderr)
+
+	msg = f"crc_dsl (v{__version__}) is not a top level program"
+
+	print(f"\x1b[31m{msg}\x1b[m" if stderr.isatty() else msg, file=stderr)
 	exit(1)

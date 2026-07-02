@@ -651,6 +651,6 @@ def gen_ir(
 	)
 
 if __name__ == "__main__":
-	from sys import stderr, exit
-	print(f"crc_asm (v{__version__}) is not a top level program", file=stderr)
-	exit(1)
+	from gf2_cse import _eprint
+	_eprint(f"\x1b[31masm_gen (v{__version__}) is not a top level program\x1b[m")
+	raise SystemExit(1)

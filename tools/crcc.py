@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 
 """
-compiler for fully unrolled, fully-combinational CRC functions given a fixed-length, byte-aligned input.
-mostly for HDL code, but software code is also supported.
+compiler EDA for fully-unrolled, fully-combinational CRC functions given a fixed-length, byte-aligned input.
+primarly for HDL code, but software code is also supported.
 batch jobs can be created through TOML input.
 
 requires Python >=3.12.
@@ -13,8 +13,8 @@ it stop as soon as possible. The program has to be in focus for it to be noticed
 after optimization takes place crashes the program as normal. this doesn't work in LNS.
 """
 
-# TODO: allow `file = "filename"` inside the input TOML program.
-#       figure out how to make this work with `-o auto` and stuff.
+# NOTE: there are already plenty of tools that can generate procedural steaming implementations of CRC functions.
+#       the gap was only for fully combination ones, which is what this tool accomplishes.
 
 prog = "crcc"
 
@@ -44,11 +44,11 @@ except ImportError:
 
 try:
 	import crc_dsl
-	dsl_avail = True
+	ccil_avail = True
 except ImportError:
 	# used for some stuff other than assembly, but still optional
 	crc_dsl   = MissingPackage("crc_dsl")
-	dsl_avail = False
+	ccil_avail = False
 
 try:
 	import crcmod
@@ -66,8 +66,13 @@ import zlib
 import sys
 import os
 
-from hashlib import sha256
-from time    import perf_counter_ns
+from hashlib   import sha256
+from functools import partial
+from time      import perf_counter_ns
+
+# no carriage returns on Windows
+sys.stdout.reconfigure(newline='')
+sys.stderr.reconfigure(newline='')
 
 stderr  = sys.stderr
 argv    = sys.argv
@@ -135,7 +140,7 @@ def validate_format(syntax: str) -> str:
 
 	syntax = syntax.strip().lower()
 
-	error_msg = f"invalid format {syntax!r}. see `--help=formats` / `-F` for a list of valid formats"
+	error_msg = f"invalid format {syntax!r}. see `--help=formats` for a list of valid formats"
 
 	if syntax == "java":
 		# this syntax is not documented
@@ -144,7 +149,7 @@ def validate_format(syntax: str) -> str:
 		while True:
 			choice = input("Do you like java (y/n)? ").strip().lower()
 			if choice in {"n", "no"}:
-				raise argparse.ArgumentTypeError(error_msg)
+				raise argparse.ArgumentError(error_msg)
 
 			if choice == {"y", "yes"}:
 				break
@@ -249,7 +254,7 @@ def validate_format(syntax: str) -> str:
 		syntax = "asm=ppc64le-" + syntax[10:]
 
 	if syntax.startswith("asm=ir"):
-		extension = "caf" # CRC Assembly Format
+		extension = "ccal" # CRC Compiler Assembly Language
 		l = len("asm=ir")
 
 		if len(syntax) == l:
@@ -269,13 +274,13 @@ def validate_format(syntax: str) -> str:
 		extension = "asm"
 
 		if syntax == "asm=arm":
-			raise argparse.ArgumentTypeError(error_msg + ", did you mean 'asm=arm32' or 'asm=arm64'?")
+			raise argparse.ArgumentError(error_msg + ", did you mean 'asm=arm32' or 'asm=arm64'?")
 
 		if syntax == "asm=amd":
-			raise argparse.ArgumentTypeError(error_msg + ", did you mean 'asm=amd64'?")
+			raise argparse.ArgumentError(error_msg + ", did you mean 'asm=amd64'?")
 
 		if syntax == "asm=rv":
-			raise argparse.ArgumentTypeError(error_msg + ", did you mean 'asm=rv32' or 'asm=rv64'?")
+			raise argparse.ArgumentError(error_msg + ", did you mean 'asm=rv32' or 'asm=rv64'?")
 
 		if syntax.endswith("-clang"):
 			syntax = syntax[:-5] + "gas"
@@ -347,7 +352,7 @@ def validate_format(syntax: str) -> str:
 				extension = formats[aliases]
 				return aliases[0]
 
-	raise argparse.ArgumentTypeError(error_msg)
+	raise argparse.ArgumentError(error_msg)
 
 def validate_metric(metric: str) -> str | int:
 	metric = metric.strip().lower()
@@ -362,54 +367,93 @@ def validate_metric(metric: str) -> str | int:
 		metric = int(metric) or "gates"
 
 		if metric == 1 or metric != "gates" and metric < 0:
-			raise argparse.ArgumentTypeError(f"LUT{metric} is not valid")
+			raise argparse.ArgumentError(f"LUT{metric} is not valid")
 
 		return metric
 	except ValueError:
 		pass
 
-	raise argparse.ArgumentTypeError(f"invalid metric: {metric!r}. must be g/gate/gates, an integer, or 'lut' followed by an integer")
+	raise argparse.ArgumentError(f"invalid metric: {metric!r}. must be g/gate/gates, an integer, or 'lut' followed by an integer")
+
+class ColorFormatter(argparse.RawTextHelpFormatter):
+	def format_help(self):
+		if sys.version_info < (3, 14):
+			# Python <3.14 doen't have argparse colorization, so just return the text normally
+			return super().format_help()
+
+		try:
+			args
+		except NameError:
+			# invalid argument. just print the error in automatic color.
+			return super().format_help()
+
+		# there isn't a stable way to make argparse give colorization based on flags. it
+		# always decides based on if stdout is a TTY or not. 3.14 also adds a color flag
+		# to ArgumentParser, but that doesn't even work, since format_help still calls
+		# _colorize.can_colorize(); it essentially lets you switch between color="auto"
+		# and color="never", but not color="always". shitass garbage API.
+		# this seems to be stable enough, it just isn't part of the public API.
+
+		if sys.version_info[:2] >= (3, 14) and args.color != "auto":
+			# now it is either "always" or "never"
+			color = args.color == "always"
+			os.environ["PYTHON_COLORS"] = str(int(color)) # checked by _colorize.can_colorize()
+			# PYTHON_COLORS is a stable API detail, so even if _colorize changes, this will still be fine.
+
+			# This works up through 3.16 alpha 0 (as of commit 711e81181e1a2e2f74ad75acdb8e184ea44e1fb9)
+			if not hasattr(self, "_set_color"):
+				raise Exception("argparse.HelpFormatter does not have a `_set_color` attribute. probably your version of Python is too new.")
+
+			self._set_color(color)
+
+		return super().format_help()
 
 parser = argparse.ArgumentParser(
 	add_help=False,
 	description=f"%(prog)s {__version__}\ncrc_dsl {crc_dsl.__version__}\n{__doc__}",
-	formatter_class=argparse.RawTextHelpFormatter,
+	formatter_class=ColorFormatter,
 )
-parser.add_argument("-h", "-?", "--help", "--help=options", action="help", help="show this help message and exit")
-parser.add_argument("--help=formats"   , "-F", action="store_true", help="list available formats and exit")
-parser.add_argument("--help=algorithms", "-A", action="store_true", help="list available algorithms and exit")
-parser.add_argument("--help=toml", action="store_true", help="print out an example TOML program and exit")
-if dsl_avail:
-	parser.add_argument("--help=dsl", action="store_true", help="print out example DSL preprocessor code and exit")
-parser.add_argument("--help=ir" , action="store_true", help="print IR format help and exit")
-parser.add_argument("--help=all" , action="store_true", help="print all the help stuff at once and exit")
-parser.add_argument("--version", "-V", action="version", version=f"%(prog)s {__version__}")
+help_group = parser.add_mutually_exclusive_group()
+help_group.add_argument("--help", "--help=options", "-h", "-?", action="store_true", help="show this help message and exit")
+help_group.add_argument("--help=formats", action="store_true", help="list available formats and exit")
+help_group.add_argument("--help=names" , action="store_true", help="list available named CRC functions and exit")
+help_group.add_argument("--help=toml", action="store_true", help="print out an example TOML program and exit")
+if ccil_avail:
+	help_group.add_argument("--help=ccil", action="store_true", help="print out example CCIL preprocessor code and exit")
+help_group.add_argument("--help=ir" , action="store_true", help="print IR format help and exit")
+help_group.add_argument("--help=all" , action="store_true", help="print all the help stuff at once and exit")
+help_group.add_argument("--version", "-V", action="version", version=f"%(prog)s {__version__}")
 
 core_group = parser.add_argument_group("core options")
-core_group.add_argument("--algorithm", "-a", type=lambda s: None if s is None else str.lower(s).strip(), help=f"CRC name (see --help=algorithms / -A). default is 'crc32'")
+core_group.add_argument("--algorithm", "--name", "-a", type=lambda s: None if s is None else str.lower(s).strip(), help=f"CRC name (see --help=names). default is 'crc32'")
 core_group.add_argument("--data-len", "-l", type=int, help="bytes length of checksum input data. default is 4")
-core_group.add_argument("--format", "--syntax", "-f", type=validate_format, default="verilog", help=f"output language (see --help=formats / -F). default is 'verilog'")
-core_group.add_argument("--output", "-o", type=str, default='-', help=f"output file. use 'auto' for automatic naming. default is '-' (stdout)")
-core_group.add_argument("--verbose", "-v", type=int, help="set verbosity level. >=3 is the same as 2. <0 suppresses warnings.")
+core_group.add_argument("--format", "--syntax", "-f", type=validate_format, default="verilog", help=f"output language (see --help=formats). default is 'verilog'")
+core_group.add_argument("--output", "-o", type=str, help="output file. use 'auto' for automatic naming. default is '-' (stdout)")
+if ccil_avail:
+	core_group.add_argument("--preproc", "-e", "-E", action="store_true", help="preprocess the input program(s) and do not compile.")
+core_group.add_argument("--verbose", "-v", type=int, help="set verbosity level. 0 is the default. <0 suppresses warnings.\n1 adds notes, basic progress reports, and basic optimization metrics.\n2 adds per-round optimization data and more in-depth metrics.\n3 gives full optimization output. 4 adds GC collection data.\neach level beyond 2 gives two extra sigfigs on percentages per level")
 
 format_group = parser.add_argument_group("formatting options")
 format_group.add_argument("--in-port", "--in-var", "-I", type=str, help="input port/variable name. default is 'data'")
 format_group.add_argument("--out-port", "--out-var", "-O", type=str, help="output port/variable name. default is 'crc'")
-format_group.add_argument("--tmp-name", "-t", type=str, help="tmp signal name. default is 'tmp'. may creates name collisions with software language-specific\nvariables. if it longer than the local signal name, it will cause misaligned expressions.")
+format_group.add_argument("--tmp-name", "-t", type=str, help="tmp signal name. default is 'tmp'. may create name collisions with software language-specific\nvariables. if it is longer than the local signal name, it will cause misaligned expressions.")
 format_group.add_argument("--indent", "-g", type=str.lower, help=f"indentation level. options are tabs, tab, none, or int n>=-1. default is 'tabs'")
+format_group.add_argument("--color", "-s", choices=("always", "auto", "never"), default="auto", help=f"set color mode. default is 'auto'.")
 
 custom_crc_group = parser.add_argument_group("custom CRC overrides", "custom mode triggers if `-p` / positional is given.")
 program_group    = custom_crc_group.add_mutually_exclusive_group()
-program_group.add_argument("--polynomial", "-p", type=str, help="value should include the uppermost bit (e.g. bit 33). mutually exclusive with TOML input")
-program_group.add_argument("programs", nargs='*', type=str, help="TOML file(s), inline TOML program(s), or a mix. (see --help=toml). piped files will happen first." + ("\nuses DSL preprocessor (see --help=dsl). files are preprocessed separately" if dsl_avail else '')
-)
-custom_crc_group.add_argument("--init"   ,              "-i", type=lambda x: int(x, 0), help="initial value. default is 0")
-custom_crc_group.add_argument("--xor-out",              "-x", type=lambda x: int(x, 0), help="final XOR mask. default is 0")
+program_group.add_argument("--polynomial", "-p", type=str, help=f"value should include the uppermost bit (e.g. bit 33). mutually exclusive with {"CCIL/TOML" if ccil_avail else "TOML"} input.")
+if ccil_avail:
+	program_group.add_argument("programs", nargs='*', type=str, help="CCIL/TOML file path(s), inline CCIL/TOML program(s), or a mix. (see --help=toml, --help=ccil).\npiped files will happen first. files are preprocessed as separate translation units.")
+else:
+	program_group.add_argument("programs", nargs='*', type=str, help="TOML file path(s), inline TOML program(s), or a mix. (see --help=toml). piped files will happen first.")
+custom_crc_group.add_argument("--init"   , "-i", type=lambda x: int(x, 0), help="initial value. default is 0")
+custom_crc_group.add_argument("--xor-out", "-x", type=lambda x: int(x, 0), help="final XOR mask. default is 0")
 custom_crc_group.add_argument("--reflect", "-r", action="store_true"  , help="enable reflection. default is off")
 
 optimize_group = parser.add_argument_group(
 	"optimization settings",
-	"optimizes for area (XOR gates / LUT count)"
+	"optimizes for area (XOR2 gates / LUT count)" # if you want speed, do it in your actual EDA
 	"\ndefaults:"
 	"\n   basic : off, lookahead depth 0 weight 1, nmax 2, beam size 1, prefer low n, min round reduction 1, no tmp max, gate metric"
 	"\n   LNS   : off, 3 trials, window size 3, unseeded"
@@ -424,8 +468,8 @@ optimize_group.add_argument("--optimize-seed"      , "-S", type=int  , help="ena
 optimize_group.add_argument("--optimize-n-prefer"  , "-P", type=str  , help="enable optimization and set intersection count tie break preference", choices=("l", "lo", "low", "h", "hi", "high", "m", "mid", "r", "rand", "random"))
 optimize_group.add_argument("--optimize-min-reduc" , "-m", type=int  , help="enable optimization. exit optimization early when lookahead only sees gate/lut reductions below\nthis threshold. false negatives are possible for >2 (it may optimize more than desired)")
 optimize_group.add_argument("--optimize-max-tmps"  , "-M", type=int  , help="enable optimization and set tmp signal count for when the optimizer exits early.")
-optimize_group.add_argument("--optimize-metric"    , "-k", type=validate_metric, help="enable optimization and set optimization metric.\nmust be gates/gate/g, an integer, or 'lut' followed by an integer. 0 is an alias for 'gates'")
-optimize_group.add_argument("--optimize-lns"       , "-L", action="store_true" , help="enable optimization+LNS without touching settings. LNS is skipped on early exits.\nreconstruction is brute force")
+optimize_group.add_argument("--optimize-metric"    , "-k", type=validate_metric, help="enable optimization and set optimization metric.\nmust be gates/gate/g/0 for gate metric, or lut<k> / <k> for LUT-<k> metric.")
+optimize_group.add_argument("--optimize-lns"       , "-L", action="store_true" , help="enable optimization+LNS without touching settings. LNS is skipped on early exits.\nreconstruction is brute force.")
 optimize_group.add_argument("--optimize-lns-trials", "-T", type=int  , help="enable optimization+LNS and set the count.")
 optimize_group.add_argument("--optimize-lns-window", "-W", type=int  , help="enable optimization+LNS and set the window size.")
 
@@ -433,7 +477,7 @@ cache_group = parser.add_argument_group("caching options")
 cache_dir_group = cache_group.add_mutually_exclusive_group()
 cache_dir_group.add_argument("--cache-dir"   , "-D", type=str, help="change the cache directory. doesn't enable optimization. '~' and environment variables are\nexpanded. default is './crc-cache'.")
 cache_dir_group.add_argument("--cache-global", "-G", action="store_true", help="use a user global cache directory. cannot appear with `--cache-dir`.")
-cache_group.add_argument("--cache"           , "-C", type=str.lower, help="enable optimization and set cache behavior. combination of c/x: clear/expunge, o: off,\nr: read, w: write, u: use/read+write, d: delete entry, l: list. o may only appear with c/x.\nl and d must appear alone. case insensitive. `-Cc` with no non-cache flags will clear the\ncache and exit. cache entries are never automatically invalidated, so they may return old\nvalues if the optimizer is updated. a manual cache clear is required in this case.")
+cache_group.add_argument("--cache"           , "-C", type=str.lower, help="enable optimization and set cache behavior. values can be o: off, c/x: clear, r: read,\nw: write, u: use/read+write, d: delete entry, l: list. o may only appear with c/x.\nl and d must appear alone. case insensitive. `-Cc` with no non-cache flags will clear the\ncache and exit. cache entries are\nnever automatically invalidated, so they may return old\nvalues if the optimizer is updated. a manual cache clear is required in this case.")
 args = parser.parse_args()
 
 cache_parser = argparse.ArgumentParser(add_help=False)
@@ -443,30 +487,18 @@ cache_parser.add_argument("--cache", "-C")
 cache_parser.add_argument("remainder", nargs="*")
 
 cache_only = not cache_parser.parse_known_args()[1] # no unknown flags
-del core_group, format_group, custom_crc_group, optimize_group, cache_group, cache_dir_group, cache_parser, argparse
+del help_group, core_group, format_group, custom_crc_group, optimize_group, cache_group, cache_dir_group
+del cache_parser, ColorFormatter
 
-if not dsl_avail:
-	setattr(args, "help=dsl", None)
-
-gc_disabled = not hasattr(sys, "pypy_version_info")
-
-if gc_disabled:
-	# CPython uses reference counting, and the GC is only for cyclic references.
-	# the program doesn't generate cyclic references, so this is safe. PyPy only
-	# has tracing GC, so idk if this is a good idea in PyPy. it only disables
-	# the major GC, but some of the optimizer stuff has deep call depths, and idk
-	# how long something has to be alive to be considered long-living.
-
-	import gc
-	gc.disable()
-	gc.collect()
+if not ccil_avail:
+	setattr(args, "help=ccil", None)
 
 GV_DECL_LINE_WRAP = 100 # line wrap for only the node declarations. doesn't include the indentation
 
 syntax   = args.format
-output   = args.output
 verbose  = args.verbose or 0
-eprint   = gf2_cse._eprint
+
+eprint = partial(gf2_cse._eprint, color=args.color)
 
 optimize = any(x not in (None, False) for x in (
 	args.optimize, args.optimize_lns, args.optimize_min_reduc,
@@ -502,6 +534,24 @@ if abs(optimize_weight - round(optimize_weight)) < 1e-9:
 if not lns:
 	lns_window = 0
 	lns_trials = 0
+
+if hasattr(sys, "pypy_version_info"):
+	gc_collect = lambda: None
+else:
+	# CPython uses reference counting, and the GC is only for cyclic references.
+	# the program doesn't generate cyclic references, so this is safe. PyPy only
+	# has tracing GC, so idk if this is a good idea in PyPy. it only disables
+	# the major GC, but some of the optimizer stuff has deep call depths, and idk
+	# how long something has to be alive to be considered long-living.
+
+	import gc
+	gc.disable()
+
+	def gc_collect() -> None:
+		if verbose >= 4:
+			eprint(f"# GC: collected {gc.collect()} objects")
+		else:
+			gc.collect()
 
 if args.indent is None or args.indent in ("tabs", "tab", "t", "-1"):
 	indent_str = '\t'
@@ -648,13 +698,19 @@ def print_help_formats(formats: tuple[tuple[str, ...], ...] = formats) -> None:
 		"\n - ppc64 defaults to little endian"
 		"\n - ppc is implicitly big endian"
 		"\n"
+		"\nir:"
+		"\n - preprocessed with CCPL just like the import programs (see --help=ccil)"
+		"\n - ISA agnostic assembly format, CCAL (CRC Compiler Assembly Language) (see --help=ir)"
+		"\n - mostly just for debugging. the format is not useful anywhere else"
+		"\n"
 		"\nfor all assembly formats, 'clang' and 'llvm' dialects alias 'gas'"
 		"\nfor raw/json/metrics formats: long name => beautified, short name => minified."
 		"\nall format names and flag names/values are case insensitive"
+		"\nasm=json / asm=j are the same as json / j but with a heavier topological sort algorithm"
 		"\n"
-		"\nThe asm modes are mostly just a proof of concept and are insanely inefficient."
-		"\nIf you want good optimized assembly, just use -fc and compile it yourself."
-		"\n(or just use a lookup table algorithm like a normal person)"
+		"\nThe asm modes are mostly just a proof of concept and output very inefficient code."
+		"\nIf you want actually good optimized assembly, use -fc and compile it yourself."
+		"\n(or just use a lookup table algorithm like a normal person; those are faster in software)"
 	)
 
 def print_help_algs() -> None:
@@ -682,6 +738,8 @@ def print_help_algs() -> None:
 			density = (poly.bit_count() - 1) / size * 12.5
 
 			print(f" - {key:{pad}}: poly=0x{poly:x}, density={density:4.1f}%")
+
+		print("\ndensity = percentage of 1 bits in the polynomial, excluding the leading bit")
 	else:
 		for key, size in sum_len_map.items():
 			if size != prev_size:
@@ -690,230 +748,277 @@ def print_help_algs() -> None:
 
 			print(f" - {key}")
 
-	print("\nnames are case insensitive, are stripped of all spaces and dashes, and can have 'crc' at the start.")
+		print('')
+
+	print("names are case insensitive, are stripped of all spaces and dashes, and can have 'crc' at the start.")
 
 def print_help_toml() -> None:
-	print("""
-	# optimization flags apply to all the curves and can only be changed via the CLI.
-	# these apply to all curves. they do not have to all be provided
-	# if a TOML file/raw input is given, then the CLI flags for these cannot be used
-	in-port  = "abc" # default is "data"
-	out-port = "zzz" # default is "crc"
-	tmp-name = "qwe" # default is "tmp"
-	data-len = 5     # default is 4
+	comment = "\x1b[32m"
+	string  = "\x1b[1;34m"
+	attr    = "\x1b[31m"
+	const   = "\x1b[33m"
+	header  = "\x1b[1;33m"
+	rst     = "\x1b[m"
 
-	# if there is only one curve, you can do `[curve]` instead of `[[curve]]`
-	[[curve]]
-	# these apply to only this curve. it resets back to the global value for the next curve
-	# these override the global ones
-	in-port  = "inp"  # the names have to use dashes, so no `in_port`.
-	out-port = "outp"
-	tmp-name = "net"
-	data-len = 2
+	eprint(f"""
+	{comment}# optimization flags apply to all the curves and can only be changed via the CLI.
 
-	# name = "crc32"   # mutually exclusive with `polynomial
-	polynomial = 0x17b # must be given if `name` is not given
+	# these apply to all curves. they do not have to all be provided.
+	# CLI flags for these five take precedence over these file-global values,
+	# but curve-local settings still have the highest precedence.
+	# precedence order: curve-local > CLI flag > file-global
+	# if multiple files are given, these only apply to the current file.{rst}
+	{attr}in-port{rst}  = {string}"abc"{rst}  {comment}# default is "data"{rst}
+	{attr}out-port{rst} = {string}"zzz"{rst}  {comment}# default is "crc"{rst}
+	{attr}tmp-name{rst} = {string}"qwe"{rst}  {comment}# default is "tmp"{rst}
+	{attr}data-len{rst} = {const}5{rst}      {comment}# default is 4{rst}
+	{attr}file{rst}     = {string}"file"{rst} {comment}# default is "-". "auto" is the same as `-o auto`
 
-	# these three only make sense with `polynomial`, and not with `name`.
-	init       = 45    # default is 0
-	xor-out    = 5     # default is 0
-	reflect    = false # default is false
+	# all other attributes cannot be given alongside the corresponding CLI flags
 
-	# if no [curve] or [[curve]] attributes exist, the compiler will just do nothing and exit
+	# you can also do stuff like `polynomial = 257` at the file level, but that is less useful.
 
-	[[curve]]
-	name = "CRC-32" # same flexibility as with the `--algorithm` CLI flag
+	# if there is only one curve, you can do `[curve]` instead of `[[curve]]`{rst}
+	[[{header}curve{rst}]]
+	{comment}# these apply to only this curve. it resets back to the global value for the next curve
+	# these override the global ones{rst}
+	{attr}in-port{rst}  = {string}"inp"{rst}  {comment}# attribute names have to use dashes, so no `in_port` or `out_port`, etc.{rst}
+	{attr}out-port{rst} = {string}"outp"{rst}
+	{attr}tmp-name{rst} = {string}"net"{rst}
+	{attr}data-len{rst} = {const}2{rst}
 
-	[[curve]]
-	# this won't name collide with the other one with `-o auto` because the data length is different.
-	polynomial = 0x17b
-	reflect    = true
+	{comment}# name = "crc32"   # mutually exclusive with `polynomial{rst}
+	{attr}polynomial{rst} = {const}0x17b{rst} {comment}# must be given if `name` is not given
 
-	[[curve]]
-	in-port    = "crc_data"
-	tmp-name   = "qwe" # this does nothing since it is the same as the global value
-	init       = 0xFFFFFFFB
-	xor-out    = 0xFFFFFFFB
-	polynomial = 0x18012d591 # attribute order doesn't matter. curve order does though
-	""".replace('\t', '')[1:-1])
+	# these three only make sense with `polynomial`, and not with `name`.{rst}
+	{attr}init{rst}    = {const}45{rst}   {comment}# default is 0{rst}
+	{attr}xor-out{rst} = {const}5{rst}    {comment}# default is 0{rst}
+	{attr}reflect{rst} = {const}true{rst} {comment}# default is false
 
-def print_help_dsl() -> None:
-	print("""
-		| DSL preprocessor help code (not one coherent program):
+	# if no [curve] or [[curve]] attributes exist, the compiler will throw an error{rst}
 
+	[[{header}curve{rst}]]
+	{comment}# this won't name collide with the other one with `-o auto` because the data length is different.
+	{attr}polynomial{rst} = {const}0x17b{rst}
+	{attr}reflect{rst}    = {const}true{rst}
+
+	[[{header}curve{rst}]]
+	{attr}in-port{rst}    = {string}"crc_data"{rst}
+	{attr}tmp-name{rst}   = {string}"qwe"{rst} {comment}# this does nothing since it is the same as the global value{rst}
+	{attr}init{rst}       = {const}0xFFFFFFFB{rst}
+	{attr}xor-out{rst}    = {const}0xFFFFFFFB{rst}
+	{attr}polynomial{rst} = {const}0x18012d591{rst} {comment}# attribute order doesn't matter. curve order does though{rst}
+
+	[[{header}curve{rst}]]
+	{attr}file{rst} = {string}"curve-file"{rst} {comment}# you can do `file = "auto"` for curve-local file outputs{rst}
+	{attr}name{rst} = {string}"CRC-32"{rst} {comment}# same flexibility as with the `--algorithm` CLI flag. "32", " crc32 ", "CRC 32" all work
+
+	# if two consecutive curves have the same output file, they will both be written into the same file
+	# however, if the files are "file1", "file2", then "file1", the second time "file1" is used, the
+	# contents will be overwritten and a warning will be given. curves that use their own output file
+	# should not be followed by curves that use the default file. it will not work properly{rst}
+	""".replace('\t', '')[1:-1], file=None)
+
+def print_help_ccil() -> None:
+	P  = "\x1b[36m"    # prefix
+	k  = "\x1b[35m"    # keyword
+	v  = "\x1b[1m"     # variable
+	c  = "\x1b[32m"    # comment
+	s  = "\x1b[1;34m"  # string
+	r  = "\x1b[m"      # reset
+	rv = r + v         # reset, variable
+	p  = f"{P}%{r}{k}" # percent
+	d  = f"{P}${rv}" # dollar sign
+	h  = f"{P}#{rv}" # hashtag
+	rs = r + s         # reset, string
+	rd = r + d         # reset, dollar sign
+
+	eprint(f"""
+		{c}| CRC Compiler Input Language (CCIL) preprocessor example code (not coherent):
+
+		| NOTE: after the preprocessor runs, the output should be TOML (see --help=toml)
 		| comments are stripped and variables are expanded before all other line processing
 		| variables and keywords are case sensitive. starting and ending whitespace is stripped
-		| there is no escape character, so a line stops at the first '|' character (or the newline)
+		| there is no escape character, so a line stops at the first '|' character (or the newline){r}
 
-		%include[~/init.caf]      | '~' gets expanded out. environment variables do not
-		%include[a\\b\\c.caf]       | the string is parsed raw
+		{p}include{r}[{s}~/init.ccil{r}]     {c}| '~' gets expanded out. environment variables do not{r}
+		{p}include{r}[{s}a\\b/c.ccil{r}]      {c}| the string is parsed raw{r}
 
-		%set[var][x]              | var = "x"
-		%set[var][a,b,c]          | var = ["a", "b", "c"]. still internally just a string
-		| variable names can contain alphanumerics and underscores
+		{p}set{r}[{v}var{r}][{s}x{r}]              {c}| var = "x"{r}
+		{p}set{r}[{v}var{r}][{s}a,b,c{r}]          {c}| var = ["a", "b", "c"]. still internally just a string
+		{p}set{r}[{v}null{r}][{s}32{r}]            {c}| this works, though doesn't make sense. $null is a regular variable.
+		\t\t\t\t\t\t  | variable names can contain alphanumerics and underscores{r}
 
-		%pop[$null][var]          | var.pop()
-		%shift[asdf][var]         | asdf = var.pop(0)
-		%index[x1][1][$list]      | x1 = list[1]
-		%index[x2][$i][$list]     | x2 = list[i]
+		{p}pop{r}[{d}null{r}][{v}var{r}]          {c}| var.pop(). same as %pop[][var] since $null = "" by default{r}
+		{p}shift{r}[{v}asdf{r}][{v}var{r}]         {c}| asdf = var.pop(0){r}
+		{p}index{r}[{v}x1{r}][{s}1{r}][{d}list{r}]      {c}| x1 = list[1]{r}
+		{p}index{r}[{v}x2{r}][{d}i{r}][{d}list{r}]     {c}| x2 = list[i]{r}
 
-		%set[list][x, y, z]       | list = ["x", " y", " z"]. spaces are interpreted raw
-		%len[length][$list,1323]  | length = len(list + ["1323"])
-		%len[length][]            | length = len([])
-		%len[length][asdf]        | length = len(["asdf"])
+		{p}set{r}[{v}list{r}][{s}x, y, z{r}]       {c}| list = ["x", " y", " z"]. spaces are interpreted raw{r}
+		{p}len{r}[{v}length{r}][{d}list{rs},1323{r}]  {c}| length = len(list + ["1323"]){r}
+		{p}len{r}[{v}length{r}][]            {c}| length = len([]){r}
+		{p}len{r}[{v}length{r}][{s}asdf{r}]        {c}| length = len(["asdf"]){r}
 
-		%substr[outvar][$start,$stop,$step][expr] | outvar = "expr"[start-1:stop:step] (1-indexed, both inclusive)
-		%substr[outvar][1,3][$asdf] | outvar = asdf[0:3]
-		| NOTE: substr acts on raw strings, so if the input is a list, the output may
-		|       include the comma separators, depending on what the indices are.
+		{p}substr{r}[{v}outvar{r}][{d}start{rs},{rd}stop{rs},{rd}step{r}][{s}expr{r}] {c}| outvar = "expr"[start-1:stop:step] (1-indexed, both inclusive){r}
+		{p}substr{r}[{v}outvar{r}][{s}1,3{r}][{d}asdf{r}]               {c}| outvar = asdf[0:3]{r}
+		{c}| NOTE: substr acts on raw strings, so if the input is a list, the output may include
+		|       the comma separators, depending on what the indices are.
 
 		| `%defmacro` macro body is expanded at call time (e.g. $tmp)
 		| `%xdefmacro` is expanded at declaration time, but is otherwise identical. same `%endmacro` to end it.
-		| argument counts cannot be variable.
+		| argument counts cannot be variable.{r}
 
-		%defmacro[asdf][1] as     | `as` is optional. first argument is the name, second is the argument count
-		\t%if[ge][#1][10] then  | `then` is optional. | if #1 >= 10: return
-		\t\t%exitmacro
-		\t%endif
+		{p}defmacro{r}[{v}asdf{r}][{s}1{r}] {k}as{r}     {c}| `as` is optional. first argument is the name, second is the argument count{r}
+		\t{p}if{r}[{s}ge{r}][{h}1{r}][{s}10{r}] {k}then{r}  {c}| `then` is optional. | if #1 >= 10: return{r}
+		\t\t{p}exitmacro{r}
+		\t{p}endif{r}
 
-		\t| seteval operation conversion (DSL => python):
+		\t{c}| seteval operation conversion (CCIL => python):
 		\t\t| ^   => **
 		\t\t| /   => //
 		\t\t| and => &
 		\t\t| or  => |
-		\t\t| xor => ^
-		\t%seteval[tmp][#1 + 1] | integer evaluated expression
-		\t%log[arg=$tmp]
-		\t%macro[asdf][$tmp]
-		\t%unset[tmp]           | del tmp
-		%endmacro
+		\t\t| xor => ^{r}
+		\t{p}seteval{r}[{v}tmp{r}][{h}1{rs} + 1{r}] {c}| integer evaluated expression{r}
+		\t{p}log{r}[{s}arg={rd}tmp{r}{s} \\|{r}]     {c}| \\| => | is a literal character translation.
+		\t{p}log{r}[{s}\\$asdf \\#1{r}]      {c}| these also are escaped and not expanded{r}
+		\t{p}macro{r}[{v}asdf{r}][{d}tmp{r}]    {c}| recursive macro call with evaluated argument{r}
+		\t{p}unset{r}[{v}tmp{r}]           {c}| del tmp{r}
+		{p}endmacro{r}
 
-		| conditionals and loops use tags to find the end, so this is not valid:
-		%if[eq][$a][$b]
-		\t%if[eq][$c][$d]
-		\t\tsomething
-		\t%endif
-		%endif
-		| when the outermost `%if` looks for the `%endif`, it uses the first one it sees
-		| NOTE: tag collisions will give parser errors about a missing `%endif`
+		{c}| conditionals and loops use tags to find the end, so this is not valid:{r}
+		{p}if{r}[{s}eq{r}][{d}a{r}][{d}b{r}]
+		\t{p}if{r}[{s}eq{r}][{d}c{r}][{d}d{r}]
+		\t\t{c}| something{r}
+		\t{p}endif{r}
+		{p}endif{r}
+		{c}| when the outermost `%if` looks for the `%endif`, it uses the first one it sees
+		| NOTE: tag collisions will give parser errors about a missing `%endif`, or similar
 
-		| that matches its tag, so something like this should be used instead:
-		%if[eq][$a][$b]
-		\t%if1[eq][$c][$d]
-		\t\tsomething
-		\t%endif1 | tag=1, matches the inner block
-		%endif | empty tag, matches the outer block
+		| that matches its tag, so something like this should be used instead:{r}
+		{p}if{r}[{s}eq{r}][{d}a{r}][{d}b{r}]
+		\t{p}if1{r}[{s}eq{r}][{d}c{r}][{d}d{r}]
+		\t\t\t{c}| something{r}
+		\t{p}endif1{r} {c}| tag=1, matches the inner block{r}
+		{p}endif{r}      {c}| empty tag, matches the outer block
 
-		| tags can either be empty, or any integer
+		| tags can either be empty, or any non-negative integer
 		| for matching block ends, tags only have to be unique for each type of block.
 		| so %loop and %if have to be unique, but you can nest an %if inside a %loop.
-		| also, uniqueness only matters for nested conditionals, so this is valid:
+		| also, uniqueness only matters for nested conditionals, so this is valid:{r}
 
-		%if3[eq][$x][$y]
-		\tsomething
-		%endif3
+		{p}if3{r}[{s}eq{r}][{d}x{r}][{d}y{r}]
+		\t{c}| something{r}
+		{p}endif3{r}
 
-		%if3[eq][$a][$b]
-		\tsomething else
-		%endif3
+		{p}if3{r}[{s}eq{r}][{d}a{r}][{d}b{r}]
+		\t{c}| something else{r}
+		{p}endif3{r}
 
-		%xdefmacro[asdf][2]
-		\t%log[#1, #2]
-		\t$null$null$null$null | this will expand out to nothing
-		%endmacro
+		{p}xdefmacro{r}[{v}asdf{r}][{s}2{r}]
+		\t{p}log{r}[{h}1{rs},{r} {h}2{r}]
+		\t{d}null{rd}null{rd}null{rd}null{r} {c}| this will expand out to nothing{r}
+		{p}endmacro{r}
 
-		| multiple macros can exist with the same name if they have different argument counts
-		%macro[asdf][1]    | call version 1
-		%macro[asdf][0]
-		%macro[asdf][1,0]  | call version 2
-		%macro[asdf][2,1]
+		{c}| multiple macros can exist with the same name if they have different argument counts{r}
+		{p}macro{r}[{v}asdf{r}][{s}1{r}]          {c}| call 1-argument version{r}
+		{p}macro{r}[{v}asdf{r}][{s}0{r}]
+		{p}macro{r}[{v}asdf{r}][{s}1,0{r}]        {c}| call 2-argument version{r}
+		{p}macro{r}[{v}asdf{r}][{s}2,1{r}]
+		{p}undefmacro{r}[{v}asdf{r}][{s}2{r}]     {c}| undefine the 2-argument macro `asdf`{r}
+		{p}macro{r}[{v}asdf{r}][{s}a,b{r}]        {c}| now this will give an error{r}
 
-		%set[x][apple,asdf,abc]  | x = ["apple", "asdf", "abc"]
+		{p}set{r}[{v}x{r}][{s}apple,asdf,abc{r}]  {c}| x = ["apple", "asdf", "abc"]
 
-		| %repl acts on raw strings, it replaces instances of the first string with the second
-		%repl[x][$x][a][b]       | x = ["bpple", "bsdf", "bbc"]
-		%repl[y][$x][,][$null]   | y = ''.join(x)
+		| %repl acts on raw strings, it replaces instances of the first string with the second{r}
+		{p}repl{r}[{v}x{r}][{d}x{r}][{s}a{r}][{s}b{r}]       {c}| x = ["bpple", "bsdf", "bbc"]{r}
+		{p}repl{r}[{v}y{r}][{d}x{r}][{s},{r}][{d}null{r}]   {c}| y = ''.join(x)
 
-		| setting like this is basically a bunch of list concatenations, there are only 1d lists
-		%set[x][$x,asdf,$i$i$i,$var1,$var2,qwer,,$null,4]
+		| setting like this is basically a bunch of list concatenations, there are only 1d lists{r}
+		{p}set{r}[{v}x{r}][{d}x{rs},asdf,{rd}i{rd}i{rd}i{rs},{rd}var1{rs},{rd}var2{rs},qwer,,{rd}null{rs},4{r}]
 
-		%set[i][0]
-		%loop | loop forever
-		\t%if1[ge][$i][10]
-		\t\t%if2[lt][$i][3]
-		\t\t\tdo some stuff
-		\t\t%else2
-		\t\t\t| %break3 | this wouldn't match anything and would throw an error
-		\t\t\t| %break2 | this would match the  `%if2` and break out of the if block.
-		\t\t\t| %break1 | this would match the `%if1` and break out of the if block.
-		\t\t\t%break | matches `%loop` since it has no tag
-		\t\t%endif2
-		\t%endif1
+		{p}set{r}[{v}i{r}][{s}0{r}]
+		{p}loop{r} {c}| loop forever{r}
+		\t{p}if1{r}[{s}ge{r}][{d}i{r}][{s}10{r}]
+		\t\t{p}if2{r}[{s}lt{r}][{d}i{r}][{s}3{r}]
+		\t\t\tdo stuff
+		\t\t{p}else2{r}
+		\t\t\t{c}| %break3 <- this wouldn't match anything and would throw an error
+		\t\t\t| %break2 <- this would match the `%if2` and break out of the if2 block.
+		\t\t\t| %break1 <- this would match the `%if1` and break out of the if1 block.{r}
+		\t\t\t{p}break{r} {c}| matches `%loop` since it has no tag{r}
+		\t\t{p}endif2{r}
+		\t{p}endif1{r}
 
-		\t%log[i=$i]
+		\t{p}log{r}[{s}i={rd}i{r}]
 
-		\t%seteval[i][$i + 1]
-		%endloop | the `%endloop` has to have the same tag as the `%loop`
+		\t{p}seteval{r}[{v}i{r}][{d}i{s} + 1{r}]
+		{p}endloop{r} {c}| the `%endloop` has to have the same tag as the `%loop`
 
 		| %break is the only thing where tags between %if, %loop, and %foreach are different.
-		| it will match whatever block is closest with a matching tag.
+		| it will match whatever block is closest with a matching tag.{r}
 
-		%unset[i,nonexistent] | unsetting a nonexistent variable just does nothing. no error
+		{p}unset{r}[{v}i{rs},{rv}nonexistent{r}] {c}| unsetting a nonexistent variable just does nothing. no error{r}
 
-		%set[x][1]
-		%foreach3[x][1asdf,2qwer,31234,4abc,5q,6w] do | `do` is optional
-		\t%repl[x][$x][][,] | x = x.split('')
-		\t%shift[i][x]      | (i, x) = x
-		\t%repl[x][$x][,][] | x = ''.join(x)
+		{p}set{r}[{v}x{r}][{s}1{r}]
+		{p}foreach3{r}[{v}x{r}][{s}1asdf,2qwer,31234,4abc,5q,6w{r}] {k}do{r} {c}| `do` is optional{r}
+		\t{p}repl{r}[{v}x{r}][{d}x{r}][][{s},{r}] {c}| x = x.split(''){r}
+		\t{p}shift{r}[{v}i{r}][{v}x{r}]      {c}| (i, x) = x{r}
+		\t{p}repl{r}[{v}x{r}][{d}x{r}][{s},{r}][] {c}| x = ''.join(x){r}
 
-		\t%log[list[$i] = $x]
-		%endfor3
-		%log[$x] | this will print 1 since x is restored after foreach loops
-		| if $x were undefined before the foreach loop, it will be deleted at the end of the foreach loop.
+		\t{p}log{r}[{s}list[{rd}i{rs}] = {rd}x{r}]
+		{p}endfor3{r}
+		{p}log{r}[{d}x{r}] {c}| this will print 1 since x is restored after foreach loops
+		| if $x were undefined before the foreach loop, it will be deleted at the end of the foreach loop.{r}
 
-		%fatal[error message]
+		{p}raw{r}[{s}variables like $asdf aren't expanded here{r}]
 
-		%if[subset][$format][arm32,avr]
-		\t%raw[variables aren't expanded here]
-		%endif
+		{p}setcap{r}[{s}depth{r}][{s}32{r}]      {c}| set depth cap (%include/%if/%loop/%foreach/%macro depth) to 32{r}
+		{p}setcap{r}[{s}depth{r}][{s}default{r}] {c}| set depth cap to the default (1024){r}
+		{p}setcap{r}[{s}depth{r}][{d}null{r}]   {c}| uncap depth{r}
+		{p}setcap{r}[{s}iter{r}][{d}null{r}]    {c}| uncap %loop iterations{r}
+		{p}setcap{r}[{s}iter{r}][{s}default{r}]  {c}| cap %loop at 1 million{r}
 
-		%exit | basically the same as EOF. preprocessor ignores all subsequent lines
+		{p}fatal{r}[{s}error message{r}]
+
+		{p}exit{r} {c}| basically the same as EOF. preprocessor ignores all subsequent lines
 		| if this was in an %include, it will continue parsing the file it was included from
 
 		| %if conditionals:
 		|---------------------------
 
-		| integer operations: eq, ne, lt, le, gt, ge
-		%if[eq][$a,$b,$c][$x,$y,$z] | if a == x and b == y and c == z
-		%endif
+		| integer operations: eq, ne, lt, le, gt, ge{r}
+		{p}if{r}[{s}eq{r}][{d}a{rs},{rd}b{rs},{rd}c{r}][{d}x{rs},{rd}y{rs},{rd}z{r}] {c}| if a == x and b == y and c == z{r}
+		{p}endif{r}
 
-		| also: inrange, notinrange
-		%if[inrange][$x,$y][4,7] | if 4 <= x <= 7 and 4 <= y <= 7
-		%endif
-		| notinrange is just the negated result
+		{c}| also for integers: inrange, notinrange{r}
+		{p}if{r}[{s}inrange{r}][{d}x{rs},{rd}y{r}][{s}4,7{r}] {c}| if 4 <= x <= 7 and 4 <= y <= 7{r}
+		{p}endif{r}
+		{c}| notinrange is just the negated result
 
-		| string operations: streq, strneq
-		%if[streq][asdfqwer][asdf,qwer] | commas are not treated as list separators in this case.
-		\t| this branch won't run
-		%else
-		\t| this branch will run
-		\t| there is %else, but no %elseif or %elif or anything like that.
-		%endif
+		| string operations: streq, strneq{r}
+		{p}if{r}[{s}streq{r}][{s}asdfqwer{r}][{s}asdf,qwer{r}] {c}| commas are not treated as list separators in this case.
+		\t| this branch won't run{r}
+		{p}else{r}
+		\t{c}| this branch will run
+		\t| NOTE: there is %else, but no %elseif or %elif or anything like that.{r}
+		{p}endif{r}
 
-		| variable operations: def, notdef
+		{c}| variable operations: def, notdef{r}
 
-		%if[def][a,b,c][] | #if defined(a) && defined(b) && defined(c)
-		\t| the second argument block must be empty. it cannot be omitted.
-		\t| notdef is the negated result.
-		%endif
+		{p}if{r}[{s}def{r}][{v}a{rs},{rv}b{rs},{rv}c{r}][] {c}| #if defined(a) && defined(b) && defined(c)
+		\t| the second argument block must be empty. it cannot be omitted.{r}
+		{p}endif{r}
+		{c}| notdef is the negated result.
 
 		| list/set operations: subset, notsubset
-		| these are for loose subsets, so anything is a subset of itself
+		| these are for loose subsets, so anything is a subset of itself{r}
 
-		%if[subset][1,2,3,4][1,2,5,4,3]
-		\t| true. order doesn't matter
-		%endif
-	""".replace("\n\t\t", "\n")[1:-2])
+		{p}if{r}[{s}subset{r}][{s}1,2,3,4{r}][{s}1,2,5,4,3{r}]
+		\t{c}| true. set ordering doesn't matter
+		\t| sets are subsets of themselves{r}
+		{p}endif{r}
+	""".replace("\n\t\t", '\n')[1:-2].replace('\t', '    '), file=None)
 
 def print_help_ir() -> None:
 	print(
@@ -925,21 +1030,23 @@ def print_help_ir() -> None:
 		"\n - a None / null corresponds to a constant 1 (NOT gate)"
 		"\n - tmp signals are topologically sorted so they can only depend on tmps with lower ids"
 		"\n - a set of {None, 6, 2, -4} corresponds to `1 ^ in[6] ^ in[2] ^ tmp[4]`"
-		"\n - asm=json uses a priority queue instead of a FIFO, so it has different sorting"
 	)
 
-	if not dsl_avail:
+	if not ccil_avail:
 		return
 
+	# NOTE: the usages of some of the mnemonics, namely `@mov` is confusing, so the best way to
+	#       add new targeets is to make a regex that is as specific as possible (to an extent),
+	#       and then see the results and repeat until everything is covered.
 	print(
 		"\nAssembly IR format:"
-		"\n - Uses the same DSL preprocessor as the TOML input (see --help=dsl)"
+		"\n - Uses the same preprocessor as the CCIL/TOML input (see --help=ccil)"
 		"\n - all instructions use 'dst, src'"
 		"\n - the format is mostly ISA agnostic"
 		"\n - @mvz: move zero to register"
 		"\n - @mov: move value into register (either small a immediate or from memory)"
 		"\n - @mvl: move large immediate into register (for on ptr imm overflow)"
-		"\n - @add/@sub/@shr/@shl/@and/@xor/@jmp/@ret: same as the x86 instructions"
+		"\n - @add/@sub/@shr/@shl/@and/@jmp/@ret: same as the x86 instructions"
 		"\n - @orr: or two registers together"
 		"\n - @xor: xor a register into memory or xor two registers (depends on cisc vs risc)"
 		"\n - @jiz: jump if zero. same as CBZ on ARM32. usually something like `test` + `je`"
@@ -947,7 +1054,6 @@ def print_help_ir() -> None:
 		"\n - @stw/@stb: store word/byte into memory from a register"
 		"\n - @function[...]: definition of a function"
 		"\n - @deflabel[...]: definition of a label"
-		"\n - @label[...]: reference to a label"
 		"\n - @label[...]: reference to a label"
 		"\n - @reg[sp]: stack pointer register"
 		"\n - @reg[...]: full-width register by index"
@@ -958,23 +1064,27 @@ def print_help_ir() -> None:
 		"\n - @out[...]: reference to output signal by index"
 	)
 
+if args.help:
+	parser.print_help()
+	raise SystemExit
+
 if getattr(args, "help=all"):
 	parser.print_help()
 
-	print("\n################################# FORMAT HELP #################################")
+	eprint("\n\x1b[1;37m################################# FORMAT HELP #################################\x1b[m\n", file=None)
 	print_help_formats()
 
-	print("\n################################### ALG HELP ##################################")
+	eprint("\n\x1b[1;37m################################### ALG HELP ##################################\x1b[m\n", file=None)
 	print_help_algs()
 
-	print("\n################################## TOML HELP ##################################")
+	eprint("\n\x1b[1;37m################################## TOML HELP ##################################\x1b[m\n", file=None)
 	print_help_toml()
 
-	if dsl_avail:
-		print("\n################################### DSL HELP ##################################")
-		print_help_dsl()
+	if ccil_avail:
+		eprint("\n\x1b[1;37m################################## CCIL HELP ##################################\x1b[m\n", file=None)
+		print_help_ccil()
 
-	print("\n################################ IR FORMAT HELP ###############################")
+	eprint("\n\x1b[1;37m################################ IR FORMAT HELP ###############################\x1b[m\n", file=None)
 	print_help_ir()
 
 	raise SystemExit
@@ -984,13 +1094,11 @@ if len(argv) == 1 and sys.stdin.isatty():
 	parser.print_help()
 	raise SystemExit
 
-del parser
-
 if getattr(args, "help=formats"):
 	print_help_formats()
 	raise SystemExit
 
-if getattr(args, "help=algorithms"):
+if getattr(args, "help=names"):
 	print_help_algs()
 	raise SystemExit
 
@@ -998,13 +1106,15 @@ if getattr(args, "help=toml"):
 	print_help_toml()
 	raise SystemExit
 
-if getattr(args, "help=dsl") and dsl_avail:
-	print_help_dsl()
+if getattr(args, "help=ccil") and ccil_avail:
+	print_help_ccil()
 	raise SystemExit
 
 if getattr(args, "help=ir"):
 	print_help_ir()
 	raise SystemExit
+
+del parser, argparse, print_help_formats, print_help_algs, print_help_toml, print_help_ccil
 
 if verbose >= 2:
 	eprint("# command: " + ' '.join(argv))
@@ -1105,7 +1215,7 @@ else:
 		optimize = True
 
 if verbose >= 2:
-	eprint(f"# cache dir: {cache_dir!r}")
+	eprint(f"# cache dir: {cache_dir}")
 
 # possible `cache` values after this point: '', 'd', 'r', 'w', 'rw'
 
@@ -1600,6 +1710,7 @@ else:
 				"save_list" : None,
 				"reg_size"  : 16,
 				"max_ofs"   : (1 << 16) - 1,
+				"strict"    : False, # correct output still has '@' in it
 			},
 			"regw": ("r12", "r13", "r14", "r15", "r11"),
 			"regb": ("r12", "r13", "r14", "r15", "r11"),
@@ -1991,7 +2102,8 @@ def run_job(
 	output: str,
 	optimize: bool,
 	args: object, # whatever type argparse.ArgumentParser.parse_args gives you
-	extra_newline: bool,
+	new_file: bool,
+	last_file_exists: bool, # whatever file_exists was last time
 	asm_ir_settings: dict,
 	outfile: object # whatever type open returns
 ) -> tuple[any, str | None]:
@@ -1999,8 +2111,7 @@ def run_job(
 	# returns the output file handle if it is still open, otherwise it returns None
 	# and the second value is either the file name or None.
 
-	if gc_disabled:
-		gc.collect()
+	gc_collect()
 
 	crc_name = args.algorithm
 	poly     = args.polynomial
@@ -2249,7 +2360,7 @@ def run_job(
 				"gates" if optimize_metric == "gates" else f"lut{optimize_metric}",
 				optimize_max_tmps,
 				optimize_seed,
-				verbose,
+				verbose - 1,
 				interactive=True,
 				sort="slow" if syntax.startswith("asm=") or syntax in {"c", "c++"} else "fast"
 			)
@@ -2384,7 +2495,7 @@ def run_job(
 		assumes `end` doesn't have tabs in it.
 		"""
 
-		nonlocal extra_newline
+		nonlocal new_file
 
 		if message is None:
 			# don't print anything
@@ -2392,9 +2503,9 @@ def run_job(
 
 		from builtins import print as _print
 
-		if extra_newline:
+		if not new_file:
 			_print(end='\n', file=outfile)
-			extra_newline = False
+			new_file = True # pretend it is a new file.
 
 		if indent_str != '\t':
 			message = message.replace('\t', indent_str)
@@ -2402,12 +2513,22 @@ def run_job(
 		_print(message, end=end, file=outfile)
 
 	if output == '-':
-		outfile = None
+		outfile     = None
+		file_exists = False
+	elif output == "auto" or outfile is None:
+		# if outfile is not '-', "auto", or None, this is the same file as the last file
+		# use real paths because the path `outfile.name` is used later.
+		outfile = os.path.realpath(os.path.expanduser(
+			f"crc{crc_name}_{data_len}.{extension}" if output == "auto" else outfile
+		))
+		file_exists = os.path.isfile(outfile)
+
+		try:
+			outfile = open(outfile, "w", newline='')
+		except OSError as e:
+			raise ValueError(f"job {job_num} output file is not valid: {outfile.replace('\\', '/')}") from e
 	else:
-		if output == "auto":
-			outfile = open(f"crc{crc_name}_{data_len}.{extension}", "w", newline='')
-		elif outfile is None:
-			outfile = open(output, "w", newline='')
+		file_exists = last_file_exists
 
 	def get_terms(eqn: set) -> str:
 		if None in eqn:
@@ -2472,9 +2593,9 @@ def run_job(
 
 		if output == "auto":
 			outfile.close()
-			return None, outfile.name
+			return None, outfile.name, file_exists
 
-		return outfile, (None if outfile is None else outfile.name)
+		return outfile, (None if outfile is None else outfile.name), file_exists
 
 	# main formats
 	if syntax in {"vhd", "v", "sv", "am", "nmg", "ch", "ch3", "sp"}:
@@ -2749,8 +2870,6 @@ def run_job(
 		gd.out_ofs  = out_ofs
 		gd.function = f"crc{crc_name}_{data_len}"
 		gd.comment  = asm_format_data["comment"]
-
-		from functools import partial
 
 		for key, val in grammar.items():
 			if callable(val):
@@ -3171,27 +3290,23 @@ def run_job(
 			print(json_dump_data(data, indent, seps))
 		case "nop":
 			if optimize:
-				# just for the output
+				# for the stderr output
 				optimize_graph(rows)
 		case _:
 			raise Exception(f"mismatch between argparse syntax list and match/case syntax list. syntax: {syntax!r}")
 
 	return job_ret()
 
-def parse_toml(source: str, files_seen: set) -> dict:
-	"""
-	the argument is either a file path to a TOML file, inline TOML, or neither.
-	if it is neither, an error will be thrown, otherwise the TOML object is given.
-	"""
-	import tomllib
+def preproc_toml(source: str, files_seen: set) -> dict:
+	"the argument is either a path to a file, or inline file contents"
 
 	try:
-		path = os.path.realpath(source)
-		with open(source, "r") as f:
+		path = os.path.realpath(os.path.expanduser(source)).replace('\\', '/')
+		with open(path, "r") as f:
 			source = f.read()
 
 		if path in files_seen:
-			raise ValueError(f"duplicate TOML file path given: {path!r}")
+			raise ValueError(f"duplicate input file path given: {path!r}")
 
 		files_seen.add(path)
 	except FileNotFoundError, OSError:
@@ -3200,10 +3315,10 @@ def parse_toml(source: str, files_seen: set) -> dict:
 		pass
 
 	if "'''" in source or '"""' in source:
-		raise ValueError("TOML input is invalid (contains multiline strings)")
+		raise ValueError("input file is invalid (may contain multiline strings)")
 
-	if dsl_avail:
-		# only use the DSL preprocessor if it exists
+	if ccil_avail:
+		# this will always be true with `--preproc`. Without it, it might not be true
 		source = source.split('\n')
 
 		try:
@@ -3213,19 +3328,46 @@ def parse_toml(source: str, files_seen: set) -> dict:
 
 		source = '\n'.join(source)
 
+	return source
+
+def parse_toml(source: str, files_seen: set) -> dict:
+	"""
+	the argument is either a file path to a TOML file, inline TOML, or neither.
+	if it is neither, an error will be thrown, otherwise the TOML object is given.
+	"""
+
+	import tomllib
+
 	try:
-		return tomllib.loads(source)
+		return tomllib.loads(preproc_toml(source, files_seen))
 	except tomllib.TOMLDecodeError:
 		raise ValueError("TOML input is invalid (TOML decode failed)")
 
-def parse_input(args: object) -> list[dict[str, any]]:
+def preproc_input(args: object) -> list[dict[str, int | str | None]]:
+	if args.polynomial is not None:
+		raise ValueError("`--preproc` and `--polynomial` cannot both be given")
+
+	if args.algorithm is not None:
+		raise ValueError("`--preproc` and `--algorithm` cannot both be given")
+
+	if not sys.stdin.isatty():
+		args.programs.insert(0, sys.stdin.read())
+
+	if not args.programs:
+		return ""
+
+	files_seen = set()
+
+	return '\n'.join(preproc_toml(toml, files_seen) for toml in args.programs)
+
+def parse_input(args: object) -> list[dict[str, int | str | None]]:
 	"figure out the curve dictionary stuff from the input TOML files"
 
 	if not sys.stdin.isatty():
 		if args.polynomial is not None:
-			raise ValueError("pipeline TOML program and `--polynomial` cannot both be given")
+			raise ValueError("pipeline TOML and `--polynomial` cannot both be given")
 		if args.algorithm is not None:
-			raise ValueError("pipeline TOML program and `--algorithm` cannot both be given")
+			raise ValueError("pipeline TOML and `--algorithm` cannot both be given")
 
 		args.programs.insert(0, sys.stdin.read())
 
@@ -3233,27 +3375,27 @@ def parse_input(args: object) -> list[dict[str, any]]:
 		# --polynomial
 		try:
 			return [{
-				"name":       None,
-				"polynomial": int(args.polynomial, 0),
-				"init":       args.init    or 0,
-				"xor-out":    args.xor_out or 0,
-				"reflect":    args.reflect
+				"name"       : None,
+				"polynomial" : int(args.polynomial, 0),
+				"init"       : args.init    or 0,
+				"xor-out"    : args.xor_out or 0,
+				"reflect"    : args.reflect,
+				"file"       : args.output or '-',
 			}]
 		except ValueError:
 			raise ValueError(f"`--polynomial` given a non-integer value: {args.polynomial!r}")
 	elif not args.programs:
 		# neither positional nor polynomial is given
 		return [{
-			"name":       args.algorithm, # this being None is handled later
-			"polynomial": None,
-			"init":       None,
-			"xor-out":    None,
-			"reflect":    None,
+			"name"       : args.algorithm, # this being None is handled later
+			"polynomial" : None,
+			"init"       : None,
+			"xor-out"    : None,
+			"reflect"    : None,
+			"file"       : args.output or '-',
 		}]
 
-	if args.in_port   is not None: raise ValueError("TOML input and `--in-port` cannot both be given")
-	if args.out_port  is not None: raise ValueError("TOML input and `--out-port` cannot both be given")
-	if args.tmp_name  is not None: raise ValueError("TOML input and `--tmp-name` cannot both be given")
+	# these are part of the curve identity, so an override or fallback doesn't make sense.
 	if args.data_len  is not None: raise ValueError("TOML input and `--data-len` cannot both be given")
 	if args.algorithm is not None: raise ValueError("TOML input and `--algorithm` cannot both be given")
 	if args.init      is not None: raise ValueError("TOML input and `--init` cannot both be given")
@@ -3278,6 +3420,12 @@ def parse_input(args: object) -> list[dict[str, any]]:
 		if type(toml["curve"]) is not list:
 			raise ValueError(f"TOML program {i} `curve` is not a dictionary or a list")
 
+		# CLI flags for these take priority over file global settings, but not over curve local settings
+		if args.in_port  is not None: toml["in-port"]  = args.in_port
+		if args.out_port is not None: toml["out-port"] = args.out_port
+		if args.tmp_name is not None: toml["tmp-name"] = args.tmp_name
+		if args.output   is not None: toml["file"]     = args.output
+
 		for curve in toml["curve"]:
 			# for each curve in the program
 
@@ -3288,7 +3436,7 @@ def parse_input(args: object) -> list[dict[str, any]]:
 				if key != "curve" and key not in curve:
 					curve[key] = val
 
-	# in 3.15: curves = [*d["curve"] for d in toml_dicts]
+	# in Python 3.15: curves = [*d["curve"] for d in toml_dicts]
 	# I hate this syntax, it is backwards of what it should be
 	curves = [curve for d in toml_dicts for curve in d["curve"]]
 
@@ -3296,8 +3444,8 @@ def parse_input(args: object) -> list[dict[str, any]]:
 
 	for i, curve in enumerate(curves, 1):
 		remainder = set(curve) - {
-			"in-port", "out-port", "tmp-name", "data-len",
-			"name", "polynomial", "init", "xor-out", "reflect"
+			"in-port", "out-port", "tmp-name", "data-len", "file",
+			"name", "polynomial", "init", "xor-out", "reflect",
 		}
 
 		if remainder:
@@ -3314,6 +3462,9 @@ def parse_input(args: object) -> list[dict[str, any]]:
 
 		if "data-len" in curve and type(curve["data-len"]) is not int:
 			raise ValueError(f"TOML `[[curve]]` element {i} attribute `data-len` is not an integer")
+
+		if "file" in curve and type(curve["file"]) is not str:
+			raise ValueError(f"TOML `[[curve]]` element {i} attribute `file` is not a string")
 
 		if "name" in curve:
 			if type(curve["name"]) is not str:
@@ -3352,6 +3503,46 @@ def parse_input(args: object) -> list[dict[str, any]]:
 
 	return curves
 
+def close_and_classify(outfile: object, filename: str | None, file_exists: bool) -> None:
+	"filenames and bad_filenames are declared later, globally"
+
+	if outfile is not None:
+		outfile.close()
+
+	if filename is None:
+		return
+
+	if filename in filenames:
+		if verbose >= 0:
+			eprint(f"\x1b[38;2;180;100;0m# WARNING: job {job_num} overwrote output file:\x1b[m {filename.replace('\\', '/')}")
+
+		bad_filenames.append((job_num, filename))
+	else:
+		if verbose >= 2 and file_exists:
+			eprint(f"\x1b[1;33m# NOTE: job {job_num} overwrote a pre-existing file:\x1b[m {filename.replace('\\', '/')}")
+
+		filenames.add(filename)
+
+if args.preproc:
+	program = preproc_input(args)
+
+	output = '-' if args.output is None else output
+
+	if output in {'-', "auto"}:
+		print(program)
+		raise SystemExit
+
+	output = os.path.realpath(os.path.expanduser(output)).replace('\\', '/')
+	file_exists = os.path.isfile(output)
+
+	with open(output, 'w', newline='') as f:
+		f.write(program)
+
+	if verbose >= 2 and file_exists:
+		eprint(f"\x1b[1;33m# NOTE: overwrote a pre-existing file:\x1b[m {output}")
+
+	raise SystemExit
+
 curves = parse_input(args)
 
 del parse_toml, parse_input
@@ -3360,50 +3551,87 @@ args.in_port  = "data" if args.in_port  is None else args.in_port
 args.out_port = "crc"  if args.out_port is None else args.out_port
 args.tmp_name = "tmp"  if args.tmp_name is None else args.tmp_name
 args.data_len = 4      if args.data_len is None else args.data_len
+args.output   = '-'    if args.output   is None else args.output
+if args.output not in {'-', "auto"}:
+	args.output = os.path.expanduser(args.output)
 
-if syntax == "nop":
-	# ignore `-o`. this is just so it doesn't create any files.
-	output = '-'
-
-outfile = None
-first   = True
+outfile     = None
+filename    = None
+file_exists = False
+first       = True
 
 filenames     = set()
-bad_filenames = set()
+bad_filenames = [] # files that were written previously in the batch, then closed, then overwritten.
+prev_output   = None
 
+job_num = 0
 for curve in curves:
-	save = (args.in_port, args.out_port, args.tmp_name, args.data_len)
+	job_num += 1
+	save = (args.in_port, args.out_port, args.tmp_name, args.data_len, args.output)
+
+	args.algorithm  = curve.pop("name")
+	args.polynomial = curve.pop("polynomial")
+	args.init       = curve.pop("init")
+	args.xor_out    = curve.pop("xor-out")
+	args.reflect    = curve.pop("reflect")
+
+	if "in-port"  in curve: args.in_port  = curve.pop("in-port")
+	if "out-port" in curve: args.out_port = curve.pop("out-port")
+	if "tmp-name" in curve: args.tmp_name = curve.pop("tmp-name")
+	if "data-len" in curve: args.data_len = curve.pop("data-len")
+	if "file"     in curve: args.output   = curve.pop("file")
+
+	if syntax == "nop":
+		# never create files with `-fnop`
+		args.output = '-'
+
+	new_file = args.output == "auto" or args.output != prev_output
+
+	if new_file and outfile is not None:
+		job_num -= 1
+		close_and_classify(outfile, filename, file_exists)
+		job_num += 1
+		outfile  = None
+		filename = None
 
 	if not first and verbose >= 1:
 		eprint("")
 
+	if verbose >= 1:
+		eprint(f"\x1b[33m# starting job {job_num}\x1b[m")
+
 	if verbose >= 2:
-		eprint(f"# job params={curve}")
+		eprint(
+			f"# job parameters:\n"
+			f"#     - curve: name={args.algorithm!r}"
+				f", polynomial={hex(args.polynomial) if args.polynomial else args.polynomial}"
+				f", init={hex(args.init) if args.init else args.init}"
+				f", xor-out={hex(args.xor_out) if args.xor_out else args.xor_out}"
+				f", reflect={args.reflect}, data-len={args.data_len}\n"
+			f"#     - meta: in-port={args.in_port!r}, tmp-name={args.tmp_name!r}, out-port={args.out_port!r}"
+				f", file={args.output!r}"
+		)
 
-	if "in-port"  in curve: args.in_port  = curve["in-port"]
-	if "out-port" in curve: args.out_port = curve["out-port"]
-	if "tmp-name" in curve: args.tmp_name = curve["tmp-name"]
-	if "data-len" in curve: args.data_len = curve["data-len"]
+	outfile, filename, file_exists = run_job(args.output, optimize, args, new_file, file_exists, asm_ir_settings, outfile)
+	# NOTE: if args.output == "auto", `outfile` is already closed and is None here
 
-	args.algorithm  = curve["name"]
-	args.polynomial = curve["polynomial"]
-	args.init       = curve["init"]
-	args.xor_out    = curve["xor-out"]
-	args.reflect    = curve["reflect"]
+	if args.output == "auto":
+		close_and_classify(outfile, filename, file_exists)
+		filename = None # don't reclassify next iteration
 
-	outfile, filename = run_job(output, optimize, args, not first and output != "auto", asm_ir_settings, outfile)
-
-	(args.in_port, args.out_port, args.tmp_name, args.data_len) = save
+	prev_output = args.output
+	(args.in_port, args.out_port, args.tmp_name, args.data_len, args.output) = save
 	first = False
 
-	if output == "auto":
-		if filename in filenames:
-			bad_filenames.add(filename)
-		else:
-			filenames.add(filename)
+close_and_classify(outfile, filename, file_exists)
 
-if bad_filenames and verbose >= 0:
-	eprint(f"\x1b[1;33m# warning: some output files were shadowed\x1b[m: '{"', '".join(bad_filenames)}'")
+if bad_filenames and verbose >= 1 and (optimize or len(curves) > 7):
+	# there is no reason in particular for the cutoff being 7. I just decided.
+
+	eprint(f"\x1b[38;2;180;100;0m# WARNING: {len(bad_filenames)} output file{"s were" if len(bad_filenames) > 1 else " was"} overwritten:\x1b[m")
+
+	for job_num, filename in bad_filenames:
+		eprint(f"\x1b[38;2;180;100;0m#     job {job_num} overwrote\x1b[m {filename.replace('\\', '/')}")
 
 if verbose >= 2:
-	eprint(f"# filenames: {"'" + "', '".join(filenames) + "'" if filenames else 'none'}")
+	eprint(f"# files written: {set(name.replace('\\', '/') for name in filenames) if filenames else "none"}")
