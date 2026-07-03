@@ -3481,7 +3481,7 @@ def preproc_toml(source: str, files_seen: set) -> dict:
 		try:
 			source = crc_dsl.preproc(source, pp_vars)
 		except Exception as e:
-			raise ValueError("TOML input is invalid (preprocessing failed)") from e
+			raise ValueError("input program is invalid: preprocessing failed") from e
 
 		source = '\n'.join(source)
 
@@ -3498,7 +3498,7 @@ def parse_toml(source: str, files_seen: set) -> dict:
 	try:
 		return tomllib.loads(preproc_toml(source, files_seen))
 	except tomllib.TOMLDecodeError:
-		raise ValueError("TOML input is invalid (TOML decode failed)")
+		raise ValueError("input program is invalid: TOML decode failed")
 
 def preproc_input(args: object) -> list[dict[str, int | str | None]]:
 	if args.polynomial is not None:

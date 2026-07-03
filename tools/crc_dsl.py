@@ -19,8 +19,9 @@ NOTES:
 
 import re
 from os.path import expanduser
+from sys import stderr
 
-__version__ = "1.3.1"
+__version__ = "1.4.0"
 __all__ = ("preproc", "process", "generate")
 
 FunctionType = type(lambda x: x) # same as types.FunctionType
@@ -77,7 +78,12 @@ vars   = default_vars.copy()
 macros = {}
 
 def _expand_vars_repl(match: re.Match, *, line_num: int) -> str:
-	key = match.group()
+	key = match.group(1)
+
+	if key[0] == '{': # and key[-1] == '}'
+		key = key[1:-1]
+
+	key = '$' + key
 
 	if key not in vars:
 		raise ValueError(f"ERROR: line {line_num}: undefined variable: {key!r}")
@@ -88,7 +94,7 @@ def expand_vars(line: str, line_num: int) -> str:
 	from functools import partial
 
 	return re.sub(
-		r"\$\w+",
+		r"\$(\w+|\{\w+\})",
 		partial(_expand_vars_repl, line_num=line_num),
 		line.replace(r"\$", '\0') # no escaping the escape characters
 	).replace('\0', '$')
@@ -416,7 +422,7 @@ def _preproc(
 
 			argc = args.count(',') + 1 if args else 0
 
-			macro_line, macro_def = macros.get(f"{name}-{argc}", (None, None, None))
+			macro_line, macro_def = macros.get(f"{name}-{argc}", (None, None))
 
 			if macro_def is None:
 				raise ValueError(f"ERROR: line {line_num}: macro {name!r} with {argc} arguments does not exist.")
@@ -426,8 +432,8 @@ def _preproc(
 
 				macro_def = [
 					re.sub(
-						r"#(\d+)",
-						lambda m: args[int(m.group(1)) - 1],
+						r"#(\d+|\{\d+\})",
+						lambda m: args[int(g[1:-1] if (g := m.group(1))[0] == '{' else g) - 1],
 						line.replace(r"\#", '\0') # no escaping the escape characters
 					).replace('\0', '#')
 					for line in macro_def
@@ -512,9 +518,14 @@ def _preproc(
 		elif (match := re.fullmatch(r"%seteval\[(\w+)\]\[(.+)\]", line)):
 			var, expr = match.groups()
 			vars[f"${var}"] = _eval_expr(expr, line_num)
-		elif (match := re.fullmatch(r"%log\[(.+)\]", line)):
-			print(match.group(1))
-		elif (match := re.fullmatch(r"%fatal\[(.+)\]", line)):
+		elif (match := re.fullmatch(r"%(e?)log(n?)\[(.*)\]", line)):
+
+			print(
+				match.group(3),
+				end='\n' if match.group(2) else '',
+				file=stderr if match.group(1) else None
+			)
+		elif (match := re.fullmatch(r"%fatal\[(.*)\]", line)):
 			raise Exception(f"ERROR: line {line_num}: `%fatal`: " + match.group(1))
 		elif (match := re.fullmatch(r"%(break|continue)(\d*)", line)):
 			raise ExitLoop(*match.groups(), line=line_num)
@@ -545,6 +556,33 @@ def _preproc(
 				pass
 
 			del include_lines # probably this is large. delete to save memory
+		elif (match := re.fullmatch(r"%readline\[(\w+)\]\[\d+\]\[(.+)\]")):
+			outvar, idx, filepath = match.groups()
+			filepath = expanduser(filepath)
+
+			if filepath == "stdin":
+				if idx != '1':
+					raise ValueError(f"ERROR: line {line_num}: '%readline': line number {idx} is not valid (must be 1 for stdin)")
+
+				data = input()
+			else:
+				try:
+					with open(filepath, "r") as f:
+						data = f.readlines()
+				except FileNotFoundError: raise ValueError(f"ERROR: line {line_num}: '%readline': path does not exist")
+				except IsADirectoryError: raise ValueError(f"ERROR: line {line_num}: '%readline': path is a directory")
+				except PermissionError:   raise ValueError(f"ERROR: line {line_num}: '%readline': no permissions")
+				except OSError:           raise ValueError(f"ERROR: line {line_num}: '%readline': path is invalid")
+
+				try:
+					data = data[int(idx) - 1]
+				except IndexError:
+					raise ValueError(f"ERROR: line {line_num}: '%readline': line number {idx} is not valid (out of bounds)")
+
+			if data[-1] == '\n':
+				data = data[:-1]
+
+			vars[f"${outvar}"] = data
 		elif debug:
 			out_prgm.append(f"| UNKNOWN LINE: {line}")
 		else:
@@ -633,9 +671,7 @@ def generate(
 	)
 
 if __name__ == "__main__":
-	from sys import stderr, exit
-
 	msg = f"crc_dsl (v{__version__}) is not a top level program"
 
 	print(f"\x1b[31m{msg}\x1b[m" if stderr.isatty() else msg, file=stderr)
-	exit(1)
+	raise SystemExit(1)
