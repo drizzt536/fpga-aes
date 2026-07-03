@@ -3,7 +3,7 @@
 """
 compiler EDA for fully-unrolled, fully-combinational CRC functions given a fixed-length, byte-aligned input.
 primarly for HDL code, but software code is also supported.
-batch jobs can be created through TOML input.
+batch jobs can be created through CCIL/TOML input.
 
 requires Python >=3.12.
 requires crcmod-plus if a CRC function other than CRC32 is used.
@@ -18,7 +18,7 @@ after optimization takes place crashes the program as normal. this doesn't work 
 # NOTE: if you are a freaking nerd loser and hate fun, you can delete the logic bomb in the format validator.
 #       ctrl F for `## malware start` and `## malware end`
 
-prog = "CRCC"
+prog  = "CRCC"
 lprog = prog.lower()
 
 if __name__ != "__main__":
@@ -81,7 +81,13 @@ stderr  = sys.stderr
 argv    = sys.argv
 argv[0] = f"{lprog}"
 
-__version__ = gf2_cse.__version__
+if not ccil_avail:
+	__doc__ = __doc__.replace("CCIL/", '')
+
+__version__ = (
+	f"{prog:7} v{gf2_cse.__version__}\n"
+	f"crc_dsl {'' if crc_dsl.__version__ == "(none)" else 'v'}{crc_dsl.__version__}"
+)
 
 # the first alias per format key is the canonical one. the value is the file extension
 formats = {
@@ -416,7 +422,7 @@ class ColorFormatter(argparse.RawTextHelpFormatter):
 
 parser = argparse.ArgumentParser(
 	add_help=False,
-	description=f"{lprog} {__version__}\ncrc_dsl {crc_dsl.__version__}\n{__doc__}",
+	description=f"{__version__}\n{__doc__}",
 	formatter_class=ColorFormatter,
 )
 help_group = parser.add_mutually_exclusive_group()
@@ -428,7 +434,7 @@ if ccil_avail:
 	help_group.add_argument("--help=ccil", action="store_true", help="print out example CCIL preprocessor code and exit")
 help_group.add_argument("--help=ir" , action="store_true", help="print IR format help and exit")
 help_group.add_argument("--help=all" , action="store_true", help="print all the help stuff at once and exit")
-help_group.add_argument("--version", "-V", action="version", version=f"{lprog} {__version__}")
+help_group.add_argument("--version", "-V", action="version", version=__version__)
 
 core_group = parser.add_argument_group("core options")
 core_group.add_argument("--name", "--algorithm", "-a", type=lambda s: None if s is None else str.lower(s).strip(), help=f"CRC name (see --help=names). default is 'crc32'")
@@ -437,7 +443,7 @@ core_group.add_argument("--format", "--syntax", "-f", type=validate_format, defa
 core_group.add_argument("--output", "-o", type=str, help="output file. use 'auto' for automatic naming. default is '-' (stdout)")
 if ccil_avail:
 	core_group.add_argument("--preproc", "-e", "-E", action="store_true", help="preprocess the input program(s) and do not compile.")
-core_group.add_argument("--verbose", "-v", type=int, help=
+core_group.add_argument("--verbose", "-v", type=int, default=0, help=
 	"set verbosity level. 0 is the default. <0 suppresses warnings.\n"
 	"1 adds notes, basic progress reports, and basic optimization metrics.\n"
 	"2 adds per-round optimization data and more in-depth metrics.\n"
@@ -536,8 +542,8 @@ if not ccil_avail:
 
 GV_DECL_LINE_WRAP = 100 # line wrap for only the node declarations. doesn't include the indentation
 
-syntax   = args.format
-verbose  = args.verbose or 0
+syntax  = args.format
+verbose = args.verbose
 
 eprint = partial(gf2_cse._eprint, color=args.color)
 
@@ -1059,6 +1065,36 @@ def print_help_ccil() -> None:
 		\t{c}| true. set ordering doesn't matter
 		\t| sets are subsets of themselves{r}
 		{p}endif{r}
+
+		{c}|--------------------------------------------------------------------------------
+		| the following variables are by-default defined for the program (all strings):
+		|     $null                : ''
+		|     $dsl_version         : '{crc_dsl.__version__}'
+		|     $dsl_major           : '{crc_dsl.__version__.split('.')[0]}'
+		|     $dsl_minor           : '{crc_dsl.__version__.split('.')[1]}'
+		|     $dsl_micro           : '{crc_dsl.__version__.split('.')[2]}'
+		|     $platform            : same possible values as Python's sys.platform
+		|     $format              : output format, from `--format`
+		|     $extension           : automatic file extension. does not have '.' prefix
+		|     $verbose             : from `--verbose`
+		|     $cache_dir           : cache directory, from `--cache-dir` and `--cache-global`
+		|     $cache_global        : '1' if `--cache-global` was given, otherwise '0'
+		|     $cache               : cache settings stored as a set, e.g. `%set[cache][r,w]`
+		|     $lut_size            : '' or the LUT size, from `--optimize-metric
+		|     $optimize            : '1' if optimization is enabled, otherwise '0'
+		|     $optimize_lns        : '1' if LNS is enabled, otherwise '0'
+		|     $optimize_depth      : from `--optimize-depth`
+		|     $optimize_nmax       : from `--optimize-nmax`
+		|     $optimize_beam       : from `--optimize-beam`
+		|     $optimize_seed       : '' or the optimization RNG seed, from `--optimize-seed`
+		|     $optimize_weight     : from `--optimize-weight`
+		|     $optimize_n_prefer   : from `--optimize-n-prefer`
+		|     $optimize_max_tmps   : '' or the max tmp count, from `--optimize-max-tmps`
+		|     $optimize_min_reduc  : from `--optimize-min-reduc`
+		|     $optimize_metric     : 'gates' or 'lut', from `--optimize-metric`
+		|     $optimize_lns_trials : from `--optimize-lns-trials`
+		|     $optimize_lns_window : from `--optimize-lns-window`
+		| NOTE: optimization values are given even if optimization itself is off.{r}
 	""".replace("\n\t\t", '\n')[1:-2].replace('\t', '    '), file=None)
 
 def print_help_ir() -> None:
@@ -1156,6 +1192,7 @@ if getattr(args, "help=ir"):
 	raise SystemExit
 
 del parser, argparse, print_help_formats, print_help_algs, print_help_toml, print_help_ccil
+del __doc__, __version__, __name__
 
 if verbose >= 2:
 	eprint("# command: " + ' '.join(argv))
@@ -3415,11 +3452,34 @@ def preproc_toml(source: str, files_seen: set) -> dict:
 		raise ValueError("input file is invalid (may contain multiline strings)")
 
 	if ccil_avail:
+		pp_vars = {
+			"$format"              : syntax,
+			"$extension"           : extension,
+			"$verbose"             : str(verbose),
+			"$cache_dir"           : cache_dir,
+			"$cache_global"        : str(int(args.cache_global)),
+			"$cache"               : cache_settings.replace('', ',')[1:-1],
+			"$lut_size"            : '' if lut_size is None else str(lut_size),
+			"$optimize"            : str(int(optimize)),
+			"$optimize_lns"        : str(int(lns)),
+			"$optimize_depth"      : str(optimize_depth),
+			"$optimize_nmax"       : str(optimize_nmax),
+			"$optimize_beam"       : str(optimize_beam),
+			"$optimize_seed"       : '' if optimize_seed is None else str(optimize_seed),
+			"$optimize_weight"     : str(optimize_weight),
+			"$optimize_n_prefer"   : optimize_n_prefer,
+			"$optimize_max_tmps"   : '' if optimize_max_tmps is None else str(optimize_max_tmps),
+			"$optimize_min_reduc"  : str(optimize_min_reduc),
+			"$optimize_metric"     : "gates" if optimize_metric == "gates" else "lut",
+			"$optimize_lns_trials" : str(lns_trials),
+			"$optimize_lns_window" : str(lns_window),
+		}
+
 		# this will always be true with `--preproc`. Without it, it might not be true
 		source = source.split('\n')
 
 		try:
-			source = crc_dsl.preproc(source)
+			source = crc_dsl.preproc(source, pp_vars)
 		except Exception as e:
 			raise ValueError("TOML input is invalid (preprocessing failed)") from e
 

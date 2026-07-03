@@ -20,7 +20,7 @@ NOTES:
 import re
 from os.path import expanduser
 
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 __all__ = ("preproc", "process", "generate")
 
 FunctionType = type(lambda x: x) # same as types.FunctionType
@@ -58,10 +58,20 @@ class ExitLoop(BaseException):
 		self.line = line
 
 class ExitProgram(BaseException):
-	"stop parsing more lines exit gracefully."
+	"stop parsing more lines and exit gracefully."
 
+from sys import platform
 # preprocessor stuff
-default_vars = {"$null": ""}
+version_list = __version__.split('.')
+default_vars = {
+	"$null"        : "",
+	"$dsl_version" : __version__,
+	"$dsl_major"   : version_list[0],
+	"$dsl_minor"   : version_list[1],
+	"$dsl_micro"   : version_list[2], # patch version
+	"$platform"    : platform,
+}
+del version_list, platform
 
 vars   = default_vars.copy()
 macros = {}
