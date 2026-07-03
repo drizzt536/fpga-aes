@@ -1,0 +1,65 @@
+| crcc -e fractran.ccil -o NUL
+
+%set[fracs][17/91,78/85,19/51,23/38,29/33,77/29,95/23,77/19,1/17,11/13,13/11,15/14,15/2,55/1]
+
+%loop
+	%elog[what power of 2? ]
+	%readline[n][1][stdin]
+
+	%if[lt][$n][0] then
+		%continue
+	%endif
+
+	%if1[int][$n][] then
+		%seteval[n][2 ^ $n]
+		%break
+	%endif1
+%endloop
+
+%loop
+	%elog[how many rounds? ]
+	%readline[rounds][1][stdin]
+
+	%if[lt][$rounds][0] then
+		%continue
+	%endif
+
+	%if1[int][$rounds][] then
+		%break
+	%endif1
+%endloop
+
+%log[[]
+
+%if[eq][$rounds][0] then
+	%logn[]]
+	%exit
+%endif
+
+%log[$n]
+
+%loop
+	%seteval[rounds][$rounds - 1]
+
+	%if1[eq][$rounds][0] then
+		%break
+	%endif1
+
+	%foreach1[pair][$fracs] do
+		| destructure the pair into two variables
+		%repl[pair][$pair][/][,]
+		%pop[den][pair]
+		%pop[num][pair]
+
+		%seteval[tmp][($n * $num) % $den]
+
+		%if[eq][$tmp][0] then
+			%seteval[n][($n * $num) / $den]
+			%break1
+		%endif
+	%endfor1
+
+	%log[,$n]
+%endloop
+
+%logn[]]
