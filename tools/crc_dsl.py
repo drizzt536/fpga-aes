@@ -19,9 +19,11 @@ NOTES:
 
 import re
 from os.path import expanduser
-from sys import stderr
+from os   import get_terminal_size # this should be re-evaluated per time the interpreter runs
+from sys  import stderr
+from time import sleep
 
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 __all__ = ("preproc", "process", "generate")
 
 FunctionType = type(lambda x: x) # same as types.FunctionType
@@ -62,6 +64,7 @@ class ExitProgram(BaseException):
 	"stop parsing more lines and exit gracefully."
 
 from sys import platform
+size = get_terminal_size()
 # preprocessor stuff
 version_list = __version__.split('.')
 default_vars = {
@@ -70,9 +73,11 @@ default_vars = {
 	"$dsl_major"   : version_list[0],
 	"$dsl_minor"   : version_list[1],
 	"$dsl_micro"   : version_list[2], # patch version
+	"$term_width"  : str(size.columns),
+	"$term_height" : str(size.lines),
 	"$platform"    : platform,
 }
-del version_list, platform
+del version_list, platform, size
 
 vars   = default_vars.copy()
 macros = {}
@@ -146,7 +151,7 @@ def _parse_condition(cmd: str, op: str, arg1: str, arg2: str, line_num: int) -> 
 	if op not in {"streq", "strne"}:
 		arg1 = arg1.split(',')
 
-		if op != "def":
+		if op not in {"def", "notdef", "int", "notint"}:
 			arg2 = arg2.split(',')
 
 	match op:
@@ -189,6 +194,18 @@ def _parse_condition(cmd: str, op: str, arg1: str, arg2: str, line_num: int) -> 
 					raise ValueError(f"ERROR: line {line_num}: `{cmd}` operator {op!r} argument 1 element {i} is not an integer: {x1!r}{end_help}")
 
 				if (x1 not in arg2) if op == "inrange" else (x1 in arg2):
+					result = False
+					break
+
+		case "int" | "notint":
+			if arg2.strip():
+				raise ValueError(f"ERROR: line {line_num}: `{cmd}` operator {op!r} argument 2 must be empty")
+
+			result = True
+			for expr in arg1:
+				match = re.fullmatch(r"\d+", expr)
+
+				if not match if op == "int" else match:
 					result = False
 					break
 
@@ -250,7 +267,7 @@ def _eval_expr(expr: str, line_num: int) -> str:
 
 	try:
 		tree = ast.walk(ast.parse(expr, mode="eval"))
-	except ValueError, SyntaxError:
+	except (ValueError, SyntaxError):
 		raise ValueError(f"ERROR: line {line_num}: `%seteval` has invalid expression")
 
 	next(tree) # skip the tree base since it is always ast.Expression
@@ -260,7 +277,7 @@ def _eval_expr(expr: str, line_num: int) -> str:
 			if type(node.value) is not int:
 				raise ValueError(f"ERROR: line {line_num}: `%seteval` expression contains a non-integer constant")
 		elif not isinstance(node, allowed_types):
-			raise ValueError(f"ERROR: line {line_num}: `%seteval` contains a disallowed operation")
+			raise ValueError(f"ERROR: line {line_num}: `%seteval` contains a disallowed node type: {type(node)}")
 
 	return str(eval(expr, {}, {}))
 
@@ -270,7 +287,7 @@ def _preproc(
 	start_line: int = 1, # only for printouts
 	depth: int = 0,
 	debug: bool = False
-) -> list[line]:
+) -> list[str]:
 	global DEPTH_CAP, ITER_CAP
 
 	if depth > DEPTH_CAP:
@@ -519,11 +536,11 @@ def _preproc(
 			var, expr = match.groups()
 			vars[f"${var}"] = _eval_expr(expr, line_num)
 		elif (match := re.fullmatch(r"%(e?)log(n?)\[(.*)\]", line)):
-
 			print(
 				match.group(3),
 				end='\n' if match.group(2) else '',
-				file=stderr if match.group(1) else None
+				file=stderr if match.group(1) else None,
+				flush=not match.group(2),
 			)
 		elif (match := re.fullmatch(r"%fatal\[(.*)\]", line)):
 			raise Exception(f"ERROR: line {line_num}: `%fatal`: " + match.group(1))
@@ -533,6 +550,8 @@ def _preproc(
 			raise ExitMacro(line=line_num)
 		elif (match := re.fullmatch(r"%exit", line)):
 			raise ExitProgram()
+		elif (match := re.fullmatch(r"%sleep\[(\d+)\]", line)):
+			sleep(int(match.group(1)) / 1000) # use milliseconds instead of seconds
 		elif (match := re.fullmatch(r"%include\[(.+)\]", line)):
 			filepath = expanduser(match.group(1))
 
@@ -556,7 +575,7 @@ def _preproc(
 				pass
 
 			del include_lines # probably this is large. delete to save memory
-		elif (match := re.fullmatch(r"%readline\[(\w+)\]\[\d+\]\[(.+)\]")):
+		elif (match := re.fullmatch(r"%readline\[(\w+)\]\[(\d+)\]\[(.+)\]", line)):
 			outvar, idx, filepath = match.groups()
 			filepath = expanduser(filepath)
 
@@ -586,7 +605,7 @@ def _preproc(
 		elif debug:
 			out_prgm.append(f"| UNKNOWN LINE: {line}")
 		else:
-			raise ValueError(f"ERROR: line {line_num}: line doesn't match any valid keywords")
+			raise ValueError(f"ERROR: line {line_num}: line doesn't match any valid keywords: {line}")
 
 	return out_prgm
 
@@ -599,6 +618,11 @@ def preproc(
 ) -> list[str]:
 	"takes in the program as a list of lines, preprocesses and outputs as a list of lines"
 	global vars, macros, DEPTH_CAP, ITER_CAP
+
+	size = get_terminal_size()
+	default_vars["$term_width"]  = str(size.columns)
+	default_vars["$term_height"] = str(size.lines)
+	del size
 
 	if start_vars is not None:
 		vars = {**default_vars, **start_vars}

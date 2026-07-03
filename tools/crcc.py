@@ -911,6 +911,12 @@ def print_help_ccil() -> None:
 		{c}| NOTE: substr acts on raw strings, so if the input is a list, the output may include
 		|       the comma separators, depending on what the indices are.
 
+		{c}| there are multiple basic logging forms{r}
+		{p}log{r}[{s}message{r}]   {c}| print to stdout without a newline{r}
+		{p}elog{r}[{s}message{r}]  {c}| print to stderr without a newline{r}
+		{p}logn{r}[{s}message{r}]  {c}| print to stdout with a newline{r}
+		{p}elogn{r}[{s}message{r}] {c}| print to stderr with a newline
+
 		| `%defmacro` macro body is expanded at call time (e.g. $tmp)
 		| `%xdefmacro` is expanded at declaration time, but is otherwise identical. same `%endmacro` to end it.
 		| argument counts cannot be variable.{r}
@@ -927,8 +933,8 @@ def print_help_ccil() -> None:
 		\t\t| or  => |
 		\t\t| xor => ^{r}
 		\t{p}seteval{r}[{v}tmp{r}][{h}1{rs} + 1{r}] {c}| integer evaluated expression{r}
-		\t{p}log{r}[{s}arg={rd}tmp{r}{s} \\|{r}]     {c}| \\| => | is a literal character translation.
-		\t{p}log{r}[{s}\\$asdf \\#1{r}]      {c}| these also are escaped and not expanded{r}
+		\t{p}logn{r}[{s}arg={rd}tmp{r}{s} \\|{r}]     {c}| \\| => | is a literal character translation.
+		\t{p}logn{r}[{s}\\$asdf \\#1{r}]      {c}| these also are escaped and not expanded{r}
 		\t{p}macro{r}[{v}asdf{r}][{d}tmp{r}]    {c}| recursive macro call with evaluated argument{r}
 		\t{p}unset{r}[{v}tmp{r}]           {c}| del tmp{r}
 		{p}endmacro{r}
@@ -963,7 +969,7 @@ def print_help_ccil() -> None:
 		{p}endif3{r}
 
 		{p}xdefmacro{r}[{v}asdf{r}][{s}2{r}]
-		\t{p}log{r}[{h}1{rs},{r} {h}2{r}]
+		\t{p}logn{r}[{h}1{rs},{r} {h}2{r}]
 		\t{d}null{rd}null{rd}null{rd}null{r} {c}| this will expand out to nothing{r}
 		{p}endmacro{r}
 
@@ -983,6 +989,7 @@ def print_help_ccil() -> None:
 
 		| setting like this is basically a bunch of list concatenations, there are only 1d lists{r}
 		{p}set{r}[{v}x{r}][{d}x{rs},asdf,{rd}i{rd}i{rd}i{rs},{rd}var1{rs},{rd}var2{rs},qwer,,{rd}null{rs},4{r}]
+		{p}set{r}[{v}x{r}][{d}{{a}}{rs}asdf{rd}{{b}}{r}{s}_{r}{h}{{0}}{r}] {c}| curly brackets can be used for variables stuff{r}
 
 		{p}set{r}[{v}i{r}][{s}0{r}]
 		{p}loop{r} {c}| loop forever{r}
@@ -997,7 +1004,7 @@ def print_help_ccil() -> None:
 		\t\t{p}endif2{r}
 		\t{p}endif1{r}
 
-		\t{p}log{r}[{s}i={rd}i{r}]
+		\t{p}logn{r}[{s}i={rd}i{r}]
 
 		\t{p}seteval{r}[{v}i{r}][{d}i{s} + 1{r}]
 		{p}endloop{r} {c}| the `%endloop` has to have the same tag as the `%loop`
@@ -1013,12 +1020,12 @@ def print_help_ccil() -> None:
 		\t{p}shift{r}[{v}i{r}][{v}x{r}]      {c}| (i, x) = x{r}
 		\t{p}repl{r}[{v}x{r}][{d}x{r}][{s},{r}][] {c}| x = ''.join(x){r}
 
-		\t{p}log{r}[{s}list[{rd}i{rs}] = {rd}x{r}]
+		\t{p}logn{r}[{s}list[{rd}i{rs}] = {rd}x{r}]
 		{p}endfor3{r}
-		{p}log{r}[{d}x{r}] {c}| this will print 1 since x is restored after foreach loops
+		{p}logn{r}[{d}x{r}] {c}| this will print 1 since x is restored after foreach loops
 		| if $x were undefined before the foreach loop, it will be deleted at the end of the foreach loop.{r}
 
-		{p}raw{r}[{s}variables like $asdf aren't expanded here{r}]
+		{p}raw{r}[{s}variables like $asdf or ${{qwer}} aren't expanded here{r}]
 
 		{p}setcap{r}[{s}depth{r}][{s}32{r}]      {c}| set depth cap (%include/%if/%loop/%foreach/%macro depth) to 32{r}
 		{p}setcap{r}[{s}depth{r}][{s}default{r}] {c}| set depth cap to the default (1024){r}
@@ -1029,7 +1036,12 @@ def print_help_ccil() -> None:
 		{p}fatal{r}[{s}error message{r}]
 
 		{p}exit{r} {c}| basically the same as EOF. preprocessor ignores all subsequent lines
-		| if this was in an %include, it will continue parsing the file it was included from
+		| if this was in an %include, it will continue parsing the file it was included from{r}
+
+		{p}readline{r}[{v}vout1{r}][{s}1{r}][{s}stdin{r}]       {c}| read a line from stdin. the second argument must be '1'{r}
+		{p}readline{r}[{v}vout2{r}][{s}32{r}][{s}~/file.cfg{r}] {c}| read 1-indexed line 32 from ~/file.cfg{r}
+
+		{p}sleep{r}[{s}32{r}] {c}| sleep for 32 milliseconds
 
 		| %if conditionals:
 		|---------------------------
@@ -1038,10 +1050,14 @@ def print_help_ccil() -> None:
 		{p}if{r}[{s}eq{r}][{d}a{rs},{rd}b{rs},{rd}c{r}][{d}x{rs},{rd}y{rs},{rd}z{r}] {c}| if a == x and b == y and c == z{r}
 		{p}endif{r}
 
-		{c}| also for integers: inrange, notinrange{r}
+		{c}| also for integers: inrange, notinrange, int, notint{r}
 		{p}if{r}[{s}inrange{r}][{d}x{rs},{rd}y{r}][{s}4,7{r}] {c}| if 4 <= x <= 7 and 4 <= y <= 7{r}
 		{p}endif{r}
-		{c}| notinrange is just the negated result
+		{c}| notinrange is just the negated result{r}
+
+		{p}if{r}[{s}int{r}][{d}x{rs},{rd}y{r}][] {c}| evaluates to true if x and y are both integers{r}
+		{p}endif{r}
+		{c}| notint is just the negated result
 
 		| string operations: streq, strneq{r}
 		{p}if{r}[{s}streq{r}][{s}asdfqwer{r}][{s}asdf,qwer{r}] {c}| commas are not treated as list separators in this case.
@@ -1073,6 +1089,8 @@ def print_help_ccil() -> None:
 		|     $dsl_major           : '{crc_dsl.__version__.split('.')[0]}'
 		|     $dsl_minor           : '{crc_dsl.__version__.split('.')[1]}'
 		|     $dsl_micro           : '{crc_dsl.__version__.split('.')[2]}'
+		|     $term_width          : number of terminal columns
+		|     $term_height         : number of terminal lines
 		|     $platform            : same possible values as Python's sys.platform
 		|     $format              : output format, from `--format`
 		|     $extension           : automatic file extension. does not have '.' prefix
@@ -3443,7 +3461,7 @@ def preproc_toml(source: str, files_seen: set) -> dict:
 			raise ValueError(f"duplicate input file path given: {path!r}")
 
 		files_seen.add(path)
-	except FileNotFoundError, OSError:
+	except (FileNotFoundError, OSError):
 		# `open` can throw other errors, but they don't really matter. just let them propagate.
 		# try and parse it as inline TOML if it didn't parse as a file path.
 		pass
@@ -3683,7 +3701,7 @@ def close_and_classify(outfile: object, filename: str | None, file_exists: bool)
 if args.preproc:
 	program = preproc_input(args)
 
-	output = '-' if args.output is None else output
+	output = '-' if args.output is None else args.output
 
 	if output in {'-', "auto"}:
 		print(program)
