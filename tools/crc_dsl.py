@@ -19,11 +19,10 @@ NOTES:
 
 import re
 from os.path import expanduser
-from os   import get_terminal_size # this should be re-evaluated per time the interpreter runs
 from sys  import stderr
 from time import sleep
 
-__version__ = "1.4.1"
+__version__ = "1.4.2"
 __all__ = ("preproc", "process", "generate")
 
 FunctionType = type(lambda x: x) # same as types.FunctionType
@@ -63,8 +62,20 @@ class ExitLoop(BaseException):
 class ExitProgram(BaseException):
 	"stop parsing more lines and exit gracefully."
 
+def get_term_size() -> tuple[str, str]:
+	"returns (width, height)"
+
+	from os import get_terminal_size as _get_term_size
+
+	try:
+		d = _get_term_size()
+		return (str(d.columns), str(d.lines))
+	except Exception:
+		return ('', '')
+
+
 from sys import platform
-size = get_terminal_size()
+size = get_term_size()
 # preprocessor stuff
 version_list = __version__.split('.')
 default_vars = {
@@ -73,8 +84,8 @@ default_vars = {
 	"$dsl_major"   : version_list[0],
 	"$dsl_minor"   : version_list[1],
 	"$dsl_micro"   : version_list[2], # patch version
-	"$term_width"  : str(size.columns),
-	"$term_height" : str(size.lines),
+	"$term_width"  : size[0],
+	"$term_height" : size[1],
 	"$platform"    : platform,
 }
 del version_list, platform, size
@@ -619,9 +630,9 @@ def preproc(
 	"takes in the program as a list of lines, preprocesses and outputs as a list of lines"
 	global vars, macros, DEPTH_CAP, ITER_CAP
 
-	size = get_terminal_size()
-	default_vars["$term_width"]  = str(size.columns)
-	default_vars["$term_height"] = str(size.lines)
+	size = get_term_size()
+	default_vars["$term_width"]  = size[0]
+	default_vars["$term_height"] = size[1]
 	del size
 
 	if start_vars is not None:

@@ -461,7 +461,7 @@ format_group.add_argument("--tmp-name", "-t", type=str, help=
 format_group.add_argument("--indent", "-g", type=str.lower, help=f"indentation level. options are tabs, tab, none, or int n>=-1. default is 'tabs'")
 format_group.add_argument("--color", "-s", choices=("always", "auto", "never"), default="auto", help=f"set color mode. default is 'auto'.")
 
-custom_crc_group = parser.add_argument_group("custom CRC overrides", "custom mode triggers if `-p` / positional is given.")
+custom_crc_group = parser.add_argument_group("custom CRC options", "custom mode triggers if `-p` / positional is given.")
 program_group    = custom_crc_group.add_mutually_exclusive_group()
 program_group.add_argument("--polynomial", "-p", type=str, help=
 	f"value should include the uppermost bit (e.g. bit 33). mutually exclusive with {"CCIL/TOML" if ccil_avail else "TOML"} input."
