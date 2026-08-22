@@ -414,7 +414,7 @@ class ColorFormatter(argparse.RawTextHelpFormatter):
 
 			# This works up through 3.16 alpha 0 (as of commit 711e81181e1a2e2f74ad75acdb8e184ea44e1fb9)
 			if not hasattr(self, "_set_color"):
-				raise Exception("argparse.HelpFormatter does not have a `_set_color` attribute. probably your version of Python is too new.")
+				raise Exception("argparse.HelpFormatter does not have a `_set_color` attribute. probably your version of Python is too new?")
 
 			self._set_color(color)
 
@@ -478,12 +478,13 @@ custom_crc_group.add_argument("--xor-out", "-x", type=lambda x: int(x, 0), help=
 custom_crc_group.add_argument("--reflect", "-r", action="store_true"  , help="enable reflection. default is off")
 
 optimize_group = parser.add_argument_group(
-	"optimization settings",
+	"optimization options",
 	"optimizes for area (XOR2 gates / LUT count)" # if you want speed, do it in your actual EDA
 	"\ndefaults:"
 	"\n   basic : off, lookahead depth 0 weight 1, nmax 2, beam size 1, prefer low n, min round reduction 1, no tmp max, gate metric"
 	"\n   LNS   : off, 3 trials, window size 3, unseeded"
 	"\n   cache : clear off, read off, write off, delete off"
+	"\nthe LNS options are mostly independent of the other options"
 )
 optimize_group.add_argument("--optimize"           , "-c", action="store_true", help="enable optimization without touching settings")
 optimize_group.add_argument("--optimize-depth"     , "-d", type=int  , help="enable optimization and set search lookahead depth.")
@@ -495,21 +496,28 @@ optimize_group.add_argument("--optimize-n-prefer"  , "-P", type=str  ,
 	help="enable optimization and set intersection count tie break preference",
 	choices=("l","lo","low","h","hi","high","m","mid","r","rand","random")
 )
-optimize_group.add_argument("--optimize-min-reduc" , "-m", type=int  , help=
+optimize_group.add_argument("--optimize-min-reduc" , "-m", type=int, help=
 	"enable optimization. exit optimization early when lookahead only sees gate/lut reductions below\n"
-	"this threshold. false negatives are possible for >2 (it may optimize more than desired)"
+	"this threshold. false negatives are possible for >2 (it may optimize more than desired)\n"
+	"use this option if the default value over-optimizes for size, and makes it too slow."
 )
-optimize_group.add_argument("--optimize-max-tmps"  , "-M", type=int  , help="enable optimization and set tmp signal count for when the optimizer exits early.")
+optimize_group.add_argument("--optimize-goal"      , "-G", type=str, help=
+	"enable optimization and set reduction goal. can be an integer for flat reduction, or a raw float\n"
+	"or float followed by a percent. `-G 0.25` and `-G 25%%`, and `-G 25` would all correspond to the\n"
+	"same reduction goal, assuming 100 total gates/LUTs before optimization. once the optimizer gets\n"
+	"to the goal, it stops optimizing, though it may not always get to the goal."
+)
+optimize_group.add_argument("--optimize-max-tmps"  , "-M", type=int, help="enable optimization and set tmp signal count for when the optimizer exits early.")
 optimize_group.add_argument("--optimize-metric"    , "-k", type=validate_metric, help=
 	"enable optimization and set optimization metric.\n"
 	"must be gates/gate/g/0 for gate metric, or lut<k> / <k> for LUT-<k> metric."
 )
-optimize_group.add_argument("--optimize-lns"       , "-L", action="store_true" , help=
+optimize_group.add_argument("--optimize-lns"       , "-L", action="store_true", help=
 	"enable optimization+LNS without touching settings. LNS is skipped on early exits.\n"
 	"reconstruction is brute force."
 )
-optimize_group.add_argument("--optimize-lns-trials", "-T", type=int  , help="enable optimization+LNS and set the count.")
-optimize_group.add_argument("--optimize-lns-window", "-W", type=int  , help="enable optimization+LNS and set the window size.")
+optimize_group.add_argument("--optimize-lns-trials", "-T", type=int, help="enable optimization+LNS and set the count.")
+optimize_group.add_argument("--optimize-lns-window", "-W", type=int, help="enable optimization+LNS and set the window size.")
 
 cache_group = parser.add_argument_group("caching options")
 cache_dir_group = cache_group.add_mutually_exclusive_group()
@@ -517,18 +525,20 @@ cache_dir_group.add_argument("--cache-dir"   , "-D", type=str, help=
 	"change the cache directory. doesn't enable optimization. '~' and environment variables are\n"
 	"expanded. default is './crc-cache'."
 )
-cache_dir_group.add_argument("--cache-global", "-G", action="store_true", help="use a user global cache directory. cannot appear with `--cache-dir`.")
+
+# J for jlobal
+cache_dir_group.add_argument("--cache-global", "-J", action="store_true", help="use a user global cache directory. cannot appear with `--cache-dir`.")
 cache_group.add_argument("--cache"           , "-C", type=str.lower, help=
 	"enable optimization and set cache behavior. values can be o: off, c/x: clear, r: read,\n"
 	"w: write, u: use/read+write, d: delete entry, l: list. o may only appear with c/x.\n"
-	"l and d must appear alone. case insensitive. `-Cc` with no non-cache flags will clear the\n"
+	"l and d must appear alone. case-insensitive. `-Cc` with no non-cache flags will clear the\n"
 	"cache and exit. cache entries are never automatically invalidated, so they may return old\n"
 	"values if the optimizer is updated. a manual cache clear is required in this case."
 )
 args = parser.parse_args()
 
 cache_parser = argparse.ArgumentParser(add_help=False)
-cache_parser.add_argument("--cache-global", "-G", action="store_true")
+cache_parser.add_argument("--cache-global", "-J", action="store_true")
 cache_parser.add_argument("--cache-dir", "-D")
 cache_parser.add_argument("--cache", "-C")
 cache_parser.add_argument("remainder", nargs="*")
@@ -552,7 +562,7 @@ optimize = any(x not in (None, False) for x in (
 	args.optimize_depth, args.optimize_nmax, args.optimize_beam,
 	args.optimize_lns_trials, args.optimize_lns_window, args.optimize_seed,
 	args.optimize_n_prefer, args.optimize_weight, args.optimize_max_tmps,
-	args.optimize_metric
+	args.optimize_metric, args.optimize_goal
 ))
 
 lns = args.optimize_lns or args.optimize_lns_trials is not None or args.optimize_lns_window is not None
@@ -565,6 +575,7 @@ optimize_n_prefer  = args.optimize_n_prefer   if args.optimize_n_prefer   is not
 optimize_max_tmps  = args.optimize_max_tmps
 optimize_min_reduc = args.optimize_min_reduc or 1
 optimize_metric    = args.optimize_metric     if args.optimize_metric     is not None else "gates"
+optimize_goal      = args.optimize_goal
 lns_trials         = args.optimize_lns_trials if args.optimize_lns_trials is not None else 3
 lns_window         = args.optimize_lns_window if args.optimize_lns_window is not None else 3
 
@@ -574,6 +585,20 @@ if   optimize_n_prefer in {"l", "lo"}  : optimize_n_prefer = "low"
 elif optimize_n_prefer in {"h", "hi"}  : optimize_n_prefer = "high"
 elif optimize_n_prefer == "m"          : optimize_n_prefer = "mid"
 elif optimize_n_prefer in {"r", "rand"}: optimize_n_prefer = "random"
+
+if optimize_goal is None:
+	pass
+elif optimize_goal[-1] == '%':
+	try               : optimize_goal = float(optimize_goal[:-1]) / 100
+	except ValueError : raise ValueError(f"`--optimize-goal` given with invalid value: {optimize_goal}")
+else:
+	try:
+		optimize_goal = int(optimize_goal)
+	except ValueError:
+		try:
+			optimize_goal = float(optimize_goal)
+		except ValueError:
+			raise ValueError(f"`--optimize-goal` given with invalid value: {optimize_goal}")
 
 if abs(optimize_weight - round(optimize_weight)) < 1e-9:
 	optimize_weight = round(optimize_weight)
@@ -752,7 +777,7 @@ def print_help_formats(formats: tuple[tuple[str, ...], ...] = formats) -> None:
 		"\n"
 		"\nfor all assembly formats, 'clang' and 'llvm' dialects alias 'gas'"
 		"\nfor raw/json/metrics formats: long name => beautified, short name => minified."
-		"\nall format names and flag names/values are case insensitive"
+		"\nall format names and flag names/values are case-insensitive"
 		"\nasm=json / asm=j are the same as json / j but with a heavier topological sort algorithm"
 		"\n"
 		"\nThe asm modes are mostly just a proof of concept and output very inefficient code."
@@ -797,7 +822,7 @@ def print_help_algs() -> None:
 
 		print('')
 
-	print("names are case insensitive, are stripped of all spaces and dashes, and can have 'crc' at the start.")
+	print("names are case-insensitive, are stripped of all spaces and dashes, and can have 'crc' at the start.")
 
 def print_help_toml() -> None:
 	comment = "\x1b[32m"
@@ -886,7 +911,9 @@ def print_help_ccil() -> None:
 		| NOTE: after the preprocessor runs, the output should be TOML (see --help=toml)
 		| comments are stripped and variables are expanded before all other line processing
 		| variables and keywords are case sensitive. starting and ending whitespace is stripped
-		| there is no escape character, so a line stops at the first '|' character (or the newline){r}
+		| there is no generic escape character, so for the most part, a line stops at the first
+		| '|' character (or the newline). you can do \\$, \\#, and \\|, but you can't escape the
+		| backslash, and you can't use the backslash to create any other escape characters{r}
 
 		{p}include{r}[{s}~/init.ccil{r}]     {c}| '~' gets expanded out. environment variables do not{r}
 		{p}include{r}[{s}a\\b/c.ccil{r}]      {c}| the string is parsed raw{r}
@@ -1110,6 +1137,7 @@ def print_help_ccil() -> None:
 		|     $optimize_max_tmps   : '' or the max tmp count, from `--optimize-max-tmps`
 		|     $optimize_min_reduc  : from `--optimize-min-reduc`
 		|     $optimize_metric     : 'gates' or 'lut', from `--optimize-metric`
+		|     $optimize_goal       : from `--optimize-goal`
 		|     $optimize_lns_trials : from `--optimize-lns-trials`
 		|     $optimize_lns_window : from `--optimize-lns-window`
 		| NOTE: optimization values are given even if optimization itself is off.{r}
@@ -1249,7 +1277,7 @@ if args.cache == 'l':
 
 	if os.path.isdir(cache_dir):
 		for file in os.listdir(cache_dir):
-			print(f"\t{file}")
+			print(f"\t{file}\t{os.path.getsize(os.path.join(cache_dir, file))}")
 
 	raise SystemExit
 
@@ -2211,7 +2239,7 @@ class SafeUnpickler(pickle.Unpickler):
 
 def pickle_safeloads(data: bytes) -> any:
 	try:
-		# try and avoid the extra import if possible. _io is auto imported and io isn't
+		# try and avoid the extra import if possible. `_io` is auto imported and `io` isn't
 		from _io import BytesIO
 	except ImportError:
 		# in case _io.BytesIO is removed or renamed
@@ -2341,6 +2369,7 @@ def run_job(
 		optimize_max_tmps,
 		optimize_min_reduc,
 		optimize_metric,
+		optimize_goal,
 		lns_trials,
 		lns_window,
 		CACHE_SIGNATURE,
@@ -2403,8 +2432,7 @@ def run_job(
 		if expect_sum2 != actual_sum2:
 			raise ValueError(f"cache file checksum 2 did not match. key={cache_key}, expected={expect_sum2:08x}, actual={actual_sum2:08x}")
 
-		d = lzma.decompress(data[8:], lzma.FORMAT_RAW, filters=[lzma_filter])
-
+		d           = lzma.decompress(data[8:], lzma.FORMAT_RAW, filters=[lzma_filter])
 		expect_sum1 = int.from_bytes(data[4:8], byteorder="big")
 		actual_sum1 = zlib.adler32(d)
 
@@ -2414,7 +2442,8 @@ def run_job(
 		if verbose >= 2:
 			eprint(
 				f"#     sum 1: {expect_sum1:08x}\n"
-				f"#     sum 2: {expect_sum2:08x}"
+				f"#     sum 2: {expect_sum2:08x}\n"
+				f"#     compression: {100 - (len(data) - 8)*100 / len(d):.{1 + verbose << 1}g}%"
 			)
 
 		try:
@@ -2432,21 +2461,21 @@ def run_job(
 		if verbose >= 2:
 			eprint(f"#     key: {cache_key}")
 
-		d = pickle.dumps((tmp_defs, outputs), pickle.HIGHEST_PROTOCOL)
-
+		d    = pickle.dumps((tmp_defs, outputs), pickle.HIGHEST_PROTOCOL)
 		sum1 = zlib.adler32(d)
 
 		if verbose >= 2:
 			eprint(f"#     sum 1: {sum1:08x}")
 
 		sum1 = sum1.to_bytes(4, byteorder="big")
-
-		c = lzma.compress(d, lzma.FORMAT_RAW, filters=[lzma_filter])
-
+		c    = lzma.compress(d, lzma.FORMAT_RAW, filters=[lzma_filter])
 		sum2 = zlib.crc32(c, zlib.crc32(sum1))
 
 		if verbose >= 2:
-			eprint(f"#     sum 2: {sum2:08x}")
+			eprint(
+				f"#     sum 2: {sum2:08x}\n"
+				f"#     compression: {100 - len(c)*100 / len(d):.{1 + verbose << 1}g}%"
+			)
 
 		sum2 = sum2.to_bytes(4, byteorder="big")
 
@@ -2475,6 +2504,12 @@ def run_job(
 		if 'r' in cache_settings and (cache_value := cache_read()) is not None:
 			tmp_defs, outputs = cache_value
 		else:
+			goal = optimize_goal
+
+			if type(goal) is float:
+				goal *= starting_gates if optimize_metric == "gates" else starting_luts
+				goal = int( -(-goal // 1) ) # basically math.ceil
+
 			tmp_defs, outputs, _ = gf2_cse.optimize_graph(
 				eqns,
 				optimize_depth,
@@ -2486,6 +2521,7 @@ def run_job(
 				lns_trials,
 				optimize_min_reduc - 1, # exit_fast
 				"gates" if optimize_metric == "gates" else f"lut{optimize_metric}",
+				goal,
 				optimize_max_tmps,
 				optimize_seed,
 				verbose - 1,
@@ -2511,6 +2547,16 @@ def run_job(
 			in_idx_max_pad,
 			len( str(len(tmp_defs)) )
 		)
+
+		if verbose >= 2:
+			start = starting_gates if optimize_metric == "gates" else starting_luts
+			end   = ending_gates   if optimize_metric == "gates" else ending_luts
+
+			eprint(
+				f"# tmp signal count: {len(tmp_defs)}\n"
+				f"# {"gate" if optimize_metric == "gates" else "LUT"} reduction: {start - end}\n"
+				f"# {"gate" if optimize_metric == "gates" else "LUT"} compression: {0 if start == 0 else 100*(1 - end/start):.{1 + verbose << 1}g}%"
+			)
 
 		if verbose >= 2:
 			eprint(
@@ -2642,7 +2688,7 @@ def run_job(
 		# if outfile is not '-', "auto", or None, this is the same file as the last file
 		# use real paths because the path `outfile.name` is used later.
 		outfile = os.path.realpath(os.path.expanduser(
-			f"crc{crc_name}_{data_len}.{extension}" if output == "auto" else outfile
+			f"crc{crc_name}_{data_len}.{extension}" if output == "auto" else output
 		))
 		file_exists = os.path.isfile(outfile)
 
@@ -3489,6 +3535,7 @@ def preproc_toml(source: str, files_seen: set) -> dict:
 			"$optimize_max_tmps"   : '' if optimize_max_tmps is None else str(optimize_max_tmps),
 			"$optimize_min_reduc"  : str(optimize_min_reduc),
 			"$optimize_metric"     : "gates" if optimize_metric == "gates" else "lut",
+			"$optimize_goal"       : '' if optimize_goal is None else optimize_goal,
 			"$optimize_lns_trials" : str(lns_trials),
 			"$optimize_lns_window" : str(lns_window),
 		}

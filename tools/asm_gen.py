@@ -7,7 +7,7 @@ assembly assumptions:
 3. pointer size is the same as the register size
 4. at least 5 registers (stack pointer + 4 GP)
 5. stack grows downwards
-6. pushing to stack is pre-decrement (and popping is post-decrement)
+6. pushing to stack is pre-decrement (and popping is post-increment)
 7. ABI passes the first two arguments in registers
 
 beyond these assumptions, it is basically the lowest common denominator. the last three are

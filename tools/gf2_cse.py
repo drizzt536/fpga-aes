@@ -24,15 +24,15 @@ if you increase it enough, it should get better again.
 requires Python >=3.10
 """
 
-__version__ = "1.0.4"
+__version__ = "1.0.5"
 
 __all__ = (
 	"count_gates", "count_luts", "optimize_graph", "expand_tmps",
 	"logic_depth", "graph_depth", "get_fanouts", "fanout_stats", "fanin_util"
 )
 
-from random import Random, SystemRandom
 from functools import partial
+from random    import Random, SystemRandom
 
 ################################### internal functions ###################################
 
@@ -777,6 +777,7 @@ def optimize_graph_nwise(
 	rng: Random = SystemRandom(), # for n_prefer="random"
 	exit_fast: int = 0,
 	metric: str = "gates",
+	goal: int | None = None,
 	max_tmps: int | None = None,
 	interactive: bool = False,
 	verbose: int = 0,
@@ -873,6 +874,14 @@ def optimize_graph_nwise(
 			if verbose >= 1:
 				_eprint(f"# round {round}: global reduction = {reduction}, prev round reduction = {prev_count - count}, {metric} count = {count}")
 
+
+			if goal is not None and reduction >= goal:
+				if verbose >= 1:
+					_eprint(f"# reduction goal met. exiting early")
+
+				early = True
+				break
+
 			if score is not None and score <= exit_fast_thresh:
 				# NOTE: this won't actually fire if exit_fast <= 0
 				if verbose >= 1:
@@ -918,15 +927,6 @@ def optimize_graph_nwise(
 	compression = 0.0 if orig_count == 0.0 else reduction / orig_count
 	tmp_defs = {i: v for i, v in enumerate(reversed(s[0:tmp_count]), 1)}
 	outputs  = s[tmp_count:]
-
-	if verbose >= 2:
-		_eprint(
-			f"# {metric} reduction: {reduction}\n"
-			f"# {metric} compression: {compression*100:.{2 + verbose << 1}g}%"
-		)
-
-	if verbose == 1:
-		_eprint(f"# tmp signal count: {tmp_count}")
 
 	if interactive:
 		signal.signal(signal.SIGINT, sigint_orig_handler)
@@ -999,6 +999,7 @@ def optimize_graph(
 	lns_trials: int = 0,
 	exit_fast: int = 0,
 	metric: str = "gates",
+	goal: int | None = None,
 	max_tmps: int | None = None,
 	seed: int | None = None,
 	verbose: int = 0,
@@ -1010,7 +1011,7 @@ def optimize_graph(
 
 	tmp_defs, outputs, early = optimize_graph_nwise(
 		s, depth, nmax, beam, n_prefer, lookahead_weight,
-		rng, exit_fast, metric, max_tmps, interactive, verbose
+		rng, exit_fast, metric, goal, max_tmps, interactive, verbose
 	)
 
 	if not early and lns_window != 0:
