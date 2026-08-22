@@ -22,7 +22,7 @@ from os.path import expanduser
 from sys  import stderr
 from time import sleep
 
-__version__ = "1.4.2"
+__version__ = "1.4.3"
 __all__ = ("preproc", "process", "generate")
 
 FunctionType = type(lambda x: x) # same as types.FunctionType
@@ -522,7 +522,7 @@ def _preproc(
 
 			expr = expr.split(',')
 			try:
-				vars[f"${outvar}"] = expr[int(index)]
+				vars[f"${outvar}"] = expr[int(index) - 1]
 			except IndexError:
 				raise ValueError(f"ERROR: line {line_num}: '%index': list index {index!r} is outside of list bounds [1,{len(expr)}]")
 		elif (match := re.fullmatch(r"%len\[(\w+)\]\[(.*)\]", line)):
@@ -609,7 +609,7 @@ def _preproc(
 				except IndexError:
 					raise ValueError(f"ERROR: line {line_num}: '%readline': line number {idx} is not valid (out of bounds)")
 
-			if data[-1] == '\n':
+			if data and data[-1] == '\n':
 				data = data[:-1]
 
 			vars[f"${outvar}"] = data
@@ -623,9 +623,7 @@ def _preproc(
 def preproc(
 	in_prgm: list[str],
 	start_vars: dict[str, str] | None = None,
-	debug: bool = False,
-	depth_cap: int | None = DEFAULT_DEPTH_CAP,
-	iter_cap: int | None = DEFAULT_ITER_CAP,
+	debug: bool = False
 ) -> list[str]:
 	"takes in the program as a list of lines, preprocesses and outputs as a list of lines"
 	global vars, macros, DEPTH_CAP, ITER_CAP
@@ -639,9 +637,6 @@ def preproc(
 		vars = {**default_vars, **start_vars}
 
 	out_prgm = []
-
-	DEPTH_CAP = float("inf") if depth_cap is None else depth_cap
-	ITER_CAP  = float("inf") if  iter_cap is None else  iter_cap
 
 	try:
 		return _preproc(
