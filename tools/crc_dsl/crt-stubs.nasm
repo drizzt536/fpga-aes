@@ -1,6 +1,8 @@
 %ifndef CRT_STUBS
 %define CRT_STUBS
 
+bits 64
+
 ;; the stack stuff and mingw stuff is required for GMP to work properly
 
 ;; the setjmp/longjmp stuff only works properly if SEH is disabled since it completely
@@ -41,8 +43,8 @@ struc jmp_buf
 	.rbp: resq 1
 
 %if WINDOWS
-	.rsi: resq 1
 	.rdi: resq 1
+	.rsi: resq 1
 %endif
 
 	.r12: resq 1
@@ -69,8 +71,8 @@ setjmp: ; i64 setjmp(jmp_buf *penv);
 	mov 	qword [arg1 + jmp_buf.rbp], rbp
 
 %if WINDOWS
-	mov 	qword [arg1 + jmp_buf.rsi], rsi
 	mov 	qword [arg1 + jmp_buf.rdi], rdi
+	mov 	qword [arg1 + jmp_buf.rsi], rsi
 %endif
 
 	mov 	qword [arg1 + jmp_buf.r12], r12
@@ -95,8 +97,8 @@ longjmp2: ; void longjmp2(jmp_buf *penv, u64 value);
 	mov 	rbp, qword [arg1 + jmp_buf.rbp]
 
 %if WINDOWS
-	mov 	rsi, qword [arg1 + jmp_buf.rsi]
 	mov 	rdi, qword [arg1 + jmp_buf.rdi]
+	mov 	rsi, qword [arg1 + jmp_buf.rsi]
 %endif
 
 	mov 	r12, qword [arg1 + jmp_buf.r12]

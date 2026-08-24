@@ -1,3 +1,6 @@
+# you only need to do this on Windows.
+# On Linux, just install GMP system-wide with pacman or apt or whatever.
+
 $repo = "https://mirror.msys2.org/mingw/ucrt64/"
 $pkg  = "mingw-w64-ucrt-x86_64-gmp"
 $kind = "any"
@@ -19,3 +22,6 @@ wget "$repo$file"
 
 # bsdtar
 tar -xf $file --strip-components=1 ucrt64/include/gmp.h ucrt64/lib/libgmp.a
+
+mv --force include/gmp.h include/gmp-win32.h
+mv --force lib/libgmp.a lib/libgmp-win32.a

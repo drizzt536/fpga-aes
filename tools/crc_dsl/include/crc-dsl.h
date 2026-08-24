@@ -6,14 +6,23 @@
 #define MAP_H_IMPL
 #define MAP_H_HASH64
 #include "map.h" // <stdlib.h>, <stdint.h>, <string.h>, "va-if.h"
+
 #include "dsl-except.h" // "setjmp.h"
-
 #include <ctype.h> // isalnum
-
-#define _strlen __builtin_strlen
 
 // `volatile` without the reordering restrictions and forced rereads
 #define force_mem(var) asm ("" : "+m" (var))
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wconversion"
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#pragma GCC diagnostic ignored "-Wpadded"
+#ifdef _WIN32
+	#include "gmp.h"
+#else
+	#include <gmp.h>
+#endif
+#pragma GCC diagnostic pop
 
 #ifdef _WIN32
 	#include <windows.h>
@@ -22,32 +31,47 @@
 	bool SystemFunction036(void *buf, u32 len);
 	#define dsl_rand(buf, len) ({ while (!SystemFunction036(buf, len)); (void) 0; })
 #else
+	#include <sys/random.h>
 	#include <sys/ioctl.h>
 	#include <unistd.h>
 	#include <time.h>
-
-	#include <sys/random.h>
 
 	// under the constraints, this will never fail
 	#define dsl_rand(buf, len) ((void) getrandom(buf, len, /*flags*/ 0))
 #endif
 
-FORCE_INLINE static void msleep(u32 ms) {
-	#ifdef _WIN32
-		Sleep(ms);
-	#else
-		struct timespec ts = {
-			.tv_sec  =  ms / 1000,
-			.tv_nsec = (ms % 1000) * 1'000'000l,
-		};
-
-		nanosleep(&ts, NULL);
-	#endif
-}
-
 #define ANSI_RED    "\e[31m"
 #define ANSI_ORANGE "\e[38;2;180;100;0m"
 #define ANSI_RST    "\e[m"
+
+#define DSL_MAJOR "1"
+#define DSL_MINOR "5"
+#define DSL_MICRO "0a" // patch version
+#define DSL_VERSION DSL_MAJOR "." DSL_MINOR "." DSL_MICRO
+
+#ifdef __linux__
+	#define DSL_PLATFORM "linux"
+#elifdef _WIN32
+	#define DSL_PLATFORM "win32"
+#elif defined(__APPLE__) && defined(__MACH__)
+	#define DSL_PLATFORM "darwin"
+#elifdef __FreeBSD__
+	#define DSL_PLATFORM "freebsd"
+#elifdef __OpenBSD__
+	#define DSL_PLATFORM "openbsd"
+#elifdef __NetBSD__
+	#define DSL_PLATFORM "netbsd"
+#elifdef __DragonFly__
+	#define DSL_PLATFORM "dragonfly"
+#elifdef __sun
+	#define DSL_PLATFORM "sunos"
+#elifdef __HAIKU__
+	#define DSL_PLATFORM "haiku"
+#else
+	#define DSL_PLATFORM "unknown"
+#endif
+
+#define _strlen __builtin_strlen
 
 #define eprintf(FMT, ...)  fprintf(stderr, ANSI_RED    FMT ANSI_RST __VA_OPT__(,) __VA_ARGS__)
 #define ewprintf(FMT, ...) fprintf(stderr, ANSI_ORANGE FMT ANSI_RST __VA_OPT__(,) __VA_ARGS__)
@@ -67,44 +91,6 @@ FORCE_INLINE static void msleep(u32 ms) {
 #define B8_TO_U64(c0, c1, c2, c3, c4, c5, c6, c7) \
 	((u64)B4_TO_U32(c4, c5, c6, c7) << 32 | (u64)B4_TO_U32(c0, c1, c2, c3))
 
-typedef struct {
-	vstring_list;
-	u64 cap;
-} prgm_t;
-
-typedef struct {
-	char *ptr;
-
-	u64 usage, size; // in bytes. size should be a nonzero multiple of PAGE_SIZE
-} wide_buf;
-
-#ifdef __linux__
-	#define PLATFORM "linux"
-#elifdef _WIN32
-	#define PLATFORM "win32"
-#elif defined(__APPLE__) && defined(__MACH__)
-	#define PLATFORM "darwin"
-#elifdef __FreeBSD__
-	#define PLATFORM "freebsd"
-#elifdef __OpenBSD__
-	#define PLATFORM "openbsd"
-#elifdef __NetBSD__
-	#define PLATFORM "netbsd"
-#elifdef __DragonFly__
-	#define PLATFORM "dragonfly"
-#elifdef __sun
-	#define PLATFORM "sunos"
-#elifdef __HAIKU__
-	#define PLATFORM "haiku"
-#else
-	#define PLATFORM "unknown"
-#endif
-
-#define DSL_MAJOR "1"
-#define DSL_MINOR "4"
-#define DSL_MICRO "2" // patch version
-#define DSL_VERSION DSL_MAJOR "." DSL_MINOR "." DSL_MICRO
-
 typedef union {
 	u64 raw;
 
@@ -118,6 +104,65 @@ typedef union {
 		};
 	};
 } term_size_t;
+
+typedef struct {
+	vstring_list;
+	u64 cap;
+} prgm_t;
+
+typedef struct {
+	char *ptr;
+
+	u64 usage, size; // in bytes. size should be a nonzero multiple of PAGE_SIZE
+} wide_buf;
+
+typedef enum : u8 {
+	VAR_SPZ, // i128
+	VAR_MPZ, // mpz_t
+	VAR_STR, // vstring
+} var_type_t;
+
+typedef vstring var_key_t;
+
+typedef struct __attribute__((packed)) {
+	union {
+		// NOTE: these should all be 16 bytes long
+		i128    spz; // single-precision integer
+		mpz_t   mpz; // multiple-precision integer
+		vstring str; // `.ptr` should be a C string.
+	};
+
+	var_type_t type;
+} var_val_t;
+
+typedef struct {
+	var_key_t *key;
+	var_val_t *val;
+	u64 next;
+} var_t; // same structure as `MapEntry`
+
+static prgm_t dsl_out_prgm = {
+	.array = nullptr,
+	.count = 0,
+	.cap   = 0,
+};
+
+static wide_buf dsl_scratch = {
+	.ptr   = nullptr,
+	.usage = 0,
+	.size  = 0,
+};
+
+static wide_buf dsl_out_buf = {
+	.ptr   = nullptr,
+	.usage = 0,
+	.size  = 0,
+};
+
+static u64 dsl_total_bytes = 0;
+static u8 dsl_total_lines  = 0;
+
+static Map dsl_vars = nullptr;
 
 #ifdef _WIN32
 static term_size_t term_size(void) {
@@ -164,6 +209,120 @@ static term_size_t term_size(void) {
 	return (term_size_t) {};
 }
 #endif
+
+FORCE_INLINE static void msleep(u32 ms) {
+	#ifdef _WIN32
+		Sleep(ms);
+	#else
+		struct timespec ts = {
+			.tv_sec  =  ms / 1000,
+			.tv_nsec = (ms % 1000) * 1'000'000l,
+		};
+
+		nanosleep(&ts, NULL);
+	#endif
+}
+
+[[gnu::nonnull]]
+static void dsl_free_var(var_t *p2entry) {
+	// free the variable entry, but don't remove the entry from the map
+	var_key_t *pkey = (var_key_t *) p2entry->key;
+	free(pkey->ptr);
+	free(pkey);
+
+	var_val_t *pval = (var_val_t *) p2entry->val;
+
+	switch (pval->type) {
+		case VAR_SPZ:
+			// plain integer has no extra allocation
+			break;
+		case VAR_MPZ:
+			#pragma GCC diagnostic push
+			#pragma GCC diagnostic ignored "-Waddress-of-packed-member"
+			mpz_clear(pval->mpz);
+			#pragma GCC diagnostic pop
+			break;
+		case VAR_STR:
+			free(pval->str.ptr);
+			break;
+		default:
+			__builtin_unreachable();
+	}
+
+	free(pval);
+}
+
+[[gnu::nonnull]]
+static void dsl_set_var(var_key_t *pkey, var_val_t *pval) {
+	const map_hash_t hash = jhash(pval->str.ptr, pval->str.len);
+
+	var_t *const p2entry = (var_t *) Map_get_entry_by(dsl_vars, pkey, vstring_cmp, hash);
+
+	if (p2entry != nullptr) {
+		// variable exists free the old stuff and update in-place
+		dsl_free_var(p2entry);
+		p2entry->key = pkey;
+		p2entry->val = pval;
+	}
+	else
+		dsl_vars = Map_set_by(dsl_vars, pkey, pval, vstring_cmp, hash, MAP_UNOWNED);
+}
+
+[[maybe_unused, gnu::nonnull]]
+static void dsl_log_var(var_t *p2entry) {
+	// NOTE: the pointer is a C string as well as a V string.
+	printf("\"%s\" => {\n\t", p2entry->key->ptr);
+
+	var_val_t *pval = p2entry->val;
+
+	switch (pval->type) {
+		case VAR_SPZ: {
+			const bool sign = pval->spz >= 0;
+			const u128 magn = sign ? (u128) pval->spz : -(u128) pval->spz;
+
+			printf(
+				".type = VAR_SPZ\n\t"
+				".val  = %s%016zx%016zx",
+				"-" + !sign,
+				(u64)(magn >> 64),
+				(u64) magn
+			);
+
+			break;
+		}
+		case VAR_MPZ: {
+			#pragma GCC diagnostic push
+			#pragma GCC diagnostic ignored "-Waddress-of-packed-member"
+			const char *str = mpz_get_str(NULL, 10, pval->mpz);
+			#pragma GCC diagnostic pop
+
+			printf(
+				".type = VAR_MPZ\n\t"
+				".val  = %s",
+				str
+			);
+
+			free((void *) str);
+			break;
+		}
+		case VAR_STR:
+			printf(
+				".type = VAR_STR\n\t"
+				".val  = \"%s\"\n\t"
+				".len  = %zu",
+				pval->str.ptr,
+				pval->str.len
+			);
+
+			break;
+		default:
+			__builtin_unreachable();
+	}
+
+	putchar('\n');
+	putchar('}');
+	putchar('\n');
+}
 
 FORCE_INLINE static bool line_isspace(char c) {
 	// stuff that can be whitespace inside of a line
@@ -319,27 +478,6 @@ static bool strip_lines(vstring_list *p2in_prgm) {
 	return true;
 }
 
-static prgm_t dsl_out_prgm = {
-	.array = nullptr,
-	.count = 0,
-	.cap   = 0,
-};
-
-static wide_buf dsl_scratch = {
-	.ptr   = nullptr,
-	.usage = 0,
-	.size  = 0,
-};
-
-static wide_buf dsl_out_buf = {
-	.ptr   = nullptr,
-	.usage = 0,
-	.size  = 0,
-};
-
-static u64 dsl_total_bytes = 0;
-static u8 dsl_total_lines  = 0;
-
 [[maybe_unused]]
 static void reset_scratch(void) {
 	// reset the temporary buffer and potentially shrink
@@ -450,13 +588,11 @@ static bool is_valid_varname(const char *str, u64 len) {
 
 static void _preproc(
 	vstring_list in_prgm,
-	Map vars,
 	u64 start_line,
 	u64 depth,
 	bool debug
 ) {
 	(void) is_valid_varname;
-	(void) vars;
 	(void) start_line;
 	(void) depth;
 	// TODO: if (depth > depth_cap) jump back to `preproc`
@@ -485,9 +621,12 @@ static void _preproc(
 	*(u64 *) dsl_out_buf.ptr = dsl_out_buf.usage - sizeof(u64);
 }
 
+
+// TODO: update how `dsl_vars` is declared since it is a global variable now.
 [[nodiscard]]
-static vstring_list preproc(vstring_list in_prgm, Map start_vars, bool debug) {
-	// start_vars should be owned, and this function takes ownership of it
+static vstring_list preproc(vstring_list in_prgm, MapEntryCList start_vars, bool debug) {
+	// start_vars should be an array of owned C strings, and this function takes ownership of them.
+	// the pointer is allowed to be null so long as `.count` is 0, i.e. `(MapEntryCList) {}`.
 	// all the pointers in dsl_out_prgm are pointers into the same buffer.
 	// to destroy: `free_prgm(dsl_out_prgm);`
 	// the input program might be clobbered
@@ -517,6 +656,9 @@ static vstring_list preproc(vstring_list in_prgm, Map start_vars, bool debug) {
 		goto done;
 	}
 
+	// all three sections in the variable value section have to be the same size
+	static_assert(sizeof(mpz_t) == 16 && sizeof(i128) == 16 && sizeof(vstring) == 16);
+
 	const map_hash_t old_map_key = map_key();
 	{
 		map_hash_t key;
@@ -524,11 +666,7 @@ static vstring_list preproc(vstring_list in_prgm, Map start_vars, bool debug) {
 		map_key(key);
 	}
 
-	// the map key just changed, so everything is invalid now
-	if (start_vars != nullptr)
-		start_vars = Map_rehash(start_vars);
-
-	// set up `start_vars`
+	// set up `dsl_vars`
 	{
 		char *term_width, *term_height;
 		term_size_t term = term_size();
@@ -553,34 +691,89 @@ static vstring_list preproc(vstring_list in_prgm, Map start_vars, bool debug) {
 			sprintf(term_height, "%u", term.height);
 		}
 
-		// NOTE: this could probably be a list and then use the setall/vsetall
-		//       API, but I don't really care enough to do that.
-		Map vars = map_with(8, copies
-			, ("null"        , "")
-			, ("dsl_version" , DSL_VERSION)
-			, ("dsl_major"   , DSL_MAJOR)
-			, ("dsl_minor"   , DSL_MINOR)
-			, ("dsl_micro"   , DSL_VERSION + _strlen(DSL_VERSION) - _strlen(DSL_MICRO))
-			, ("platform"    , PLATFORM)
-			, ("term_width"  , term_width)
-			, ("term_height" , term_height)
-		);
+	#if DEBUG
+		if (dsl_vars != nullptr) {
+			eprintf("BUG: `dsl_vars` is not NULL at the start of `preproc`.\n");
+			exit(1);
+		}
+	#endif
+
+		dsl_vars = Map_create();
+
+		if (dsl_vars == nullptr)
+			goto catastrophic_oom;
+
+		// add requested starting variables
+		for (u64 i = 0; i < start_vars.count; i++) {
+			const MapEntryCView entry = start_vars.array[i];
+
+			// convert from `char * => char *` to `var_key_t => var_val_t`
+			var_key_t *pkey = malloc(sizeof(var_key_t));
+			if (pkey == nullptr)
+				goto catastrophic_oom;
+
+			pkey->ptr = entry.key;
+			pkey->len = strlen(entry.key);
+
+			var_val_t *pval = malloc(sizeof(var_val_t));
+			if (pval == nullptr)
+				// don't bother freeing `pkey` since this just crashes anyway
+				goto catastrophic_oom;
+
+			pval->type    = VAR_STR;
+			pval->str.ptr = entry.val;
+			pval->str.len = strlen(entry.val);
+
+			dsl_set_var(pkey, pval);
+		}
+
+		// add default starting vars
+		{
+			const char *default_var_keys[] = {
+				"null",			"dsl_version",
+				"platform",		"dsl_major",
+				"dsl_minor",	"dsl_micro",
+				"term_width",	"term_height",
+			};
+
+			const char *default_var_vals[] = {
+				"",				DSL_VERSION,
+				DSL_PLATFORM,	DSL_MAJOR,
+				DSL_MINOR,		DSL_VERSION + _strlen(DSL_VERSION) - _strlen(DSL_MICRO),
+				term_width,		term_height,
+			};
+
+			for (u64 i = 0; i < sizeof(default_var_keys) / sizeof(*default_var_keys); i++) {
+				const MapEntryCView entry = {
+					.key = strdup(default_var_keys[i]),
+					.val = strdup(default_var_vals[i]),
+				};
+
+				// convert from `char * => char *` to `var_key_t => var_val_t`
+				var_key_t *pkey = malloc(sizeof(var_key_t));
+				if (pkey == nullptr)
+					goto catastrophic_oom;
+
+				pkey->ptr = entry.key;
+				pkey->len = strlen(entry.key);
+
+				var_val_t *pval = malloc(sizeof(var_val_t));
+				if (pval == nullptr)
+					// don't bother freeing `pkey` since this just crashes anyway
+					goto catastrophic_oom;
+
+				pval->type    = VAR_STR;
+				pval->str.ptr = entry.val;
+				pval->str.len = strlen(entry.val);
+
+				dsl_set_var(pkey, pval);
+			} // for
+		} // end bare block
 
 		if (term.raw != 0) {
 			// these get `strdup`ed into the map, so the local copies need to be freed separately.
 			free(term_width);
 			free(term_height);
-		}
-
-		if (start_vars == nullptr) {
-			start_vars = vars;
-		#if DEBUG
-			vars = nullptr; // not strictly required
-		#endif
-		}
-		else {
-			start_vars = Map_transfer(start_vars, vars);
-			Map_destroy_shallow_ref(&vars);
 		}
 	}
 
@@ -601,7 +794,6 @@ static vstring_list preproc(vstring_list in_prgm, Map start_vars, bool debug) {
 
 	_preproc(
 		in_prgm,
-		start_vars,
 		0 /*start_line*/,
 		0 /*depth*/,
 		debug
@@ -614,10 +806,19 @@ static vstring_list preproc(vstring_list in_prgm, Map start_vars, bool debug) {
 		.size  = 0,
 	};
 
+
 	// replace the final newline with null
 	dsl_out_buf.ptr[dsl_out_buf.usage /*sizeof(u64) + *(u64 *) dsl_out_buf.ptr*/] = '\0';
 
-	Map_destroy_ref(&start_vars);
+	puts("vars:");
+
+	// destroy the variable map
+	Map_foreach(dsl_vars,
+		dsl_log_var((var_t *) p2entry);
+		dsl_free_var((var_t *) p2entry);
+	);
+
+	Map_destroy_shallow_ref(&dsl_vars);
 
 	map_key(old_map_key); // restore the original key
 done:

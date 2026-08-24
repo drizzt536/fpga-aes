@@ -33,11 +33,11 @@ LD_FLAGS := -Ofast --fatal-warnings -Llib -L"$(shell dirname "$$(gcc -print-libg
 
 ifeq ($(UNAME_S),Windows_NT)
 	LD_FLAGS	+= --warn-common --no-seh --exclude-all-symbols
-	LD_LIBS		:= -lgcc -lcryptbase -lkernel32 -lucrtbase
+	LD_LIBS		:= -lgcc -lgmp-win32 -lcryptbase -lkernel32 -lucrtbase
 	NASM_FLAGS  := -fwin64 -DWINDOWS
 else
 	LD_FLAGS	+= -Ofast -Llib --fatal-warnings -dynamic-linker "$(LD_LINUX)"
-	LD_LIBS		:= -lc -lgcc
+	LD_LIBS		:= -lc -lgcc -lgmp
 	NASM_FLAGS  := -felf64 -DLINUX
 endif
 

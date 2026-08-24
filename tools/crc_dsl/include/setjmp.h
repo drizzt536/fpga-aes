@@ -11,7 +11,7 @@
 typedef struct {
 	u64 rip, rbx, rsp, rbp
 	#ifdef _WIN32
-		, rsi, rdi
+		, rdi, rsi
 	#endif
 		, r12, r13, r14, r15
 	#if defined(_WIN32) && defined(__APXF__)

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 /*
-	map.h v0.9.0
+	map.h v0.9.1
 	Copyright (c) 2026 Daniel Janusch
 
 	Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -101,7 +101,10 @@
 	   include the extra fun stuff like `map_dedup_shuffle`. define `MAP_H_DEFAULT_OWNED` or
 	   `MAP_H_DEFAULT_UNOWNED` to specify the default ownership model (owned is the default
 	   default). define MAP_H_HASH128 or MAP_H_HASH64 to select jhash128 or jhash64. jhash64 is
-	   the default. define MAP_H_MIN_OCAP to set the minimum overflow arena size (default is 4).
+	   the default. define `MAP_H_MIN_OCAP` to set the minimum overflow arena size (default is 4).
+	   Define `MAP_H_CHAR_ENTRIES` to define `MapEntry` with keys and values of `char *`. Or
+	   define `MAP_H_VOID_ENTRIES` to explicitly keep them as `void *.
+	   instead of `void *`. It is `void *` by default to accomodate non C-string keys and values.
 	5. the `setall` functions are really only for if you are creating a map from nothing *and*
 	   it is easier to create a list and call one function instead of doing some kind of iterator
 	   and calling `Map_set` for each entry object.
@@ -174,7 +177,7 @@
 
 #define MAP_VMAJOR 0llu
 #define MAP_VMINOR 9llu
-#define MAP_VMICRO 0llu
+#define MAP_VMICRO 1llu
 #define MAP_VERSION ((MAP_VMAJOR << 16) | (MAP_VMINOR << 8) | MAP_VMICRO)
 
 #include <stdlib.h>
@@ -287,8 +290,17 @@ typedef i32 (*map_cmp_t)(const void *, const void *);
 
 // NOTE: index 0 will be invalid, indicating there is no next
 // String -> String hash map
+
+#if defined(MAP_H_CHAR_ENTRIES) && defined(MAP_H_VOID_ENTRIES)
+	#error "MAP_H_CHAR_ENTRIES and MAP_H_VOID_ENTRIES cannot both be defined."
+#endif
+
 typedef struct {
+#ifdef MAP_H_CHAR_ENTRIES
 	const char *key, *val;
+#else
+	const void *key, *val;
+#endif
 	u64 next; // index into arena
 } MapEntry;
 
@@ -621,8 +633,11 @@ Map Map_destroy_shallow(Map this);
 )
 
 #define Map_set3(this, key, val) Map_set4(this, key, val, MAP_DEF_OWNED)
-#define Map_set(this, key, val, owned...) \
+#define Map_set2(this, key) Map_set3(this, key, nullptr)
+#define Map_set3_4(this, key, val, owned...) \
 	VA_IF(Map_set4(this, key, val, owned), Map_set3(this, key, val), owned)
+#define Map_set(this, key, val...) \
+	VA_IF(Map_set3_4(this, key, val), Map_set2(this, key), val)
 
 #define Map_set_ref4(pthis, key, val, owned) ({ \
 	Map *const p = pthis;                       \
@@ -630,8 +645,30 @@ Map Map_destroy_shallow(Map this);
 	(void) 0;                                   \
 })
 #define Map_set_ref3(pthis, key, val) Map_set_ref4(pthis, key, val, MAP_DEF_OWNED)
-#define Map_set_ref(pthis, key, val, owned...) \
-	VA_IF(Map_set_ref4(pthis, key, val, owned), Map_set_ref3(pthis, key, val), owned)
+#define Map_set_ref2(pthis, key) Map_set_ref3(pthis, key, nullptr)
+#define Map_set_ref3_4(pthis, key, val, owned...) \
+	VA_IF(Map_set_ref4(pthis, key, val, owned), Map_set_ref3(pthis, key, val, owned), owned)
+#define Map_set_ref(pthis, key, val...) \
+	VA_IF(Map_set_ref3_4(pthis, key, val), Map_set_ref2(pthis, key), val)
+
+#define Map_vset3(this, key, val) Map_vset4(this, key, val, MAP_DEF_OWNED)
+#define Map_vset2(this, key) Map_vset3(this, key, nullptr)
+#define Map_vset3_4(this, key, val, owned...) \
+	VA_IF(Map_vset4(this, key, val, owned), Map_vset3(this, key, val), owned)
+#define Map_vset(this, key, val...) \
+	VA_IF(Map_vset3_4(this, key, val), Map_vset2(this, key), val)
+
+#define Map_vset_ref4(pthis, key, val, owned) ({ \
+	Map *const p = pthis;                        \
+	*p = Map_vset(*p, key, val, owned);          \
+	(void) 0;                                    \
+})
+#define Map_vset_ref3(pthis, key, val) Map_vset_ref4(pthis, key, val, MAP_DEF_OWNED)
+#define Map_vset_ref2(pthis, key) Map_vset_ref3(pthis, key, nullptr)
+#define Map_vset_ref3_4(pthis, key, val, owned...) \
+	VA_IF(Map_vset_ref4(pthis, key, val, owned), Map_vset_ref3(pthis, key, val, owned), owned)
+#define Map_vset_ref(pthis, key, val...) \
+	VA_IF(Map_vset_ref3_4(pthis, key, val), Map_vset_ref2(pthis, key), val)
 
 #define Map_set_by5(this, key, val, cmp, hash) Map_set_by6(this, key, val, cmp, hash, MAP_DEF_OWNED)
 #define Map_set_by(this, key, val, cmp, hash, owned...) \
@@ -709,7 +746,8 @@ Map Map_destroy_shallow(Map this);
 #define Map_tovstring(this, owned...) VA_IF(Map_tovstring2(this, owned), Map_tovstring1(this), owned)
 
 [[gnu::pure]] MAP_STATIC u64 map_size(u64 size);
-[[gnu::nonnull, gnu::pure]] MAP_INLINE map_hash_t map_hash(const char *key);
+[[gnu::nonnull, gnu::pure]] MAP_STATIC i32 vstring_cmp(const void *a, const void *b);
+[[gnu::nonnull, gnu::pure]] MAP_INLINE map_hash_t map_hash(const char *cstr);
 MAP_INLINE void map_key1(map_hash_t key);
 [[nodiscard, gnu::malloc]] MAP_STATIC Map Map_create2(u64 m_cap, u64 o_cap);
 [[maybe_unused, gnu::nonnull]] MAP_STATIC void Map_destroy_ref1(Map *pthis);
@@ -717,8 +755,9 @@ MAP_INLINE void map_key1(map_hash_t key);
 [[gnu::nonnull]] MAP_STATIC bool Map_gc(Map this);
 [[gnu::nonnull]] MAP_STATIC bool Map_oresize2(Map this, u64 o_cap);
 [[gnu::nonnull, gnu::pure]] MAP_STATIC MapEntry *Map_get_entry3(ConstMap this, const char *key, map_hash_t hash);
-[[gnu::nonnull, gnu::pure]] MAP_STATIC void *Map_get_entry_by(ConstMap this, const void *key, map_cmp_t cmp, map_hash_t hash);
+[[gnu::nonnull, gnu::pure]] MAP_STATIC MapEntry *Map_get_entry_by(ConstMap this, const void *key, map_cmp_t cmp, map_hash_t hash);
 [[gnu::nonnull, gnu::pure]] MAP_INLINE char *Map_get3(ConstMap this, const char *key, map_hash_t hash);
+[[gnu::nonnull, gnu::pure]] MAP_INLINE void *Map_get_by(ConstMap this, const void *key, map_cmp_t cmp, map_hash_t hash);
 [[maybe_unused, gnu::nonnull]] MAP_STATIC bool Map_delete4(Map this, const char *key, u64 hash, bool owned);
 [[maybe_unused, gnu::nonnull]] MAP_STATIC bool Map_delete_by5(Map this, const void *key, map_cmp_t cmp, u64 hash, bool owned);
 [[nodiscard, gnu::nonnull, gnu::malloc]] MAP_STATIC Map Map_mresize(Map this, u64 m_cap);
@@ -726,7 +765,8 @@ MAP_INLINE void map_key1(map_hash_t key);
 [[gnu::nonnull(1,2)]] MAP_STATIC bool Map_set_raw4(Map this, const char *restrict key, const char *restrict val, bool owned);
 [[gnu::nonnull(1,2,4)]] MAP_STATIC bool Map_set_raw_by6(Map this, const void *restrict key, const void *restrict val, map_cmp_t cmp, map_hash_t hash, bool owned);
 [[nodiscard, gnu::nonnull(1,2)]] MAP_STATIC Map Map_set4(Map this, const char *restrict key, const char *restrict val, bool owned);
-[[nodiscard, gnu::nonnull(1,2,4)]] MAP_STATIC Map Map_set_by6(Map this, const void *restrict key, const void *restrict val, map_cmp_t cmp, map_hash_t hash, bool owned);
+[[nodiscard, gnu::nonnull(1,2)]] MAP_STATIC Map Map_vset4(Map this, const vstring *restrict key, const void *restrict val, bool owned);
+[[nodiscard, maybe_unused, gnu::nonnull(1,2,4)]] MAP_STATIC Map Map_set_by6(Map this, const void *restrict key, const void *restrict val, map_cmp_t cmp, map_hash_t hash, bool owned);
 [[nodiscard, maybe_unused, gnu::nonnull]] MAP_STATIC Map Map_vsetall(Map this, MapEntryVList entries);
 [[nodiscard, maybe_unused, gnu::nonnull]] MAP_STATIC Map Map_csetall3(Map this, MapEntryCList entries, bool owned);
 [[maybe_unused, gnu::nonnull]] MAP_STATIC void Map_getall(ConstMap this, const char *keys[], u64 count);
@@ -816,6 +856,13 @@ MAP_STATIC u64 map_size(u64 size) {
 
 	// return size - prev < next - size ? prev : next;
 	return size << 1 < prev + next ? prev : next;
+}
+
+[[gnu::nonnull, gnu::pure]]
+MAP_STATIC i32 vstring_cmp(const void *a, const void *b) {
+	vstring *va = (vstring *) a;
+	vstring *vb = (vstring *) b;
+	return va->len == vb->len ? strncmp(va->ptr, vb->ptr, va->len) : 1;
 }
 
 #define jhash_mulhi64(x, y) ( (u64) ((u128) (x) * (y) >> 64) )
@@ -917,11 +964,6 @@ MAP_STATIC u128 jhash128(const void *in, u64 len, u128 key) {
 	return hash;
 }
 
-[[gnu::nonnull, gnu::pure]]
-MAP_INLINE map_hash_t map_hash(const char *str) {
-	return jhash128(str, strlen(str), map_key());
-}
-
 #undef jhash_bswap128
 #undef jhash_mulhi128
 
@@ -998,12 +1040,12 @@ MAP_STATIC u64 jhash64(const void *in, u64 len, u64 key) {
 	hash ^= fbkh;
 	return hash;
 }
+#endif
 
 [[gnu::nonnull, gnu::pure]]
-MAP_INLINE map_hash_t map_hash(const char *str) {
-	return jhash64(str, strlen(str), map_key());
+MAP_INLINE map_hash_t map_hash(const char *cstr) {
+	return jhash(cstr, strlen(cstr), map_key());
 }
-#endif
 
 MAP_INLINE void map_key1(map_hash_t key) {
 	map_h_jhash_key = key;
@@ -1241,12 +1283,12 @@ MAP_STATIC MapEntry *Map_get_entry3(ConstMap this, const char *key, map_hash_t h
 }
 
 [[gnu::nonnull, gnu::pure]]
-MAP_STATIC void *Map_get_entry_by(ConstMap this, const void *key, map_cmp_t cmp, map_hash_t hash) {
+MAP_STATIC MapEntry *Map_get_entry_by(ConstMap this, const void *key, map_cmp_t cmp, map_hash_t hash) {
 	// same as Map_get_entry3 but with `cmp` instead of `strcmp`
 	hash = Map_bucket_from_hash(this, hash);
 
 	Map_foreach(this, hash,
-		if (cmp(entry.key, key) == 0)
+		if (cmp((void *) entry.key, key) == 0)
 			return p2entry;
 	);
 
@@ -1258,6 +1300,13 @@ MAP_INLINE char *Map_get3(ConstMap this, const char *key, map_hash_t hash) {
 	// returns the value field from the matching element
 	MapEntry *e = Map_get_entry(this, key, hash);
 	return e == nullptr ? nullptr : (char *) e->val;
+}
+
+[[gnu::nonnull, gnu::pure]]
+MAP_INLINE void *Map_get_by(ConstMap this, const void *key, map_cmp_t cmp, map_hash_t hash) {
+	// returns the value field from the matching element
+	MapEntry *e = Map_get_entry_by(this, key, cmp, hash);
+	return e == nullptr ? nullptr : (void *) e->val;
 }
 
 [[maybe_unused, gnu::nonnull]]
@@ -1399,11 +1448,12 @@ MAP_INLINE bool Map__set_raw_existing(
 	return false;
 }
 
-#define Map__set_raw_nonexisting(this, KEY, VAL, bucket) ({ \
-	this->buckets[bucket].key = KEY;                        \
-	this->buckets[bucket].val = VAL;                        \
-	this->m_size++;                                         \
-	return false;                                           \
+#define Map__set_raw_nonexisting(this, KEY, VAL, bucket) ({   \
+	/* NOTE: this is for if the BUCKET entry doesn't exist */ \
+	this->buckets[bucket].key = KEY;                          \
+	this->buckets[bucket].val = VAL;                          \
+	this->m_size++;                                           \
+	return false;                                             \
 })
 
 [[gnu::nonnull(1,2)]]
@@ -1568,6 +1618,14 @@ MAP_STATIC Map Map_set4(Map this, const char *restrict key, const char *restrict
 	return Map__set_grow(this);
 }
 
+[[nodiscard, gnu::nonnull(1,2)]]
+MAP_STATIC Map Map_vset4(Map this, const vstring *restrict key, const void *restrict val, bool owned) {
+	if (Map_set_raw_by(this, key, val, vstring_cmp, jhash(key->ptr, key->len), owned))
+		return this;
+
+	return Map__set_grow(this);
+}
+
 [[nodiscard, maybe_unused, gnu::nonnull(1,2,4)]]
 MAP_STATIC Map Map_set_by6(Map this, const void *restrict key, const void *restrict val, map_cmp_t cmp, map_hash_t hash, bool owned) {
 	if (Map_set_raw_by(this, key, val, cmp, hash, owned))
@@ -1578,45 +1636,32 @@ MAP_STATIC Map Map_set_by6(Map this, const void *restrict key, const void *restr
 
 [[nodiscard, maybe_unused, gnu::nonnull]]
 MAP_STATIC Map Map_vsetall(Map this, MapEntryVList entries) {
-	// since it takes string views, it has to allocate new memory and copy the strings there,
-	// so it is impossible to have a non-owning version of this code path without making
-	// weird assumptions that I don't feel like making.
 	// it stops at the first entry it can't insert, rather than just skipping that entry.
 	// the value pointers can be null, in which case, they are not touched
-	vstring vkey, vval;
+	// when inserting an entry with a duplicate key, it will not free the `.ptr` in the
+	// key or value. It will, however free the `vstring *` pointer itself. So make sure
+	// that either the underlying character arrays are owned somewhere else, or that
+	// there are no duplicate keys in the entries list.
+
+	vstring *pkey, *pval;
 
 	while (entries.count --> 0) {
-		vkey = entries.array->key;
-		vval = entries.array->val;
-
-		if (vkey.len == UINT64_MAX || vval.len == UINT64_MAX)
+		// NOTE: these cannot be a single `malloc(2*sizeof(vstring))`
+		pkey = malloc(sizeof(vstring));
+		if (pkey == nullptr)
 			return this;
 
-		char *key = (char *) malloc(vkey.len + 1);
-		if (key == nullptr)
+		pval = malloc(sizeof(vstring));
+
+		if (pval == nullptr) {
+			free(pkey);
 			return this;
-
-		char *val;
-
-		if (vval.ptr == nullptr)
-			val = nullptr;
-		else {
-			val = (char *) malloc(vval.len + 1);
-
-			if (val == nullptr) {
-				free(key);
-				return this;
-			}
-
-			memcpy(val, vval.ptr, vval.len);
-			val[vval.len] = '\0';
 		}
 
-		// write the key after the value in case the value allocation failed (faster).
-		memcpy(key, vkey.ptr, vkey.len);
-		key[vkey.len] = '\0';
+		*pkey = entries.array->key;
+		*pval = entries.array->val;
 
-		this = Map_set(this, key, val, MAP_OWNED);
+		this = Map_vset(this, pkey, pval, MAP_OWNED);
 		entries.array++;
 	}
 
@@ -1804,7 +1849,9 @@ MAP_STATIC Map Map_merge4(Map this, Map other, bool owned1, bool owned2) {
 #if defined(__APPLE__) || defined(__GLIBC__) && (defined(_DEFAULT_SOURCE) || defined(_GNU_SOURCE))
 	#define map_stpcpy stpcpy
 #else
-	#define map_stpcpy(dst, src) ({    \
+	#define map_stpcpy(DST, SRC) ({     \
+		char *dst = (char *) (DST);     \
+		char *src = (char *) (SRC);     \
 		while ((*dst = *src) != '\0') { \
 			dst++;                      \
 			src++;                      \

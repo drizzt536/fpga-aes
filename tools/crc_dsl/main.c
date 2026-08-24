@@ -29,7 +29,6 @@ FORCE_INLINE static u128 cstr_count_nonempty_lines(const char *buf) {
 	// assumes null termination
 	const char *const orig_buf = buf;
 	u64 lines = 0;
-	char c;
 
 	if (buf[0] == '\0')
 		return 1; // 0 characters. 0 lines, but say 1 anyway.
@@ -41,10 +40,9 @@ FORCE_INLINE static u128 cstr_count_nonempty_lines(const char *buf) {
 	do {
 		buf++;
 
-		c = buf[0];
-		if (c == '\n' && buf[-1] != '\n')
+		if (buf[0] == '\n' && buf[-1] != '\n')
 			lines++;
-	} while (c != '\0');
+	} while (buf[0] != '\0');
 
 	if (buf[-1] != '\n')
 		lines++;
@@ -52,6 +50,7 @@ FORCE_INLINE static u128 cstr_count_nonempty_lines(const char *buf) {
 	return (u128)(buf - orig_buf) << 64 | lines;
 }
 
+#define PARSE_LINES_EOK			0
 #define PARSE_LINES_EOPEN		1
 #define PARSE_LINES_ESEEK		2
 #define PARSE_LINES_EOOM		3
@@ -227,9 +226,11 @@ int main(int argc, char **argv)
 	// *(u64 *) (lines.array[0].ptr - sizeof(u64)) is the number of characters in the buffer
 	vstring_list in_prgm;
 	{
-		u8 ret = parse_lines(*argv, &in_prgm);
+		const u8 ret = parse_lines(*argv, &in_prgm);
 
-		if (ret != 0) switch (ret) {
+		switch (ret) {
+			case PARSE_LINES_EOK:
+				break;
 			case PARSE_LINES_EOPEN:
 				eprintf("input file could not be opened.\n");
 				return ret;
@@ -266,7 +267,7 @@ int main(int argc, char **argv)
 
 	puts("----------------------------------------------------------------------");
 	puts("preproc:");
-	vstring_list out_prgm = preproc(in_prgm, nullptr, true);
+	vstring_list out_prgm = preproc(in_prgm, (MapEntryCList) {}, true);
 
 	puts("----------------------------------------------------------------------");
 	printf("out_prgm: %zu line(s):\n", out_prgm.count);
@@ -298,6 +299,8 @@ extra_stuff:
 		putchar('\n');
 	}
 
+	// TODO: update this macro to automatically be a switch/case.
+	//       and probably do it for `dsl_try` too.
 	const i64 res = dsl_try_root();
 
 	printf("dsl_try_root returned %zd\n", res);
