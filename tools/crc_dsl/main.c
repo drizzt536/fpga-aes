@@ -3,11 +3,8 @@
 	#include <corecrt_startup.h>
 	#define _STDSTREAM_DEFINED
 
-	[[maybe_unused]]
-	static void // FILE isn't defined yet, but it basically doesn't matter. void also works
-		*stdin  = nullptr,
-		*stdout = nullptr,
-		*stderr = nullptr;
+	// `FILE` isn't defined yet, but it basically doesn't matter. `void` also works
+	[[maybe_unused]] static void *stdin, *stdout, *stderr;
 #endif
 
 #ifndef DEBUG
@@ -30,7 +27,7 @@ FORCE_INLINE static u128 cstr_count_nonempty_lines(const char *buf) {
 	const char *const orig_buf = buf;
 	u64 lines = 0;
 
-	if (buf[0] == '\0')
+	if unlikely (buf[0] == '\0')
 		return 1; // 0 characters. 0 lines, but say 1 anyway.
 
 	if (buf[0] == '\n')
@@ -42,7 +39,7 @@ FORCE_INLINE static u128 cstr_count_nonempty_lines(const char *buf) {
 
 		if (buf[0] == '\n' && buf[-1] != '\n')
 			lines++;
-	} while (buf[0] != '\0');
+	} until (buf[0] == '\0');
 
 	if (buf[-1] != '\n')
 		lines++;
@@ -72,12 +69,12 @@ static u8 parse_lines(char *file_path, vstring_list *out_lines) {
 	// open file
 	FILE *f = fopen(file_path, "r");
 
-	if (f == nullptr) {
+	if unlikely (f == nullptr) {
 		result = PARSE_LINES_EOPEN;
 		goto done;
 	}
 
-	if (fseek(f, 0, SEEK_END) != 0) {
+	if unlikely (fseek(f, 0, SEEK_END) != 0) {
 		fclose(f);
 		result = PARSE_LINES_ESEEK;
 		goto done;
@@ -89,7 +86,7 @@ static u8 parse_lines(char *file_path, vstring_list *out_lines) {
 
 	buf = (char *) malloc(sizeof(u64) + n + 1);
 
-	if (__builtin_expect(buf == nullptr, 0)) {
+	if unlikely (buf == nullptr) {
 		fclose(f);
 		result = PARSE_LINES_EOOM;
 		goto done;
@@ -109,14 +106,14 @@ static u8 parse_lines(char *file_path, vstring_list *out_lines) {
 
 	lines.array = (vstring *) malloc(line_cap * sizeof(*lines.array));
 
-	if (__builtin_expect(lines.array == nullptr, 0)) {
+	if unlikely (lines.array == nullptr) {
 		free(buf - sizeof(u64));
 		lines.count = line_cap; // for the diagnostic messages
 		result = PARSE_LINES_EOOM;
 		goto done;
 	}
 
-	if ((u64) (file_data >> 64) != n) {
+	if unlikely ((u64) (file_data >> 64) != n) {
 		free(buf - sizeof(u64));
 		lines.count = line_cap; // for the diagnostic messages
 		result = PARSE_LINES_ENULL;
@@ -128,8 +125,8 @@ static u8 parse_lines(char *file_path, vstring_list *out_lines) {
 		.len = 0,
 	};
 
-	for (char *pc = buf; *pc != '\0'; pc++) {
-		if (*pc != '\n') {
+	for (char *pc = buf; likely(*pc != '\0'); pc++) {
+		if likely (*pc != '\n') {
 			line.len++;
 			continue;
 		}
@@ -142,7 +139,7 @@ static u8 parse_lines(char *file_path, vstring_list *out_lines) {
 		}
 
 	#if DEBUG
-		if (lines.count >= line_cap) {
+		if unlikely (lines.count >= line_cap) {
 			result = PARSE_LINES_EBUG1;
 			goto done;
 		}
@@ -157,7 +154,7 @@ static u8 parse_lines(char *file_path, vstring_list *out_lines) {
 		// add the last line if it is non-empty or also the first line
 
 	#if DEBUG
-		if (lines.count >= line_cap) {
+		if unlikely (lines.count >= line_cap) {
 			result = PARSE_LINES_EBUG1;
 			goto done;
 		}
@@ -171,13 +168,13 @@ done:
 	// NOTE: with low optimization, this thinks `lines.array->ptr` can be used
 	//       uninitialized, but that is wrong. If the pointer is nonnull, it is
 	//       always initialized.
-	if (lines.array != nullptr && lines.array->ptr != buf) {
+	if unlikely (lines.array != nullptr && lines.array->ptr != buf) {
 		free(buf - sizeof(u64));
 		free(lines.array);
 		return PARSE_LINES_EBUG2;
 	}
 
-	if (lines.count != line_cap)
+	if unlikely (lines.count != line_cap)
 		// this is not a hard error, so it can still return `result == 0` in this case.
 		ewprintf("WARNING: parse_lines: lines.count (%zu) != line_cap (%zu)\n",
 			lines.count, line_cap);
@@ -214,6 +211,7 @@ int main(int argc, char **argv)
 	stderr = __acrt_iob_func(2);
 #endif
 
+	// skip EXE path
 	argc--;
 	argv++;
 
@@ -248,7 +246,7 @@ int main(int argc, char **argv)
 				eprintf("BUG: not enough lines allocated. allocated %zu.\n", in_prgm.count);
 				return ret;
 			case PARSE_LINES_EBUG2:
-				eprintf("BUG: first line pointer is not a freeable pointer.\n");
+				eprintf("BUG: first line pointer is not 8 bytes past a freeable pointer.\n");
 				return ret;
 		#endif
 			default:
@@ -288,6 +286,7 @@ extra_stuff:
 		i64 ret = setjmp(&env);
 		printf("\ri = %zu, ret=%zd", i, ret);
 		#ifndef _WIN32
+			// ucrt printf auto flushes in between, but glibc printf doesn't
 			fflush(stdout);
 		#endif
 
@@ -299,15 +298,31 @@ extra_stuff:
 		putchar('\n');
 	}
 
-	// TODO: update this macro to automatically be a switch/case.
-	//       and probably do it for `dsl_try` too.
-	const i64 res = dsl_try_root();
-
-	printf("dsl_try_root returned %zd\n", res);
-
-	if (res == 0)
-		dsl_panic(-300);
+	dsl_try_root(
+	// before
+		printf("dsl_try_root returned %zd\n", res),
+	// cases
+		case 0:
+			dsl_panic(-300);
+		default:
+			break;
+	);
 
 	dsl_free_except();
+
+	// test basic GMP functionality.
+	{
+		mpz_t a, b;
+		char *str;
+
+		mpz_init_set_ui(a, 123'456'789);
+		mpz_init_set_ui(b, 987'654'321);
+
+		str = mpz_get_str(NULL, 10, a); printf("a = %s\n", str); free(str);
+		str = mpz_get_str(NULL, 10, b); printf("b = %s\n", str); free(str);
+		mpz_mul(a, a, b);
+		str = mpz_get_str(NULL, 10, a); printf("c = %s\n", str); free(str);
+	}
+
 	return 0;
 }

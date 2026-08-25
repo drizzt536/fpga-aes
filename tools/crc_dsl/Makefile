@@ -1,5 +1,8 @@
 # cross-platform
-# requires mingw devkit on Windows
+# dependencies:
+	# always: uname, dirname, strip, ld, rm, make, nasm >=3.0
+	# Windows only: w64devkit (for GCC), Powershell Core
+	# Linux only: GMP shared object, gcc, objcopy
 
 UNAME_S := $(shell uname -s)
 
@@ -21,23 +24,24 @@ GCC_ERRFLAGS := -Wdouble-promotion -Wauto-profile -Winvalid-pch -Wkeyword-macro 
 				-Wpointer-arith -Wcast-align -Wduplicated-branches -Wsuggest-final-types -Wpacked  \
 				-Wbad-function-cast -Wdate-time
 
-LD_LINUX ?= /lib64/ld-linux-x86-64.so.2
-
 # -Wcast-align=strict
 # -Waggregate-return
 
+LD_LINUX ?= /lib64/ld-linux-x86-64.so.2
+
 GCC_FLAGS	:=  -Ofast -nostdlib -fno-asynchronous-unwind-tables -fno-ident -fms-extensions \
 				-flive-range-shrinkage -fipa-pta -fshort-enums -fweb -fwrapv -masm=intel -Iinclude
-
-LD_FLAGS := -Ofast --fatal-warnings -Llib -L"$(shell dirname "$$(gcc -print-libgcc-file-name)")"
+LD_FLAGS    :=  -Ofast --fatal-warnings -Llib -L"$(shell dirname "$$(gcc -print-libgcc-file-name)")"
 
 ifeq ($(UNAME_S),Windows_NT)
 	LD_FLAGS	+= --warn-common --no-seh --exclude-all-symbols
 	LD_LIBS		:= -lgcc -lgmp-win32 -lcryptbase -lkernel32 -lucrtbase
 	NASM_FLAGS  := -fwin64 -DWINDOWS
 else
+	# Arch doesn't ship the static stuff with GMP, and I cannot be bothered to compile it myself
+	# so I will just allow GMP's shared object to be a dependency on Linux.
 	LD_FLAGS	+= -Ofast -Llib --fatal-warnings -dynamic-linker "$(LD_LINUX)"
-	LD_LIBS		:= -lc -lgcc -lgmp
+	LD_LIBS		:= -lc -Bstatic -lgcc -Bdynamic -lgmp
 	NASM_FLAGS  := -felf64 -DLINUX
 endif
 
@@ -58,7 +62,6 @@ main.exe: main.o crt-stubs.o
 else
 main: main.o crt-stubs.o
 	ld $^ $(LD_FLAGS) $(LD_LIBS) -o $@
-	chmod +x $@
 	objcopy --remove-section=.eh_frame --remove-section=.eh_frame_hdr main main
 endif
 

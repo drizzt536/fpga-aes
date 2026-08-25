@@ -8,16 +8,16 @@ NOTE: %seteval can't have variables that expand to stuff other than integers.
 
 the ordering between 1 and 2 doesn't matter
 
-0. concatenation by juxtaposition (only for literals and variables)
-1. ()
-2. ^ (right-to-left)
-3. unary +, -, ~, & (right-to-left)
-4. .
-5. *, /, %
-6. binary +, -
-7. <<, >>
-8. and
-9. or, xor
+0a. concatenation by juxtaposition (only for literals and variables)
+0b. ()
+1. ^ (right-to-left)
+2. unary +, -, ~, & (right-to-left)
+3. .
+4. *, /, %
+5. binary +, -
+6. <<, >>
+7. and
+8. or, xor
 
 NOTE: '.' is the explicit concatenation operator and '&' is the absolute value operator
 """

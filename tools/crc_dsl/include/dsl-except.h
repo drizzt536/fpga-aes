@@ -7,6 +7,28 @@
 	#define PAGE_SIZE 4096llu
 #endif
 
+#define ANSI_RED    "\e[31m"
+#define ANSI_ORANGE "\e[38;2;180;100;0m"
+#define ANSI_RST    "\e[m"
+
+#define eprintf(FMT, ...)  fprintf(stderr, ANSI_RED    FMT ANSI_RST __VA_OPT__(,) __VA_ARGS__)
+#define ewprintf(FMT, ...) fprintf(stderr, ANSI_ORANGE FMT ANSI_RST __VA_OPT__(,) __VA_ARGS__)
+
+#define   likely(x)     (__builtin_expect(!!(x), 1))
+#define unlikely(x)     (__builtin_expect(!!(x), 1))
+
+#define   likelyp(x, p) (__builtin_expect_with_probability(!!(x), 1, p))
+#define unlikelyp(x, p) (__builtin_expect_with_probability(!!(x), 0, p))
+
+// p is the chance that it stays in the loop
+#define until(x) while (!(x))
+
+// p is the chance that it exits
+#define until_likely(x)       while   likely(!(x))
+#define until_unlikely(x)     while unlikely(!(x))
+#define until_likelyp(x, p)   while   likelyp(!(x), p)
+#define until_unlikelyp(x, p) while unlikelyp(!(x), p)
+
 #define DEFAULT_DEPTH_CAP       1024
 #define DEFAULT_ITER_CAP        1'000'000
 #define DSL_EXCEPT_START_SIZE   32
@@ -31,6 +53,7 @@ typedef enum : u8 {
 
 #define EXCEPT_ERR_OOM   (-256ll)
 #define EXCEPT_ERR_DEPTH (-257ll)
+#define EXCEPT_ERR_LEXER (-258ll)
 // EXCEPT_ERR_UNCAUGHT_* is -1 through -255
 // unreserved error codes start at -258
 
@@ -63,7 +86,7 @@ static except_stack_t dsl_except = {
 	dsl_except.cap   = 0;            \
 } while (false)
 
-#define dsl_try_root() ({                            \
+#define dsl__try_root() ({                           \
 	__label__ done;                                  \
 	i64 result;                                      \
 	dsl_except.array = malloc(                       \
@@ -123,11 +146,12 @@ static void dsl_try_longjmp(i64 value, except_type_t type, u64 tag, u64 i, bool 
 	longjmp((jmp_buf *) &dsl_except.array[i], found ? value : -(i64) type);
 }
 
-[[maybe_unused]]
+[[noreturn, maybe_unused]]
 FORCE_INLINE static void dsl_panic(i64 value) {
 	// this is the same as `dsl_throw_far(value)` or `dsl_throw(value)`,
 	// but it runs slightly less code
 	dsl_try_longjmp(value, EXCEPT_GROUP_ANY, EXCEPT_TAG_ANY, /*i*/ 0, /*found*/ true);
+	__builtin_unreachable();
 }
 
 [[noreturn, maybe_unused]]
@@ -192,7 +216,7 @@ not_found:
 	VA_IF(dsl_throw2_3(value, type), dsl_throw1(value), type)
 
 [[maybe_unused, gnu::returns_twice]]
-static i64 dsl_try2(except_type_t type, u64 tag) {
+static i64 dsl__try2(except_type_t type, u64 tag) {
 	// try/catch
 
 	// NOTE: a negative return should indicate an error.
@@ -239,5 +263,31 @@ static i64 dsl_try2(except_type_t type, u64 tag) {
 	return setjmp((jmp_buf *) &p2except);
 }
 
-#define dsl_try1(type) dsl_try2(type, EXCEPT_TAG_NONE)
-#define dsl_try(type, tag...) VA_IF(dsl_try2(type, tag), dsl_try1(type), tag)
+#define dsl__try1(type) dsl_try2(type, EXCEPT_TAG_NONE)
+#define dsl__try(type, tag...) VA_IF(dsl_try2(type, tag), dsl_try1(type), tag)
+
+#define dsl_try_root3(VAR, BEFORE, CASES) ({ \
+	const i64 VAR = dsl__try_root();         \
+	BEFORE;                                  \
+	switch (VAR) { CASES; }                  \
+	VAR;                                     \
+})
+#define dsl_try_root2(BEFORE, BLOCK) dsl_try_root3(res, BEFORE, BLOCK)
+#define dsl_try_root1(BLOCK) dsl_try_root2((void) 0, BLOCK)
+#define dsl_try_root2_3(a, b, c...) VA_IF(dsl_try_root3(a, b, c), dsl_try_root2(a, b), c)
+#define dsl_try_root(a, b...) VA_IF(dsl_try_root2_3(a, b), dsl_try_root1(a), b)
+
+#define dsl_try5(type, tag, VAR, BEFORE, CASES) ({ \
+	const i64 VAR = dsl__try(type, tag);           \
+	BEFORE;                                        \
+	switch (VAR) { CASES; }                        \
+	VAR;                                           \
+})
+
+#define dsl_try4(type, tag, BEFORE, BLOCK) dsl_try5(type, tag, res, BEFORE, BLOCK)
+#define dsl_try3(type, tag, BLOCK) dsl_try4(type, tag, (void) 0, BLOCK)
+#define dsl_try2(type, BLOCK) dsl_try3(type, EXCEPT_TAG_NONE, BLOCK)
+
+#define dsl_try4_5(a, b, c, d, e...) VA_IF(dsl_try5(a, b, c, d, e), dsl_try4(a, b, c, d), e)
+#define dsl_try3_4_5(a, b, c, d...) VA_IF(dsl_try4_5(a, b, c, d), dsl_try3(a, b, c), d)
+#define dsl_try(a, b, c...) VA_IF(dsl_try3_4_5(a, b, c), dsl_try2(a, b), c)
