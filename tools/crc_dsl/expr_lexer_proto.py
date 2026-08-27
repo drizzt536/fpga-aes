@@ -134,6 +134,7 @@ def lex(expr: str, vars: dict) -> list[Token]:
 			case '(':
 				if tokens[-1].type in (TOKEN_LITERAL, TOKEN_VAR):
 					raise ValueError("literal or variable cannot immediately be followed by a parentheses")
+
 				depth += 1
 				tokens.append(Token(_expr=expr, type=TOKEN_LPAREN, ofs=i, len=1))
 
@@ -161,7 +162,7 @@ def lex(expr: str, vars: dict) -> list[Token]:
 
 			case '~':
 				if tokens[-1].type == TOKEN_OP_UNARY and tokens[-1].value == '~':
-					# an odd amount of these cancel out
+					# an even amount of consecutive `~` cancel out
 					tokens.pop()
 				else:
 					tokens.append(Token(_expr=expr, type=TOKEN_OP_UNARY, ofs=i, len=1))
@@ -183,23 +184,18 @@ def lex(expr: str, vars: dict) -> list[Token]:
 				tokens.append(Token(_expr=expr, type=TOKEN_OP_BINARY, ofs=i - 1, len=2))
 
 			case 'a': # and
-				i += 1
-
-				if i == len(expr):
+				if i + 2 >= len(expr):
 					raise ValueError(f"unknown or invalid character or token '{c}' at index {i - 1}.")
 
-				if expr[i] != 'n':
-					raise ValueError(f"unknown or invalid character or token '{c}' at index {i - 1}.")
+				if expr[i + 1] != 'n':
+					raise ValueError(f"unknown or invalid character or token '{c}' at index {i}.")
 
-				i += 1
+				if expr[i + 2] != 'd':
+					raise ValueError(f"unknown or invalid character or token '{c}' at index {i}.")
 
-				if i == len(expr):
-					raise ValueError(f"unknown or invalid character or token '{c}' at index {i - 2}.")
+				tokens.append(Token(_expr=expr, type=TOKEN_OP_BINARY, ofs=i, len=3))
 
-				if expr[i] != 'd':
-					raise ValueError(f"unknown or invalid character or token '{c}' at index {i - 2}.")
-
-				tokens.append(Token(_expr=expr, type=TOKEN_OP_BINARY, ofs=i - 2, len=3))
+				i += 2
 
 			case 'x' | 'o': # xor, or
 				if c == 'x':
@@ -344,13 +340,7 @@ def lex(expr: str, vars: dict) -> list[Token]:
 							tokens[-1] = t
 							continue
 
-
-
 				tokens.append(t)
-
-			case '\\':
-				# \$var can never be valid in %seteval
-				raise ValueError("equation cannot contain backslashes")
 
 			case _:
 				raise ValueError(f"unknown or invalid character or token '{c}' at index {i}.")
@@ -370,11 +360,13 @@ def lex(expr: str, vars: dict) -> list[Token]:
 				raise ValueError("unary operator immediately after a variable, literal, or right parentheses is not valid")
 		elif cur == TOKEN_OP_BINARY:
 			if prev == TOKEN_OP_BINARY:
-				raise ValueError(f"a binary operator immediately after a binary operator is not valid")
+				raise ValueError(f"binary operator immediately after a binary operator is not valid")
 			elif prev == TOKEN_OP_UNARY:
-				raise ValueError(f"a binary operator immediately after a unary operator is not valid")
+				raise ValueError(f"binary operator immediately after a unary operator is not valid")
 			elif prev == TOKEN_LPAREN:
-				raise ValueError(f"a binary operator immediately after left parentheses is not valid")
+				raise ValueError(f"binary operator immediately after left parentheses is not valid")
+			elif prev == TOKEN_NONE:
+				raise ValueError(f"binary operator as the first token is not valid")
 
 	if tokens[-1].type == TOKEN_NONE:
 		raise ValueError("expression can't be empty")

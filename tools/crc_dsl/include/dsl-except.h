@@ -3,6 +3,11 @@
 
 #include "setjmp.h" // "va-if.h", "int-types.h"
 
+#ifdef THISFILE
+	#undef THISFILE
+#endif
+#define THISFILE "dsl-except.h"
+
 #ifndef PAGE_SIZE
 	#define PAGE_SIZE 4096llu
 #endif
@@ -29,6 +34,36 @@
 #define until_likelyp(x, p)   while   likelyp(!(x), p)
 #define until_unlikelyp(x, p) while unlikelyp(!(x), p)
 
+// GCC's fuckass multichars are always big-endian regardless of target endianness,
+// so I have to byte swap on little-endian systems. bypassing `-Wmultichar` is okay
+// because it only exists because the feature is non-intuitive and error prone, but
+// I am using it correctly, so that isn't an issue.
+
+#define _MC_IMPL(wc) ({                               \
+	_Pragma("GCC diagnostic push")                    \
+	_Pragma("GCC diagnostic ignored \"-Wmultichar\"") \
+	wc;                                               \
+	_Pragma("GCC diagnostic pop")                     \
+})
+
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+	#define MC8(wc)  ((u8)  _MC_IMPL(__builtin_bswap16(wc)))
+	#define MC16(wc) ((u16) _MC_IMPL(__builtin_bswap16(wc)))
+	#define MC32(wc) ((u32) _MC_IMPL(__builtin_bswap32(wc)))
+	#define MC64(wc) ((u64) _MC_IMPL(__builtin_bswap64(wc)))
+#elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+	#define MC8(wc)  ((u8)  _MC_IMPL(wc))
+	#define MC16(wc) ((u16) _MC_IMPL(wc))
+	#define MC32(wc) ((u32) _MC_IMPL(wc))
+	#define MC64(wc) ((u64) _MC_IMPL(wc))
+#else
+	#error "target has unknown byte order. define __BYTE_ORDER__ manually."
+#endif
+
+// swapping these will break everything.
+#define EXCEPTION_FOUND    true
+#define EXCEPTION_NOTFOUND false
+
 #define DEFAULT_DEPTH_CAP       1024
 #define DEFAULT_ITER_CAP        1'000'000
 #define DSL_EXCEPT_START_SIZE   32
@@ -37,10 +72,11 @@ static u32 depth_cap = 0;
 static u32 iter_cap  = 0;
 
 typedef enum : u8 {
-	EXCEPT_CONTINUE     =   1,
-	EXCEPT_BREAK        =   2,
-	EXCEPT_EXIT_MACRO   =   4,
-	EXCEPT_EXIT_PROGRAM =   8,
+	EXCEPT_CONTINUE     =   1, // %continue\d*
+	EXCEPT_BREAK        =   2, // %break\d*
+	EXCEPT_EXIT_MACRO   =   4, // %exitmacro
+	EXCEPT_EXIT_PROGRAM =   8, // %exit
+	EXCEPT_EVAL_EXPAND  =  16, // %seteval try again with expanded variables
 
 	EXCEPT_GROUP_NONE   =   0,
 	EXCEPT_GROUP_TAGGED =   3, // loops and branches
@@ -48,12 +84,12 @@ typedef enum : u8 {
 	EXCEPT_GROUP_ANY    = 255,
 } except_type_t;
 
-#define EXCEPT_TAG_NONE  UINT64_MAX
-#define EXCEPT_TAG_ANY  (UINT64_MAX - 1)
+#define EXCEPT_TAG_NONE  UINT64_MAX      // for things that don't use tags
+#define EXCEPT_TAG_ANY  (UINT64_MAX - 1) // only for queries
 
-#define EXCEPT_ERR_OOM   (-256ll)
-#define EXCEPT_ERR_DEPTH (-257ll)
-#define EXCEPT_ERR_LEXER (-258ll)
+#define EXCEPT_ERR_OOM   (-256ll) // any memory-bandwidth related issue
+#define EXCEPT_ERR_DEPTH (-257ll) // exception max depth exceeded
+#define EXCEPT_ERR_LEXER (-258ll) // any non-OOM error during %seteval
 // EXCEPT_ERR_UNCAUGHT_* is -1 through -255
 // unreserved error codes start at -258
 
@@ -150,12 +186,13 @@ static void dsl_try_longjmp(i64 value, except_type_t type, u64 tag, u64 i, bool 
 FORCE_INLINE static void dsl_panic(i64 value) {
 	// this is the same as `dsl_throw_far(value)` or `dsl_throw(value)`,
 	// but it runs slightly less code
-	dsl_try_longjmp(value, EXCEPT_GROUP_ANY, EXCEPT_TAG_ANY, /*i*/ 0, /*found*/ true);
-	__builtin_unreachable();
+	// NOTE: pass found=true so it doesn't override the exit code.
+	dsl_try_longjmp(value, EXCEPT_GROUP_ANY, EXCEPT_TAG_ANY, /*i*/ 0, EXCEPTION_FOUND);
+	unreachable();
 }
 
 [[noreturn, maybe_unused]]
-static void dsk_throw_far3(i64 value, except_type_t type, u64 tag) {
+static void dsl_throw_far3(i64 value, except_type_t type, u64 tag) {
 	// throw (caught by the farthest catch, not the closest catch)
 	if (type == EXCEPT_GROUP_NONE) {
 		type = EXCEPT_GROUP_ANY; // just so the value isn't 0.
@@ -163,7 +200,7 @@ static void dsk_throw_far3(i64 value, except_type_t type, u64 tag) {
 	}
 
 	for (u64 i = 0; i < dsl_except.count; i++)
-		dsl_try_longjmp(value, type, tag, i, /*found*/ true);
+		dsl_try_longjmp(value, type, tag, i, EXCEPTION_FOUND);
 
 not_found:
 	dsl_try_longjmp(
@@ -171,29 +208,29 @@ not_found:
 		type,
 		tag,
 		/*i*/ 0,
-		/*found*/ false
+		EXCEPTION_NOTFOUND
 	);
-	__builtin_unreachable();
+	unreachable();
 }
 
-#define dsk_throw_far2(value, type) dsk_throw_far3(value, type, EXCEPT_TAG_ANY)
-#define dsk_throw_far1(value)       dsk_throw_far2(value, EXCEPT_GROUP_ANY)
+#define dsl_throw_far2(value, type) dsl_throw_far3(value, type, EXCEPT_TAG_ANY)
+#define dsl_throw_far1(value)       dsl_throw_far2(value, EXCEPT_GROUP_ANY)
 
-#define dsk_throw_far2_3(value, type, tag...) \
-	VA_IF(dsk_throw_far3(value, type, tag), dsk_throw_far2(value, type), tag)
+#define dsl_throw_far2_3(value, type, tag...) \
+	VA_IF(dsl_throw_far3(value, type, tag), dsl_throw_far2(value, type), tag)
 
-#define dsk_throw_far(value, type...) \
-	VA_IF(dsk_throw_far2_3(value, type), dsk_throw_far1(value), type)
+#define dsl_throw_far(value, type...) \
+	VA_IF(dsl_throw_far2_3(value, type), dsl_throw_far1(value), type)
 
 [[noreturn, maybe_unused]]
-static void dsl_throw(i64 value, except_type_t type, u64 tag) {
+static void dsl_throw3(i64 value, except_type_t type, u64 tag) {
 	if (type == EXCEPT_GROUP_NONE) {
 		type = EXCEPT_GROUP_ANY; // just so the value isn't 0.
 		goto not_found;
 	}
 
 	for (u64 i = dsl_except.count; i --> 0 ;)
-		dsl_try_longjmp(value, type, tag, i, /*found*/ true);
+		dsl_try_longjmp(value, type, tag, i, EXCEPTION_FOUND);
 
 not_found:
 	dsl_try_longjmp(
@@ -201,9 +238,9 @@ not_found:
 		type,
 		tag,
 		/*i*/ 0,
-		/*found*/ false
+		EXCEPTION_NOTFOUND
 	);
-	__builtin_unreachable();
+	unreachable();
 }
 
 #define dsl_throw2(value, type) dsl_throw3(value, type, EXCEPT_TAG_ANY)

@@ -13,7 +13,12 @@
 
 #include <stdlib.h>
 #include <stdio.h>
-#include "crc-dsl.h" // <stdlib.h>, <stdint.h>, <string.h>, "map.h", "va-if.h", "setjmp.h"
+#include "dsl-main.h" // <stdlib.h>, <stdint.h>, <string.h>, "map.h", "va-if.h", "setjmp.h"
+
+#ifdef THISFILE
+	#undef THISFILE
+#endif
+#define THISFILE "main.c"
 
 #ifdef _WIN32
 	#define fseek _fseeki64_nolock
@@ -218,6 +223,9 @@ int main(int argc, char **argv)
 	if (argc == 0)
 		goto extra_stuff;
 
+	if (argc > 1)
+		ewprintf("WARNING: program arguments past the first are ignored.\n");
+
 	// lines.array[i] are views into a buffer. they should not be freed independently.
 	// lines.array[0].ptr is always a pointer to the start of a valid C string.
 	// lines.array[0].ptr - sizeof(u64) is always freeable
@@ -230,29 +238,29 @@ int main(int argc, char **argv)
 			case PARSE_LINES_EOK:
 				break;
 			case PARSE_LINES_EOPEN:
-				eprintf("input file could not be opened.\n");
+				eprintf("%s: %s: input file could not be opened.\n", THISFILE, "main");
 				return ret;
 			case PARSE_LINES_ESEEK:
-				eprintf("input file could not be seeked.\n");
+				eprintf("%s: %s: input file could not be seeked.\n", THISFILE, "main");
 				return ret;
 			case PARSE_LINES_EOOM:
-				eprintf("OOM. requested %zu bytes.\n", in_prgm.count * sizeof(vstring));
+				eprintf("%s: %s: OOM. requested %zu bytes.\n", THISFILE, "main", in_prgm.count * sizeof(vstring));
 				return ret;
 			case PARSE_LINES_ENULL:
-				eprintf("file line %zu contains a null byte.\n", in_prgm.count + 1);
+				eprintf("%s: %s: file line %zu contains a null byte.\n", THISFILE, "main", in_prgm.count + 1);
 				return ret;
 		#if DEBUG
 			case PARSE_LINES_EBUG1:
-				eprintf("BUG: not enough lines allocated. allocated %zu.\n", in_prgm.count);
+				eprintf("%s: %s: [BUG] not enough lines allocated. allocated %zu.\n", THISFILE, "main", in_prgm.count);
 				return ret;
 			case PARSE_LINES_EBUG2:
-				eprintf("BUG: first line pointer is not 8 bytes past a freeable pointer.\n");
+				eprintf("%s: %s: [BUG] first line pointer is not 8 bytes past a freeable pointer.\n", THISFILE, "main");
 				return ret;
 		#endif
 			default:
-				__builtin_unreachable();
+				unreachable();
 		}
-	}
+	} // bare block
 
 	puts("original file:");
 	if (in_prgm.count != 0)
@@ -292,7 +300,7 @@ extra_stuff:
 
 		i++;
 		msleep(25);
-		if (i <= 32)
+		if (i <= 16)
 			longjmp(&env, (i64) i);
 
 		putchar('\n');

@@ -1,9 +1,7 @@
 #pragma once
 #define CRC_DSL_H
 
-#include "dsl-vars.h"
-#include "dsl-except.h" // "dsl-except.h", "setjmp.h", "dsl-vars.h", <gmp.h>
-#include <ctype.h> // isalnum
+#include "dsl-lexer.h" // "dsl-except.h", "setjmp.h", "dsl-vars.h", <gmp.h>
 
 #ifdef _WIN32
 	#include <windows.h>
@@ -20,6 +18,11 @@
 	// under the constraints, this will never fail (<=256 bytes), relatively new glibc+kernel
 	#define dsl_rand(buf, len) ((void) getrandom(buf, len, /*flags*/ 0))
 #endif
+
+#ifdef THISFILE
+	#undef THISFILE
+#endif
+#define THISFILE "dsl-main.h"
 
 #define DSL_MAJOR "1"
 #define DSL_MINOR "5"
@@ -60,13 +63,6 @@
 	prgm = (typeof(prgm)) {};            \
 	(void) 0;                            \
 })
-
-// this assumes little endian
-#define B1_TO_U08(c0) ((u8) c0)
-#define B2_TO_U16(c0, c1) ((u16)c1 << 8 | (u16)c0)
-#define B4_TO_U32(c0, c1, c2, c3) ((u32)c3 << 24 | (u32)c2 << 16 | (u32)c1 << 8 | (u32)c0)
-#define B8_TO_U64(c0, c1, c2, c3, c4, c5, c6, c7) \
-	((u64)B4_TO_U32(c4, c5, c6, c7) << 32 | (u64)B4_TO_U32(c0, c1, c2, c3))
 
 typedef union {
 	u64 raw;
@@ -160,18 +156,12 @@ FORCE_INLINE static void msleep(u32 ms) {
 	#endif
 }
 
-FORCE_INLINE static bool line_isspace(char c) {
-	// stuff that can be whitespace inside of a line
-	// I don't care about \r, \n, or \f
-	return c == ' ' || c == '\t';
-}
-
-#define IS_RAW_LINE(LINE) ({                                         \
-	const vstring line_ = (LINE);                                    \
-	likely(line_.len >= _strlen("%raw[]"))                           \
-		&& unlikely(*(u32 *)line_.ptr == B4_TO_U32('%','r','a','w')) \
-		&& likely(line_.ptr[_strlen("%raw")] == '[')                 \
-		&& likely(line_.ptr[line_.len - 1] == ']');                  \
+#define IS_RAW_LINE(LINE) ({                           \
+	const vstring line_ = (LINE);                      \
+	likely(line_.len >= _strlen("%raw[]"))             \
+		&& unlikely(*(u32 *)line_.ptr == MC32('%raw')) \
+		&& likely(line_.ptr[_strlen("%raw")] == '[')   \
+		&& likely(line_.ptr[line_.len - 1] == ']');    \
 })
 
 // the argument should not have side-effects for the next two macros
@@ -202,9 +192,11 @@ static bool strip_lines(vstring_list *p2in_prgm) {
 		char *null_pos = memchr(buf, '\0', *(u64 *) (buf - sizeof(u64)));
 
 		if unlikely(null_pos != nullptr) {
-			if (null_pos < buf) __builtin_unreachable();
+			if (null_pos < buf) unreachable();
 
-			eprintf("program contains null character at position %zu\n", (u64) (null_pos - buf) + 1);
+			eprintf("%s: %s: program contains null character at position %zu\n",
+				THISFILE, "strip_lines", (u64) (null_pos - buf) + 1
+			);
 			return false;
 		}
 	}
@@ -244,7 +236,7 @@ static bool strip_lines(vstring_list *p2in_prgm) {
 					break;
 				}
 
-				if (pipe < line.ptr) __builtin_unreachable();
+				if (pipe < line.ptr) unreachable();
 				const u64 p = (u64) (pipe - line.ptr); // pipe index
 				const u64 l = p - r; // length
 
@@ -330,7 +322,7 @@ static void reset_scratch(void) {
 		return;
 
 	// exponential moving average
-	if likelyp (dsl_total_lines == 0, 1.0d / 64) {
+	if likelyp (dsl_total_lines == 0, 1.0d / 128) {
 		// 8-bit integer overflow. also note, the increment already happened.
 		dsl_total_lines = 128;
 		dsl_total_bytes >>= 1;
@@ -368,7 +360,9 @@ static void push_line(vstring line) {
 		vstring *const new_array = realloc(dsl_out_prgm.array, new_cap * sizeof(*dsl_out_prgm.array));
 
 		if unlikely (new_array == nullptr) {
-			eprintf("crc-dsl.h: push_line: %s realloc failed. could not allocate %zu bytes. preproc exiting early.\n", "array", new_cap * sizeof(*dsl_out_prgm.array));
+			eprintf("%s: %s: %s realloc failed. could not allocate %zu bytes. preproc exiting early.\n",
+				THISFILE, "push_line", "array", new_cap * sizeof(*dsl_out_prgm.array)
+			);
 			goto oom;
 		}
 
@@ -392,7 +386,9 @@ static void push_line(vstring line) {
 		char *const new_buf = realloc(tmp_buf.ptr, tmp_buf.size);
 
 		if unlikely (new_buf == nullptr) {
-			eprintf("crc-dsl.h: push_line: %s realloc failed. could not allocate %zu bytes. preproc exiting early.\n", "buffer", tmp_buf.size);
+			eprintf("%s: %s: %s realloc failed. could not allocate %zu bytes. preproc exiting early.\n",
+				THISFILE, "push_line", "buffer", tmp_buf.size
+			);
 			goto oom;
 		}
 
@@ -450,6 +446,8 @@ static void _preproc(
 
 		// TODO: when doing `%seteval`, set `dsl_except.dispatch_line` in case the lexer crashes.
 		//       The lexer doesn't know the dispatch line, so it needs to be set before calling it.
+		// TODO: when doing `%seteval`, set up a try/catch for in case there are invalid variables
+		//       and the line needs to be expanded fully to be valid
 
 		// TODO: do the other constructs
 		if (debug)
@@ -490,14 +488,14 @@ static vstring_list preproc(vstring_list in_prgm, MapEntryCList start_vars, bool
 		goto catastrophic_oom;
 
 	if unlikely (!strip_lines(&in_prgm)) {
-		eprintf("crc-dsl.h: strip_lines: errors were encountered.\n");
+		eprintf("%s: %s: errors were encountered.\n", THISFILE, "strip_lines");
 		goto done;
 	}
 
 	// all three sections in the variable value section have to be the same size
 	static_assert(sizeof(mpz_t) == 16 && sizeof(i128) == 16 && sizeof(vstring) == 16);
 
-	const map_hash_t old_map_key = map_key();
+	volatile const map_hash_t old_map_key = map_key();
 	{
 		map_hash_t key;
 		dsl_rand(&key, sizeof key);
@@ -530,7 +528,7 @@ static vstring_list preproc(vstring_list in_prgm, MapEntryCList start_vars, bool
 
 	#if DEBUG
 		if unlikely (dsl_vars != nullptr) {
-			eprintf("BUG: `dsl_vars` is not NULL at the start of `preproc`.\n");
+			eprintf("%s: %s: [BUG] `dsl_vars` is not NULL at the start of `preproc`.\n", THISFILE, "preproc");
 			exit(1);
 		}
 	#endif
@@ -629,10 +627,34 @@ static vstring_list preproc(vstring_list in_prgm, MapEntryCList start_vars, bool
 	dsl_total_bytes = 0;
 	dsl_total_lines = 0;
 
-	_preproc(
-		in_prgm,
-		0 /*start_line*/,
-		debug
+	dsl_try_root(
+	case 0:
+		_preproc(in_prgm, /*start_line*/ 0, debug);
+		{
+			char *expr = (char *)
+				"(((1))) ^ (~~2) . &&$term_width * (&7_3_4_1 / (10 + ~8)) %"
+				"--9 + -10 << &-11 >> 12$term_height xor 13 or +14 xor 15 + 2^-3";
+
+			printf("test expr: %s\n", expr);
+
+			token_list tokens = lex((vstring) {
+				.ptr = expr,
+				.len = strlen(expr),
+			});
+
+			printf(" out expr: ");
+			log_tokens_expr(tokens);
+			log_tokens(tokens);
+			free(tokens.array);
+		}
+		// NOTE: if successful
+		break;
+	default:
+		// TODO: check for the specific exit codes
+		// NOTE: only negative codes are for errors
+		if (res < 0)
+			eprintf("%s: %s: exit code %zd from line %zu.\n", THISFILE, "preproc", res, dsl_except.dispatch_line);
+		break;
 	);
 
 	free(dsl_scratch.ptr);
@@ -642,7 +664,6 @@ static vstring_list preproc(vstring_list in_prgm, MapEntryCList start_vars, bool
 		.size  = 0,
 	};
 
-
 	// replace the final newline with null
 	dsl_out_buf.ptr[dsl_out_buf.usage /*sizeof(u64) + *(u64 *) dsl_out_buf.ptr*/] = '\0';
 
@@ -650,7 +671,7 @@ static vstring_list preproc(vstring_list in_prgm, MapEntryCList start_vars, bool
 
 	// destroy the variable map
 	Map_foreach(dsl_vars,
-		dsl_log_var((var_t *) p2entry);
+		dsl_log_var ((var_t *) p2entry);
 		dsl_free_var((var_t *) p2entry);
 	);
 
@@ -675,11 +696,12 @@ done:
 
 #if DEBUG
 	if unlikely (dsl_out_prgm.array->ptr != dsl_out_buf.ptr + sizeof(u64))
-		eprintf("crc-dsl.h: preproc: `dsl_out_prgm.array->ptr` and `dsl_out_buf.ptr + 8` don't match\n");
+		eprintf("%s: %s: `dsl_out_prgm.array->ptr` and `dsl_out_buf.ptr + 8` don't match\n", THISFILE, "preproc");
 #endif
 
 	// shrink line arrray
 	dsl_out_prgm.array = realloc(dsl_out_prgm.array, dsl_out_prgm.count * sizeof(*dsl_out_prgm.array));
+
 
 	return (vstring_list) {
 		.array = dsl_out_prgm.array,
@@ -687,6 +709,6 @@ done:
 	};
 
 catastrophic_oom:
-	eprintf("crc-dsl.h: preproc: catastrophic OOM.\n");
+	eprintf("%s: %s: catastrophic OOM.\n", THISFILE, "preproc");
 	exit(1);
 }

@@ -14,6 +14,11 @@
 #define MAP_H_HASH64
 #include "map.h" // <stdlib.h>, <stdint.h>, <string.h>, "va-if.h"
 
+#ifdef THISFILE
+	#undef THISFILE
+#endif
+#define THISFILE "dsl-vars.h"
+
 typedef enum : u8 {
 	VAR_SPZ, // i128
 	VAR_MPZ, // mpz_t
@@ -65,17 +70,27 @@ static void dsl_free_var(var_t *p2entry) {
 			free(pval->str.ptr);
 			break;
 		default:
-			__builtin_unreachable();
+			unreachable();
 	}
 
 	free(pval);
 }
 
+FORCE_INLINE static var_t *dsl_get_var2(const var_key_t key, map_hash_t hash) {
+	return (var_t *) Map_get_entry_by(dsl_vars, &key, vstring_cmp, hash);
+}
+
+FORCE_INLINE static var_t *dsl_get_var1(const var_key_t key) {
+	return dsl_get_var2(key, jhash(key.ptr, key.len));
+}
+
+#define dsl_get_var(key, hash...) VA_IF(dsl_get_var2(key, hash), dsl_get_var1(key), hash)
+
 [[gnu::nonnull]]
 static void dsl_set_var(var_key_t *pkey, var_val_t *pval) {
-	const map_hash_t hash = jhash(pval->str.ptr, pval->str.len);
+	const map_hash_t hash = jhash(pkey->ptr, pkey->len);
 
-	var_t *const p2entry = (var_t *) Map_get_entry_by(dsl_vars, pkey, vstring_cmp, hash);
+	var_t *const p2entry = dsl_get_var(*pkey, hash);
 
 	if (p2entry != nullptr) {
 		// variable exists free the old stuff and update in-place
@@ -84,12 +99,64 @@ static void dsl_set_var(var_key_t *pkey, var_val_t *pval) {
 		p2entry->val = pval;
 	}
 	else
-		dsl_vars = Map_set_by(dsl_vars, pkey, pval, vstring_cmp, hash, MAP_UNOWNED);
+		dsl_vars = Map_set_by(dsl_vars, pkey, pval, vstring_cmp, hash, vstring_hash, MAP_UNOWNED);
 }
 
 [[maybe_unused, gnu::nonnull]]
 static void dsl_log_var(var_t *p2entry) {
-	// NOTE: the pointer is a C string as well as a V string.
+	// NOTE: the key pointer is a C string as well as a V string.
+#if DEBUG
+	printf("\"%s\" => { ", p2entry->key->ptr);
+
+	var_val_t *pval = p2entry->val;
+
+	switch (pval->type) {
+		case VAR_SPZ: {
+			const bool sign = pval->spz >= 0;
+			const u128 magn = sign ? (u128) pval->spz : -(u128) pval->spz;
+
+			printf(
+				".type = VAR_SPZ, .val = %s%016zx%016zx",
+				"-" + !sign,
+				(u64)(magn >> 64),
+				(u64) magn
+			);
+
+			break;
+		}
+		case VAR_MPZ: {
+			#pragma GCC diagnostic push
+			#pragma GCC diagnostic ignored "-Waddress-of-packed-member"
+			const char *str = mpz_get_str(NULL, 10, pval->mpz);
+			#pragma GCC diagnostic pop
+
+			printf(".type = VAR_MPZ, .val = %s", str);
+
+			free((void *) str);
+			break;
+		}
+		case VAR_STR:
+			printf(
+				".type = VAR_STR, .val = \"%s\", .len = %zu",
+				pval->str.ptr,
+				pval->str.len
+			);
+
+			break;
+		default:
+			unreachable();
+	}
+
+	const map_hash_t hash = jhash(p2entry->key->ptr, p2entry->key->len);
+	#ifdef MAP_H_HASH128
+		printf(" }; hash = 0x%016zx%016zx; p2entry = 0x%016zx\n",
+			(u64) (hash >> 64), (u64) hash,
+			(u64) (uintptr_t) p2entry
+		);
+	#else
+		printf(" }; hash = 0x%016zx; p2entry = 0x%016zx\n", hash, (u64) (uintptr_t) p2entry);
+	#endif
+#else // not debug
 	printf("\"%s\" => {\n\t", p2entry->key->ptr);
 
 	var_val_t *pval = p2entry->val;
@@ -135,10 +202,11 @@ static void dsl_log_var(var_t *p2entry) {
 
 			break;
 		default:
-			__builtin_unreachable();
+			unreachable();
 	}
 
 	putchar('\n');
 	putchar('}');
 	putchar('\n');
+#endif
 }

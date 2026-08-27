@@ -135,6 +135,7 @@ ___chkstk_ms: ; void ___chkstk_ms(i64 size);
 	ret
 
 __mingw_vfprintf:
+	;; GMP calls into this for some reason even though it is a UCRT build and not MSVCRT build.
 	jmp 	vfprintf
 %else
 _start:

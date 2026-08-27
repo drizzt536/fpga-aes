@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 /*
-	map.h v0.9.1
+	map.h v0.9.2
 	Copyright (c) 2026 Daniel Janusch
 
 	Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -177,7 +177,7 @@
 
 #define MAP_VMAJOR 0llu
 #define MAP_VMINOR 9llu
-#define MAP_VMICRO 1llu
+#define MAP_VMICRO 2llu
 #define MAP_VERSION ((MAP_VMAJOR << 16) | (MAP_VMINOR << 8) | MAP_VMICRO)
 
 #include <stdlib.h>
@@ -250,6 +250,22 @@
 	#define nullstr "(null)"
 #endif
 
+#if defined(MAP_H_HASH128) && defined(MAP_H_HASH64)
+	#error "`MAP_H_HASH128` and `MAP_H_HASH64` cannot both be defined."
+#endif
+
+#ifdef MAP_H_HASH128
+	typedef u128 map_hash_t;
+	#define _jhash jhash128
+#else
+	typedef u64 map_hash_t;
+	#define _jhash jhash64
+
+	#ifndef MAP_H_HASH64
+		#define MAP_H_HASH64
+	#endif
+#endif
+
 typedef struct {
 	union {
 		char *ptr; // memory ownership is tied to the object
@@ -266,22 +282,7 @@ typedef struct { // not used internally
 } vstring_list;
 
 typedef i32 (*map_cmp_t)(const void *, const void *);
-
-#if defined(MAP_H_HASH128) && defined(MAP_H_HASH64)
-	#error "`MAP_H_HASH128` and `MAP_H_HASH64` cannot both be defined."
-#endif
-
-#ifdef MAP_H_HASH128
-	typedef u128 map_hash_t;
-	#define _jhash jhash128
-#else
-	typedef u64 map_hash_t;
-	#define _jhash jhash64
-
-	#ifndef MAP_H_HASH64
-		#define MAP_H_HASH64
-	#endif
-#endif
+typedef map_hash_t (*map_hashfn_t)(const void *);
 
 #define _jhash3(in, len, key) _jhash(in, len, key)
 #define _jhash2(in, len)      _jhash(in, len, map_key())
@@ -380,9 +381,9 @@ typedef struct {
 	_Pragma("GCC diagnostic push") \
 	_Pragma("GCC diagnostic ignored \"-Wnull-dereference\"") \
 	if (t_->o_tcnt > t_->o_size)     \
-		__builtin_unreachable();      \
+		unreachable();                \
 	if (t_->m_size > t_->m_cap)        \
-		__builtin_unreachable();        \
+		unreachable();                  \
 	_Pragma("GCC diagnostic pop")        \
 	t_->m_size + t_->o_size - t_->o_tcnt; \
 })
@@ -670,18 +671,26 @@ Map Map_destroy_shallow(Map this);
 #define Map_vset_ref(pthis, key, val...) \
 	VA_IF(Map_vset_ref3_4(pthis, key, val), Map_vset_ref2(pthis, key), val)
 
-#define Map_set_by5(this, key, val, cmp, hash) Map_set_by6(this, key, val, cmp, hash, MAP_DEF_OWNED)
-#define Map_set_by(this, key, val, cmp, hash, owned...) \
-	VA_IF(Map_set_by6(this, key, val, cmp, hash, owned), Map_set_by5(this, key, val, cmp, hash), owned)
+#define Map_set_by6(this, key, val, cmp, hash, hashfn) \
+	Map_set_by7(this, key, val, cmp, hash, hashfn, MAP_DEF_OWNED)
+#define Map_set_by(this, key, val, cmp, hash, hashfn, owned...) VA_IF( \
+	Map_set_by7(this, key, val, cmp, hash, hashfn, owned),             \
+	Map_set_by6(this, key, val, cmp, hash, hashfn),                    \
+	owned                                                              \
+)
 
-#define Map_set_by_ref6(pthis, key, val, cmp, hash, owned) ({ \
-	Map *const p = pthis;                                     \
-	*p = Map_set_by(*p, key, val, cmp, hash, owned);          \
-	(void) 0;                                                 \
+#define Map_set_by_ref7(pthis, key, val, cmp, hash, hashfn, owned) ({ \
+	Map *const p = pthis;                                             \
+	*p = Map_set_by(*p, key, val, cmp, hash, hashfn, owned);          \
+	(void) 0;                                                         \
 })
-#define Map_set_by_ref5(pthis, key, val, cmp, hash) Map_set_by_ref6(pthis, key, val, cmp, hash, MAP_DEF_OWNED)
-#define Map_set_by_ref(pthis, key, val, cmp, hash, owned...) \
-	VA_IF(Map_set_by_ref6(pthis, key, val, cmp, hash, owned), Map_set_by_ref5(pthis, key, val, cmp, hash), owned)
+#define Map_set_by_ref6(pthis, key, val, cmp, hash, hashfn) \
+	Map_set_by_ref7(pthis, key, val, cmp, hash, hashfn, MAP_DEF_OWNED)
+#define Map_set_by_ref(pthis, key, val, cmp, hash, hashfn, owned...) VA_IF( \
+	Map_set_by_ref7(pthis, key, val, cmp, hash, hashfn, owned),             \
+	Map_set_by_ref6(pthis, key, val, cmp, hash, hashfn),                    \
+	owned                                                                   \
+)
 
 #define Map_vsetall_ref(pthis, entries) ({ \
 	Map *const p = pthis;                  \
@@ -746,8 +755,9 @@ Map Map_destroy_shallow(Map this);
 #define Map_tovstring(this, owned...) VA_IF(Map_tovstring2(this, owned), Map_tovstring1(this), owned)
 
 [[gnu::pure]] MAP_STATIC u64 map_size(u64 size);
+[[gnu::nonnull, gnu::pure]] MAP_INLINE map_hash_t map_hash(const void *in);
 [[gnu::nonnull, gnu::pure]] MAP_STATIC i32 vstring_cmp(const void *a, const void *b);
-[[gnu::nonnull, gnu::pure]] MAP_INLINE map_hash_t map_hash(const char *cstr);
+[[gnu::nonnull, gnu::pure]] MAP_STATIC map_hash_t vstring_hash(const void *in);
 MAP_INLINE void map_key1(map_hash_t key);
 [[nodiscard, gnu::malloc]] MAP_STATIC Map Map_create2(u64 m_cap, u64 o_cap);
 [[maybe_unused, gnu::nonnull]] MAP_STATIC void Map_destroy_ref1(Map *pthis);
@@ -758,15 +768,16 @@ MAP_INLINE void map_key1(map_hash_t key);
 [[gnu::nonnull, gnu::pure]] MAP_STATIC MapEntry *Map_get_entry_by(ConstMap this, const void *key, map_cmp_t cmp, map_hash_t hash);
 [[gnu::nonnull, gnu::pure]] MAP_INLINE char *Map_get3(ConstMap this, const char *key, map_hash_t hash);
 [[gnu::nonnull, gnu::pure]] MAP_INLINE void *Map_get_by(ConstMap this, const void *key, map_cmp_t cmp, map_hash_t hash);
-[[maybe_unused, gnu::nonnull]] MAP_STATIC bool Map_delete4(Map this, const char *key, u64 hash, bool owned);
-[[maybe_unused, gnu::nonnull]] MAP_STATIC bool Map_delete_by5(Map this, const void *key, map_cmp_t cmp, u64 hash, bool owned);
+[[maybe_unused, gnu::nonnull]] MAP_STATIC bool Map_delete4(Map this, const char *key, map_hash_t hash, bool owned);
+[[maybe_unused, gnu::nonnull]] MAP_STATIC bool Map_delete_by5(Map this, const void *key, map_cmp_t cmp, map_hash_t hash, bool owned);
 [[nodiscard, gnu::nonnull, gnu::malloc]] MAP_STATIC Map Map_mresize(Map this, u64 m_cap);
+[[nodiscard, gnu::nonnull, gnu::malloc]] MAP_STATIC Map Map_mresize_by(Map this, u64 m_cap, map_cmp_t cmp, map_hashfn_t hashfn);
 [[nodiscard, gnu::nonnull, gnu::malloc]] MAP_INLINE Map Map_rehash(Map this);
 [[gnu::nonnull(1,2)]] MAP_STATIC bool Map_set_raw4(Map this, const char *restrict key, const char *restrict val, bool owned);
 [[gnu::nonnull(1,2,4)]] MAP_STATIC bool Map_set_raw_by6(Map this, const void *restrict key, const void *restrict val, map_cmp_t cmp, map_hash_t hash, bool owned);
 [[nodiscard, gnu::nonnull(1,2)]] MAP_STATIC Map Map_set4(Map this, const char *restrict key, const char *restrict val, bool owned);
 [[nodiscard, gnu::nonnull(1,2)]] MAP_STATIC Map Map_vset4(Map this, const vstring *restrict key, const void *restrict val, bool owned);
-[[nodiscard, maybe_unused, gnu::nonnull(1,2,4)]] MAP_STATIC Map Map_set_by6(Map this, const void *restrict key, const void *restrict val, map_cmp_t cmp, map_hash_t hash, bool owned);
+[[nodiscard, maybe_unused, gnu::nonnull(1,2,4,6)]] MAP_STATIC Map Map_set_by7(Map this, const void *restrict key, const void *restrict val, map_cmp_t cmp, map_hash_t hash, map_hashfn_t hashfn, bool owned);
 [[nodiscard, maybe_unused, gnu::nonnull]] MAP_STATIC Map Map_vsetall(Map this, MapEntryVList entries);
 [[nodiscard, maybe_unused, gnu::nonnull]] MAP_STATIC Map Map_csetall3(Map this, MapEntryCList entries, bool owned);
 [[maybe_unused, gnu::nonnull]] MAP_STATIC void Map_getall(ConstMap this, const char *keys[], u64 count);
@@ -858,13 +869,6 @@ MAP_STATIC u64 map_size(u64 size) {
 	return size << 1 < prev + next ? prev : next;
 }
 
-[[gnu::nonnull, gnu::pure]]
-MAP_STATIC i32 vstring_cmp(const void *a, const void *b) {
-	vstring *va = (vstring *) a;
-	vstring *vb = (vstring *) b;
-	return va->len == vb->len ? strncmp(va->ptr, vb->ptr, va->len) : 1;
-}
-
 #define jhash_mulhi64(x, y) ( (u64) ((u128) (x) * (y) >> 64) )
 #define jhash_bswap64(x) __builtin_bswap64((u64) (x))
 #define map__u128c(hi, lo) ((u128) (0x##hi##llu) << 64 | (u128) (0x##lo##llu))
@@ -872,7 +876,7 @@ MAP_STATIC i32 vstring_cmp(const void *a, const void *b) {
 #ifdef MAP_H_HASH128
 // 128-bit variant
 
-#define jhash_bswap128(x) ( (u128) jhash_bswap64(x) << 64 | jhash_bswap64((x) >> 64) )
+#define jhash_bswap128(x) __builtin_bswap128(x)
 
 // this is an approximation. multiplication with `unsigned _BitInt(256)` is slow as shit, and I also don't
 // need the entire result, so I will just not do that.
@@ -932,7 +936,7 @@ MAP_STATIC u128 jhash128(const void *in, u64 len, u128 key) {
 		fbkh = hash;
 
 		switch (len) {
-			default: __builtin_unreachable(); break;
+			default: unreachable(); break;
 			case 15: block |= (u128) ((const u8 *) data)[14] << 14*8; [[fallthrough]];
 			case 14: block |= (u128) ((const u8 *) data)[13] << 13*8; [[fallthrough]];
 			case 13: block |= (u128) ((const u8 *) data)[12] << 12*8; [[fallthrough]];
@@ -1016,7 +1020,7 @@ MAP_STATIC u64 jhash64(const void *in, u64 len, u64 key) {
 		fbkh = hash;
 
 		switch (len) {
-			default: __builtin_unreachable(); break;
+			default: unreachable(); break;
 			case 7: block |= (u64) ((const u8 *) data)[6] << 6*8; [[fallthrough]];
 			case 6: block |= (u64) ((const u8 *) data)[5] << 5*8; [[fallthrough]];
 			case 5: block |= (u64) ((const u8 *) data)[4] << 4*8; [[fallthrough]];
@@ -1043,8 +1047,22 @@ MAP_STATIC u64 jhash64(const void *in, u64 len, u64 key) {
 #endif
 
 [[gnu::nonnull, gnu::pure]]
-MAP_INLINE map_hash_t map_hash(const char *cstr) {
+MAP_INLINE map_hash_t map_hash(const void *in) {
+	const char *cstr = (const char *) in;
 	return jhash(cstr, strlen(cstr), map_key());
+}
+
+[[gnu::nonnull, gnu::pure]]
+MAP_STATIC i32 vstring_cmp(const void *a, const void *b) {
+	vstring *va = (vstring *) a;
+	vstring *vb = (vstring *) b;
+	return va->len == vb->len ? strncmp(va->ptr, vb->ptr, va->len) : 1;
+}
+
+[[gnu::nonnull, gnu::pure]]
+MAP_STATIC map_hash_t vstring_hash(const void *in) {
+	vstring *const key = (vstring *) in;
+	return jhash(key->ptr, key->len);
 }
 
 MAP_INLINE void map_key1(map_hash_t key) {
@@ -1255,7 +1273,7 @@ MAP_STATIC bool Map_oresize2(Map this, u64 o_cap) {
 
 	// assert the invariants from the rest of the code in case it helps GCC with optimization.
 	if (this->o_cap < MAP_H_MIN_OCAP || this->o_cap < this->o_size + 1)
-		__builtin_unreachable();
+		unreachable();
 
 	if (o_cap < MAP_H_MIN_OCAP || o_cap < this->o_size + 2)
 		return false; // not allowed
@@ -1310,7 +1328,7 @@ MAP_INLINE void *Map_get_by(ConstMap this, const void *key, map_cmp_t cmp, map_h
 }
 
 [[maybe_unused, gnu::nonnull]]
-MAP_INLINE bool Map__delete_by(Map this, const void *key, map_cmp_t cmp, u64 hash, bool owned) {
+MAP_INLINE bool Map__delete_by(Map this, const void *key, map_cmp_t cmp, map_hash_t hash, bool owned) {
 	// returns true if the entry was found, and false if it wasn't
 
 	hash = Map_bucket_from_hash(this, hash);
@@ -1398,12 +1416,12 @@ found:
 }
 
 [[maybe_unused, gnu::nonnull]]
-MAP_STATIC bool Map_delete4(Map this, const char *key, u64 hash, bool owned) {
+MAP_STATIC bool Map_delete4(Map this, const char *key, map_hash_t hash, bool owned) {
 	return Map__delete_by(this, key, (map_cmp_t) strcmp, hash, owned);
 }
 
 [[maybe_unused, gnu::nonnull]]
-MAP_STATIC bool Map_delete_by5(Map this, const void *key, map_cmp_t cmp, u64 hash, bool owned) {
+MAP_STATIC bool Map_delete_by5(Map this, const void *key, map_cmp_t cmp, map_hash_t hash, bool owned) {
 	return Map__delete_by(this, key, cmp, hash, owned);
 }
 
@@ -1480,11 +1498,18 @@ MAP_STATIC bool Map_set_raw_by6(
 	if (this->buckets[bucket].key == nullptr)
 		Map__set_raw_nonexisting(this, key, val, bucket);
 
-	return Map__set_raw_existing(this, key, val, owned, bucket, Map_get_entry_by(this, key, cmp, bucket));
+	return Map__set_raw_existing(
+		this,
+		key,
+		val,
+		owned,
+		bucket,
+		Map_get_entry_by(this, key, cmp, bucket)
+	);
 }
 
-[[nodiscard, gnu::nonnull, gnu::malloc]]
-MAP_STATIC Map Map_mresize(Map this, u64 m_cap) {
+[[nodiscard, gnu::nonnull(1), gnu::malloc]]
+MAP_INLINE Map Map__mresize_by(Map this, u64 m_cap, bool custom, map_cmp_t cmp, map_hashfn_t hashfn) {
 	// if m_cap is a lot smaller than this->o_cap, you can end up with a really
 	// large overflow arena since Map_set_raw only ever calls Map_oresize, and
 	// will not recursively call Map_mresize. this doesn't need a view version
@@ -1503,7 +1528,10 @@ MAP_STATIC Map Map_mresize(Map this, u64 m_cap) {
 
 	Map_foreach(this,
 		// ownership shouldn't matter
-		Map_set_raw(new_map, entry.key, entry.val, MAP_UNOWNED)
+		if (custom)
+			Map_set_raw_by(new_map, entry.key, entry.val, cmp, hashfn(entry.key), MAP_UNOWNED);
+		else
+			Map_set_raw(new_map, entry.key, entry.val, MAP_UNOWNED);
 	);
 
 	if (Map_count(new_map) != Map_count(this)) {
@@ -1516,14 +1544,24 @@ MAP_STATIC Map Map_mresize(Map this, u64 m_cap) {
 }
 
 [[nodiscard, gnu::nonnull, gnu::malloc]]
+MAP_STATIC Map Map_mresize(Map this, u64 m_cap) {
+	return Map__mresize_by(this, m_cap, /*custom*/ false, /*cmp*/ nullptr, /*hashfn*/ nullptr);
+}
+
+[[nodiscard, gnu::nonnull, gnu::malloc]]
+MAP_STATIC Map Map_mresize_by(Map this, u64 m_cap, map_cmp_t cmp, map_hashfn_t hashfn) {
+	return Map__mresize_by(this, m_cap, /*custom*/ true, cmp, hashfn);
+}
+
+[[nodiscard, gnu::nonnull, gnu::malloc]]
 MAP_INLINE Map Map_rehash(Map this) {
 	const u64 m_cap = this->m_cap;
 	this->m_cap = 0; // bypass the check for if it is an actual resize
 	return Map_mresize(this, m_cap);
 }
 
-[[gnu::nonnull]]
-MAP_INLINE Map Map__set_grow(Map this) {
+[[gnu::nonnull(1)]]
+MAP_INLINE Map Map__set_grow_impl(Map this, bool custom, map_cmp_t cmp, map_hashfn_t hashfn) {
 	/*
 	pseudocode:
 	if bucket utilization > 0.75
@@ -1557,9 +1595,12 @@ MAP_INLINE Map Map__set_grow(Map this) {
 	}
 	*/
 
+	#define MRESIZE(this, new_cap) \
+		(custom ? Map_mresize_by(this, new_cap, cmp, hashfn) : Map_mresize(this, new_cap))
+
 	if (this->m_size > this->m_cap*3 >> 2)
 		// size >= 75% of cap => buckets almost full
-		return Map_mresize(this, this->m_cap*3 >> 1);
+		return MRESIZE(this, this->m_cap*3 >> 1);
 
 	if (this->o_size + 1 < this->o_cap)
 		// buckets and overflow are both not almost full
@@ -1570,13 +1611,13 @@ MAP_INLINE Map Map__set_grow(Map this) {
 
 	if (this->m_size*5 >= this->m_cap*3)
 		// 0.6 <= k: resize the map
-		return Map_mresize(this, this->m_cap*3 >> 1);
+		return MRESIZE(this, this->m_cap*3 >> 1);
 
 	// NOTE: 5 | 20 and 3 | 9, so the compiler can reuse previous calculations
 	if (this->m_size*20 >= this->m_cap*9) {
 		// 0.45 <= k < 0.6: if o_tcnt >= o_cap/4, GC, else resize the map
 		if (this->o_tcnt < this->o_cap >> 2) // if overflow utilization > 75%
-			return Map_mresize(this, this->m_cap*3 >> 1);
+			return MRESIZE(this, this->m_cap*3 >> 1);
 
 		Map_gc(this);
 		return this;
@@ -1603,11 +1644,23 @@ MAP_INLINE Map Map__set_grow(Map this) {
 		Map_gc(this);
 	else if (this->m_cap < 0x1000 && this->m_cap < this->o_cap >> 3)
 		// idk, maybe the hash collisions are only because of a bad prime or something.
-		this = Map_mresize(this, this->m_cap*3 >> 1);
+		this = MRESIZE(this, this->m_cap*3 >> 1);
 	else
 		Map_oresize(this, this->o_cap*3);
 
 	return this;
+
+	#undef MRESIZE
+}
+
+[[gnu::nonnull]]
+MAP_INLINE Map Map__set_grow(Map this) {
+	return Map__set_grow_impl(this, /*custom*/ false, /*cmp*/ nullptr, /*hashfn*/ nullptr);
+}
+
+[[gnu::nonnull]]
+MAP_INLINE Map Map__set_grow_by(Map this, map_cmp_t cmp, map_hashfn_t hashfn) {
+	return Map__set_grow_impl(this, /*custom*/ true, cmp, hashfn);
 }
 
 [[nodiscard, gnu::nonnull(1,2)]]
@@ -1623,15 +1676,23 @@ MAP_STATIC Map Map_vset4(Map this, const vstring *restrict key, const void *rest
 	if (Map_set_raw_by(this, key, val, vstring_cmp, jhash(key->ptr, key->len), owned))
 		return this;
 
-	return Map__set_grow(this);
+	return Map__set_grow_by(this, vstring_cmp, vstring_hash);
 }
 
-[[nodiscard, maybe_unused, gnu::nonnull(1,2,4)]]
-MAP_STATIC Map Map_set_by6(Map this, const void *restrict key, const void *restrict val, map_cmp_t cmp, map_hash_t hash, bool owned) {
+[[nodiscard, maybe_unused, gnu::nonnull(1,2,4,6)]]
+MAP_STATIC Map Map_set_by7(
+	Map this,
+	const void *restrict key,
+	const void *restrict val,
+	map_cmp_t cmp,
+	map_hash_t hash,
+	map_hashfn_t hashfn,
+	bool owned
+) {
 	if (Map_set_raw_by(this, key, val, cmp, hash, owned))
 		return this;
 
-	return Map__set_grow(this);
+	return Map__set_grow_by(this, cmp, hashfn);
 }
 
 [[nodiscard, maybe_unused, gnu::nonnull]]
