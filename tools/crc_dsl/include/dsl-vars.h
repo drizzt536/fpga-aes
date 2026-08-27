@@ -166,14 +166,9 @@ static void dsl_log_var(var_t *p2entry) {
 			const bool sign = pval->spz >= 0;
 			const u128 magn = sign ? (u128) pval->spz : -(u128) pval->spz;
 
-			printf(
-				".type = VAR_SPZ\n\t"
-				".val  = %s%016zx%016zx",
-				"-" + !sign,
-				(u64)(magn >> 64),
-				(u64) magn
-			);
-
+			printf(".type = %s\n", "VAR_SPZ");
+			printf("\t.val  = %s", "-" + !sign);
+			printf("%016zx%016zx", (u64)(magn >> 64), (u64) magn);
 			break;
 		}
 		case VAR_MPZ: {
@@ -182,20 +177,17 @@ static void dsl_log_var(var_t *p2entry) {
 			const char *str = mpz_get_str(NULL, 10, pval->mpz);
 			#pragma GCC diagnostic pop
 
-			printf(
-				".type = VAR_MPZ\n\t"
-				".val  = %s",
-				str
-			);
+			printf(".type = %s\n", "VAR_MPZ");
+			printf("\t.val  = %s", str);
 
 			free((void *) str);
 			break;
 		}
 		case VAR_STR:
+			printf(".type = %s\n", "VAR_STR");
 			printf(
-				".type = VAR_STR\n\t"
-				".val  = \"%s\"\n\t"
-				".len  = %zu",
+				"\t.val  = \"%s\"\n"
+				"\t.len  = %zu",
 				pval->str.ptr,
 				pval->str.len
 			);

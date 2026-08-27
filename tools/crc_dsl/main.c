@@ -262,12 +262,15 @@ int main(int argc, char **argv)
 		}
 	} // bare block
 
+#if DEBUG
 	puts("original file:");
 	if (in_prgm.count != 0)
 		printf("%s\n", in_prgm.array->ptr);
 
 	puts("----------------------------------------------------------------------");
-	printf("line-parsed in_prgm: %zu line(s):\n", in_prgm.count);
+#endif
+
+	printf("in_prgm: %zu line(s):\n", in_prgm.count);
 	for (u64 i = 0; i < in_prgm.count; i++)
 		printf("%.*s\n", (int) in_prgm.array[i].len, in_prgm.array[i].ptr);
 
@@ -276,11 +279,7 @@ int main(int argc, char **argv)
 	vstring_list out_prgm = preproc(in_prgm, (MapEntryCList) {}, true);
 
 	puts("----------------------------------------------------------------------");
-	printf("out_prgm: %zu line(s):\n", out_prgm.count);
-	/*for (u64 i = 0; i < out_prgm.count; i++)
-		printf("%.*s\n", (int) out_prgm.array[i].len, out_prgm.array[i].ptr);*/
-
-	printf("%s\n", out_prgm.array->ptr);
+	printf("out_prgm: %zu line(s):\n" "%s\n", out_prgm.count, out_prgm.array->ptr);
 
 	free_prgm(in_prgm);
 	free_prgm(out_prgm);
@@ -326,10 +325,10 @@ extra_stuff:
 		mpz_init_set_ui(a, 123'456'789);
 		mpz_init_set_ui(b, 987'654'321);
 
-		str = mpz_get_str(NULL, 10, a); printf("a = %s\n", str); free(str);
-		str = mpz_get_str(NULL, 10, b); printf("b = %s\n", str); free(str);
+		str = mpz_get_str(nullptr, 10, a); printf("a = %s\n", str); free(str);
+		str = mpz_get_str(nullptr, 10, b); printf("b = %s\n", str); free(str);
 		mpz_mul(a, a, b);
-		str = mpz_get_str(NULL, 10, a); printf("c = %s\n", str); free(str);
+		str = mpz_get_str(nullptr, 10, a); printf("c = %s\n", str); free(str);
 	}
 
 	return 0;

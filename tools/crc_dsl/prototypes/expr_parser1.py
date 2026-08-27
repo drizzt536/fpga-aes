@@ -1,6 +1,6 @@
 # parser prototype v1: custom algorithm + Shunting-Yard
 
-from expr_lexer_proto import *
+from expr_lexer import *
 
 from dataclasses import dataclass, field
 

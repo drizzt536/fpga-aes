@@ -386,7 +386,7 @@ static void push_line(vstring line) {
 		char *const new_buf = realloc(tmp_buf.ptr, tmp_buf.size);
 
 		if unlikely (new_buf == nullptr) {
-			eprintf("%s: %s: %s realloc failed. could not allocate %zu bytes. preproc exiting early.\n",
+			eprintf("%s: %s: %s realloc failed. could not allocate %zu bytes.\n",
 				THISFILE, "push_line", "buffer", tmp_buf.size
 			);
 			goto oom;

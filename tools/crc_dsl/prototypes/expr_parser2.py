@@ -1,6 +1,6 @@
 # parser prototype v2: recursive descent
 
-from expr_lexer_proto import *
+from expr_lexer import *
 # recursive descent
 
 # typedef struct { ... } ParserState;
