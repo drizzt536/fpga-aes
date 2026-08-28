@@ -37,26 +37,6 @@ class TmpToken:
 	def __repr__(self) -> str:
 		return f"TmpToken(order=0, type=TEMPORARY, value={self.value})"
 
-def find_next_subexpr(tokens: list[Token | TmpToken], first: int) -> tuple[int, int, int]:
-	for i in range(first, len(tokens)):
-		if tokens[i].type == TOKEN_LPAREN:
-			first = i
-			break
-	else:
-		# no parentheses
-		return 0, len(tokens), 0
-
-	region_start = first
-
-	for i in range(first + 1, len(tokens)):
-		if tokens[i].type == TOKEN_RPAREN:
-			return region_start, i + 1, first
-		
-		if tokens[i].type == TOKEN_LPAREN:
-			region_start = i
-			
-	return 0, len(tokens), 0
-	
 def simple_pop_and_eval(ops: list[int], vals: list[int]):
 	op = ops.pop()
 
@@ -76,18 +56,18 @@ def simple_pop_and_eval(ops: list[int], vals: list[int]):
 	l = vals.pop()
 
 	match op.value:
-		case '^': vals.append(1 // (l ** -r) if r < 0 else l ** r)
-		case '.': vals.append(concat(l, r))
-		case '*': vals.append(l * r)
-		case '/': vals.append(l // r)
-		case '%': vals.append(l % r)
-		case '+': vals.append(l + r)
-		case '-': vals.append(l - r)
-		case "<<": vals.append(l << r)
-		case ">>": vals.append(l >> r)
-		case "and": vals.append(l & r)
-		case "or": vals.append(l | r)
-		case "xor": vals.append(l ^ r)
+		case '^'   : vals.append(1 // (l ** -r) if r < 0 else l ** r)
+		case '.'   : vals.append(concat(l, r))
+		case '*'   : vals.append(l * r)
+		case '/'   : vals.append(l // r)
+		case '%'   : vals.append(l % r)
+		case '+'   : vals.append(l + r)
+		case '-'   : vals.append(l - r)
+		case "<<"  : vals.append(l << r)
+		case ">>"  : vals.append(l >> r)
+		case "and" : vals.append(l & r)
+		case "or"  : vals.append(l | r)
+		case "xor" : vals.append(l ^ r)
 		case _:
 			assert False, "unreachable"
 
@@ -136,18 +116,31 @@ def parse_simple(tokens: list[Token | TmpToken]) -> TmpToken:
 
 	return TmpToken(value=vals[0])
 
-
 _concat_implicit = concat_implicit
 
 def concat_implicit(tokens: list[Token], vars: dict) -> TmpToken:
 	return TmpToken(value=_concat_implicit(tokens, vars))
 
-def resolve_variables(tokens: list[Token], vars: dict) -> list[Token | TmpToken]:
+def resolve_expr(tokens: list[Token], vars: dict) -> tuple[list[Token | TmpToken], list[int]]:
 	"resolve variables, implicit concatenation, and check variable values"
 	i = 0
 
+	# NOTE: In the C version, when it accesses string variables, it needs to type convert
+	#       them to either SPZ or MPZ.
+
+	# NOTE: it is definitely possible to find rparens indices or lengths (e.g. list+stack), but
+	#       since there can be nested parentheses, the lengths and right indices are not constant
+	#       across evaluation of subexpressions, so I will not be doing that. It also roughly
+	#       triples the peak amount of memory needed in this function, and dobules the amount
+	#       needed outside of this.
+
+	# this can never be more than `len(tokens) >> 1` tokens.
+	lparens = []
+
 	while i < len(tokens):
 		if tokens[i].type not in (TOKEN_LITERAL, TOKEN_VAR):
+			if tokens[i].type == TOKEN_LPAREN:
+				lparens.append(i)
 			i += 1
 			continue
 
@@ -168,6 +161,7 @@ def resolve_variables(tokens: list[Token], vars: dict) -> list[Token | TmpToken]
 			if t.type == TOKEN_LITERAL:
 				continue
 
+			# NOTE: in the C version, variables were already validated.
 			if not is_valid_variable(vars[t.value]):
 				raise ValueError(f"invalid variable: '${t.value}'")
 
@@ -182,16 +176,33 @@ def resolve_variables(tokens: list[Token], vars: dict) -> list[Token | TmpToken]
 		tokens = tokens[:start] + [concat_implicit(tokens[start:end], vars)] + tokens[end:]
 		i = start + 1
 
-	return tokens
+	return tokens, lparens
 
 def parse(tokens: list[Token], vars: dict) -> TmpToken:
-	tokens = resolve_variables(tokens, vars)
+	tokens, lparens = resolve_expr(tokens, vars)
 
 	first = 0
 
-	while len(tokens) > 1:
-		start, end, first = find_next_subexpr(tokens, first)
-		tokens = tokens[:start] + [parse_simple(tokens[start:end])] + tokens[end:]
+	while lparens:
+		left = lparens.pop()
+		right = left + 3 # due to error checking in lexing, it can never be less than 3 tokens away
+		# () => error. (atom) => atom. (-atom) is the shortest.
+		if right >= len(tokens):
+			assert False, "should be unreachable."
+
+		while tokens[right].type != TOKEN_RPAREN:
+			right += 1
+
+			if right >= len(tokens):
+				assert False, "should be unreachable."
+
+		right += 1 # right slice is not inclusive
+
+		tokens = tokens[:left] + [parse_simple(tokens[left:right])] + tokens[right:]
+
+	if len(tokens) > 1:
+		# this will trigger in any equation that isn't wrapped in parentheses
+		tokens = [parse_simple(tokens)]
 
 	return tokens[0]
 

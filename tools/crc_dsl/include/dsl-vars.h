@@ -93,7 +93,7 @@ static void dsl_set_var(var_key_t *pkey, var_val_t *pval) {
 	var_t *const p2entry = dsl_get_var(*pkey, hash);
 
 	if (p2entry != nullptr) {
-		// variable exists free the old stuff and update in-place
+		// variable exists. free the old stuff and update in-place
 		dsl_free_var(p2entry);
 		p2entry->key = pkey;
 		p2entry->val = pval;

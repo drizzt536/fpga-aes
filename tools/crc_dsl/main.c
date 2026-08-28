@@ -130,7 +130,7 @@ static u8 parse_lines(char *file_path, vstring_list *out_lines) {
 		.len = 0,
 	};
 
-	for (char *pc = buf; likely(*pc != '\0'); pc++) {
+	for (char *pc = buf; *pc != '\0'; pc++) {
 		if likely (*pc != '\n') {
 			line.len++;
 			continue;
@@ -251,10 +251,12 @@ int main(int argc, char **argv)
 				return ret;
 		#if DEBUG
 			case PARSE_LINES_EBUG1:
-				eprintf("%s: %s: [BUG] not enough lines allocated. allocated %zu.\n", THISFILE, "main", in_prgm.count);
+				eprintf("%s: %s: [BUG] not enough lines allocated. allocated %zu.\n",
+					THISFILE, "main", in_prgm.count);
 				return ret;
 			case PARSE_LINES_EBUG2:
-				eprintf("%s: %s: [BUG] first line pointer is not 8 bytes past a freeable pointer.\n", THISFILE, "main");
+				eprintf("%s: %s: [BUG] first line pointer is not 8 bytes past a freeable pointer.\n",
+					THISFILE, "main");
 				return ret;
 		#endif
 			default:

@@ -12,7 +12,8 @@
 #endif
 #define THISFILE "dsl-lexer.h"
 
-/*static void mpz_rol(mpz_t out, mpz_t in, mp_bitcnt_t n) {
+/*
+static void mpz_rol(mpz_t out, mpz_t in, mp_bitcnt_t n) {
 	const mp_bitcnt_t bits = mpz_sizeinbase(in, 2) + 63 & ~63;
 
 	n %= bits;
@@ -44,13 +45,14 @@ static void mpz_ror(mpz_t out, mpz_t in, mp_bitcnt_t n) {
 	mpz_ior(out, out, tmp); // out |= tmp;
 
 	mpz_clear(tmp);
-}*/
+}
+*/
 
 typedef enum : u8 {
 	TOKEN_OP_UNARY,
 	TOKEN_OP_BINARY,
 	TOKEN_OP = TOKEN_OP_BINARY, // use `token.type <= TOKEN_OP` to check VAR | LITERAL
-	TOKEN_NONE,
+	TOKEN_SOF,
 	TOKEN_LPAREN,
 	TOKEN_RPAREN,
 	// these next ones have to be greater than all the others
@@ -190,7 +192,7 @@ static void log_tokens(token_list tokens) {
 		switch (t->type) {
 			case TOKEN_OP_UNARY:  type_name = "OP_UNARY";  break;
 			case TOKEN_OP_BINARY: type_name = "OP_BINARY"; break;
-			case TOKEN_NONE:      type_name = "NONE";      break;
+			case TOKEN_SOF:       type_name = "SOF";       break;
 			case TOKEN_LPAREN:    type_name = "LPAREN";    break;
 			case TOKEN_RPAREN:    type_name = "RPAREN";    break;
 			case TOKEN_VAR:       type_name = "VAR";       break;
@@ -204,7 +206,7 @@ static void log_tokens(token_list tokens) {
 		printf("\t[%*u] type=%-10s next=%3u", width, i, type_name, t->next);
 
 		switch (t->type) {
-			case TOKEN_NONE:
+			case TOKEN_SOF:
 				printf("%11s(sentinel)", "");
 				break;
 
@@ -266,7 +268,7 @@ static void log_tokens_expr(token_list tokens) {
 			putchar(' ');
 
 		switch (t->type) {
-			case TOKEN_NONE:
+			case TOKEN_SOF:
 				break;
 			case TOKEN_VAR:
 				printf("${%.*s}", (int) t->atom.len, t->atom.ptr);
@@ -313,6 +315,8 @@ static void lexer_oom(const char *function) {
 
 static void push_token(token_list_builder *p2tokens, token_t token) {
 	if unlikely (p2tokens->count == UINT32_MAX)
+		// if it hasn't hit OOM yet, lie and pretend it has.
+		// this is 96 GiB, which is absurd. There should not be 2^32 tokens.
 		goto oom;
 
 	if unlikely (p2tokens->count == p2tokens->cap) {
@@ -397,7 +401,7 @@ static token_list lex(vstring expr) {
 	}
 
 	*tokens.array = (token_t) {
-		.type = TOKEN_NONE,
+		.type = TOKEN_SOF,
 		.next = 0,
 	}; // circular reference
 
@@ -713,7 +717,6 @@ static token_list lex(vstring expr) {
 			{
 			case '+':
 			case '-':
-				// t = Token(_expr=expr, type=TOKEN_NONE, ofs=i, len=1)
 				token_t token = {
 					.op = {
 						.ptr = expr.ptr + i,
@@ -731,7 +734,7 @@ static token_list lex(vstring expr) {
 						token.type     = TOKEN_OP_BINARY;
 						token.op.order = ORDER_ADD;
 						break;
-					case TOKEN_NONE      : // "-1"
+					case TOKEN_SOF       : // "-1"
 					case TOKEN_LPAREN    : // "(-1"
 					case TOKEN_OP_UNARY  : // "- -1"
 					case TOKEN_OP_BINARY : // "2 - -1"
@@ -836,7 +839,7 @@ static token_list lex(vstring expr) {
 						THISFILE, "lex", "'('", "BINARY OPERATOR");
 					dsl_panic(EXCEPT_ERR_LEXER);
 				}
-				else if unlikely (prev == TOKEN_NONE) {
+				else if unlikely (prev == TOKEN_SOF) {
 					eprintf("%s: %s: %s followed immediately by %s is invalid.\n",
 						THISFILE, "lex", "SOF", "BINARY OPERATOR");
 					dsl_panic(EXCEPT_ERR_LEXER);
@@ -845,7 +848,7 @@ static token_list lex(vstring expr) {
 		} // for
 	} // bare block
 
-	if unlikely (prev_token.type == TOKEN_NONE) {
+	if unlikely (prev_token.type == TOKEN_SOF) {
 		eprintf("%s: %s: %s followed immediately by %s is invalid.\n",
 			THISFILE, "lex", "SOF", "EOF");
 		dsl_panic(EXCEPT_ERR_LEXER);

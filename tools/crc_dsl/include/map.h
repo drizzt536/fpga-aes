@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 /*
-	map.h v0.9.2
+	map.h v0.9.3
 	Copyright (c) 2026 Daniel Janusch
 
 	Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -24,8 +24,9 @@
 
 	//////////////////////////////////////////////////////////////////////////////////////
 
-	resizable and cache-friendly C-string => C-string GNU C23 single-header hashmap API
-	(it can be used for stuff that aren't C strings, but that is not the core usage)
+	resizable and cache-friendly GNU C23 single-header hashmap API.
+	primarily for C-string => C-string, but supports arbitrary types.
+	relies on int-types.h and va-if.h (both can be copy/pasted here though)
 
 	to compile separately:
 		gcc -c -x c -DMAP_H_BUILD map.h -o map.o
@@ -38,8 +39,31 @@
 		#include "map.h"
 
 	NOTES:
-	1. The following helper macros exist for public use:
+	1. function naming convention:
+		- map_x     : "static method", no live Map instance involved
+		- Map_x     : "instance method", takes `Map this` as first argument.
+		              Map_create is the only exception (the constructor).
+		- Map__x    : probably unsafe to call directly; internal use only.
+		- Map_x_ref : same as Map_x, but takes `Map *pthis` and doesn't return the new `this`.
+		- Map_xN    : an arity-dispatch variant (i.e. Map_delete4, Map_set3).
+		              not recommended for use, but still technically part of the public API.
+	2. the following types exist for public use:
+		- u8/i8, u16/i16, u32/i32, u64/i64, u128/i128
+		- vstring: wide string pointer (string view, typically non-owning)
+		- vstring_list: wide pointer to vstring. not used internally
+		- map_hash_t: either u64 or u128, depending on the hash mode
+		- map_cmp_t: a function that takes two `const void` pointers and returns `i32`
+		- map_hashfn_t: a function that takes a `const void` pointer and returns `map_hash_t`
+		- MapEntry
+		- Map / ConstMap
+		- MapEntryVView / MapEntryCView: key/val pair of either vstring or char *
+		- MapEntryVList / MapEntryCList: wide pointer to the corresponding view type.
+		- MapIter: map iterator object. use this if Map_foreach generates too much code
+		- AF_Map / AF_ViewMap: auto-freeing variants of `Map`.
+	3. The following helper macros exist for public use:
 		- VA_IF: for arity-based dispatch: #define f(x, y...) VA_IF(f2(x, y), f1(x), y)
+		- MAP_VMAJOR, MAP_VMINOR, MAP_VMICRO, MAP_VERSION: all `llu` integers
+		- MAP_JSON_MODE_PACK, MAP_JSON_MODE_LINE, MAP_JSON_MODE_FULL
 		- STR/STR_E: stringify, and expanded stringify
 		- EXPAND: returns all the arguments identically
 		- FORCE_INLINE: C23 attribute to force function inlining
@@ -65,56 +89,144 @@
 		- map_with(count, owned, pairs...) -> Map: create a new map with a constant set of keys.
 		  e.g `AF_ViewMap = map_with(2, views, ("a", "b"), ("c", "d"));`. the second argument can
 		  be view/views, or copy/copies. the rest of the arguments must be given as tuples.
-		- map_key([val]): with an argument given, it sets the map key and returns nothing. with
-		  no argument given, it returns the map key.
 		- Map_dump(map[, indent[, format]]) -> Map: log out the map. if format == 0, use JSON,
 		  otherwise use basic formatting.
 		- Map_transfer(dst, src[, owned]): transfer key-value pairs from the src map to the dst
 		  map. If owned, the old map is cleared to prevent potential double frees.
 		- jhash(in, len[, key]): the underlying hash function below `map_hash`, usable for types
 		  other than C strings. The key defaults to `map_key()`
-		- map_stpcpy(dst, src): same as stpcpy. (if stpcpy is available, it will just call it).
-	2. the following types exist for public use:
-		- u8/i8, u16/i16, u32/i32, u64/i64, u128/i128
-		- vstring: fat string pointer (string view, typically non-owning)
-		- vstring_list: fat pointer to vstring. not used internally
-		- map_hash_t: either u64 or u128, depending on the hash mode
-		- map_cmp_t: a function that takes two `const void` pointers and returns `i32`
-		- MapEntry
-		- Map / ConstMap
-		- MapEntryVView / MapEntryCView: key/val pair of either vstring or char *
-		- MapEntryVList / MapEntryCList: fat pointer to the corresponding view type.
-		- MapIter: map iterator object. use this if Map_foreach generates too much code
-		- AF_Map / AF_ViewMap: auto-freeing variants of `Map`.
-	3. function naming convention:
-		- map_x     : "static method", no live Map instance involved
-		- Map_x     : "instance method", takes `Map this` as first arg. 
-		              Map_create is the only exception (the constructor).
-		- Map__x    : unsafe to call directly; internal use only.
-		- Map_x_ref : same as Map_x, but takes `Map *pthis` and doesn't return the new `this`.
-		- Map_xN    : an arity-dispatch variant (i.e. Map_delete4, Map_set3).
-		              not recommended for use, but still technically part of the public API.
-	4. Before including, define `MAP_H_IMPL` to pull in the actual implementation. To compile this
+	4. the following functions exist for public use:
+		- Map_create([m_cap[, o_cap]]): creates and returns a new map object. `m_cap` defaults to
+		  `MAP_SIZE_SMALLEST`, and `o_cap` default to `MAP_H_MIN_OCAP`. Ignoring the return value
+		  leaks memory.
+		- Map_destroy_ref(pthis[, owned]): defaults to owning. NOTE: don't use this if the keys or
+		  values are not C-strings unless nothing past potentially the struct containers is owned.
+		  Iterate the map and free each entry yourself, and then call `Map_destroy_shallow_ref`.
+		- Map_destroy_shallow_ref(pthis): free the map itself but none of the entries.
+		- Map_gc(this): compact and sort overflow by bucket index.
+		- Map_delete(this, key[, h[, owned]]): delete a given entry from the map. This assumes the
+		  key is a C-string. If it puts it under the threshold, it may resize the overflow, but it
+		  won't resize the map itself. If you want to shrink the map, call `Map_mresize`
+		  explicitly.
+		- Map_delete_by(this, key, cmp, hash, owned): the same as Map_delete, except it assumes
+		  the keys are structs. It still only frees the containers, so if the struct has nested
+		  objects that need to be freed, use `Map_get_entry_by`, free the subentries, and then
+		  call `Map_delete_by`.
+		- Map_clear(this[, owned]): delete all the entries from the map, and free them depending
+		  on the mode. This assumes all the entries are C-strings, so don't call it if keys or
+		  values are structs and need freeing beyond the struct containers.
+		- Map_get_entry(this, key[, hash]): returns a pointer to the entry, or null if not found
+		- Map_get_entry_by(this, key, cmp, hash): the same as `Map_get_entry` except it is used
+		  for struct keys instead of C-string keys, hence the comparison function argument.
+		- Map_get(this, key[, hash]): returns the corresponding value from the matching entry,
+		  or null if it isn't present. Assumes the keys are C strings.
+		- Map_get_by(this, key, cmp, hash): the same as `Map_get`, but assumes a struct key.
+		- Map_cgetall(this, keys, count): this function assumes the keys and values are all
+		  C-strings. It updates the `keys` array in-place with the corresponding value strings.
+		  Any key that isn't in the map will be replaced with null. returns nothing.
+		- Map_vgetall(this, keys, count): the same as `Map_cgetall`, except the keys array is typed
+		  as `vstring keys[]` instead of `char *keys[]`, and the map is assumed to have V-strings
+		  for all keys and values.
+		- Map_set_raw(this, key, val[, owned]): add an entry to the map. Never resizes the map, and
+		  will only ever resize the overflow. When switching from `Map_set_raw` to `Map_set` you
+		  must call `Map_normalize` due to when each function applies resizes.
+		- Map_set_raw_ref(pthis, key, val[, owned]): the same as `Map_set_raw` except it takes a
+		  pointer to the map, modifies it in-place, and returns nothing.
+		- Map_set_raw_by(this, key, val, cmp, hash[, owned]): the same as `Map_set_raw`, except it
+		  is intended for struct keys, so a comparison function is required.
+		- Map_set_raw_by_ref(pthis, key, val, cmp, hash, owned): the same as `Map_set_raw_by`
+		  except it takes a pointer to the map, modifies it in-place, and returns nothing.
+		- Map_set(this, key[, val[, owned]]): val defaults to null. Similar to `Map_set_raw` except
+		  it has much more sophisticated growth heuristics, and it will grow the map itself. It
+		  returns the map; ignoring the return value causes undefined behavior if the map grew.
+		- Map_set_ref(pthis, key[, val[, owned]]): the same as `Map_set` except it takes a pointer
+		  to the map, modifies it in-place, and returns nothing.
+		- Map_vset(this, key[, val[, owned]]): the same as `Map_set`, except it assumes the key is
+		  `vstring *` instead of `char *`.
+		- Map_vset_ref(pthis, key[, val[, owned]]): the same as `Map_vset` except it takes a
+		  pointer to the map, modifies it in-place, and returns nothing.
+		- Map_set_by(this, key, val, cmp, hash, hashfn[, owned]): the same as `Map_set` except for
+		  it assumes the key is a generic struct type, so it needs the comparison function, and the
+		  hash function. It returns the map; ignoring the return value causes UB on resize.
+		- Map_set_by_ref(pthis, key, val, cmp, hash, hashfn[, owned]): the same as `Map_set_by`
+		  except it takes a pointer to the map, modifies it in-place, and returns nothing.
+		- Map_csetall(this, entries[, owned]): takes a list of C-strings and adds each of them to
+		  the map. It returns the map; ignoring the return value causes UB on resize.
+		- Map_csetall_ref(pthis, entries[, owned]): the same as `Map_csetall` except it takes a
+		  pointer to the map, modifies it in-place, and returns nothing.
+		- Map_vsetall(this, entries): takes a list of `vstring` and adds each of them to the map
+		  as owned containers. It returns the map; ignoring the return value causes UB on resize.
+		- Map_vsetall_ref(pthis, entries): the same as `Map_vsetall` except it takes a pointer to
+		  the map, modifies it in-place, and returns nothing.
+		- Map_oresize(this[, o_cap]): resizes the overflow to the given cap. if o_cap is not
+		  given, it will resize the overflow to the exact size needed to hold the current entries.
+		- Map_mresize(this, m_cap): creates a new map with the new size, shallowly transfers the
+		  entries to the new map, and returns it. If the new size is the same as the old size, it
+		  does nothing. Ignoring the return value causes UB.
+		- Map_mresize_ref(pthis, m_cap): the same as `Map_mresize` except it takes a pointer to
+		  the map, modifies it in-place, and returns nothing.
+		- Map_mresize_by(this, m_cap, cmp, hashfn): the same as `Map_mresize` except it assumes the
+		  keys are arbitrary struct objects, so it needs the hash and comparison functions.
+		- Map_mresize_by_ref(pthis, m_cap, cmp, hashfn): the same as `Map_mresize_by` except it
+		  takes a pointer to the map, modifies it in-place, and returns nothing.
+		- Map_rehash(this): the same as `Map_mresize` except it keeps m_cap the same, and
+		  unconditionally performs the rehash. Useful if the hash key changed, since the old
+		  entries will only be reachable via iteration.
+		- Map_rehash_ref(pthis): the same as `Map_rehash` except it takes a pointer to the map,
+		  modifies it in-place, and returns nothing.
+		- Map_rehash_by(this, cmp, hashfn): the same as `Map_rehash`, except it assumes the keys
+		  are arbitrary structs, so it needs the comparison and hash functions.
+		- Map_rehash_by_ref(pthis, cmp, hashfn): the same as `Map_rehash_by` except it takes a
+		  pointer to the map, modifies it in-place, and returns nothing.
+		- Map_copy(this[, owned]): create and return a copy of the map. if owned is true, it
+		  assumes the map keys and values are C-strings and duplicates the strings. if owned is
+		  false, it makes no assumptions about the data and just memcopies to the new map.
+		- Map_merge(this, other, owned1, owned2): merge `other` into `this`, where `other` wins
+		  when a value is present in both maps. This assumes all keys and values are C-strings.
+		  See the function comment for more information.
+		- Map_merge_ref(pthis, other, owned1, owned2): the same as `Map_merge` except it takes a
+		  pointer to the map, modifies it in-place, and returns nothing.
+		- Map_iter(this): returns an iterator for the map containing the first entry. If the map is
+		  empty, it gives a null pointer for the entry pointer.
+		- Map_next(this, iterator): advances to the next entry, or gives a null pointer.
+		- Map_tojson(this, indent): returns a dynamically-allocated JSON C-string. `indent` can be
+		  '\0' for minified JSON, ' ' for spaces in-between stuff, and '\t' for pretty-printing.
+		  This function assumes the map only contains C-string keys and values.
+		- Map_tovstring_owned(this): in-place convert a C-string => C-string to a V-string =>
+		  V-string map. Each V-string is put in its own separately-allocated struct container.
+		  it always returns null for consistency with the unowned variant.
+		- Map_tovstring_unowned(this): the same as `Map_tovstring_owned`, except all the V-strings
+		  are put in the same memory allocation, so they can't be freed separately.
+		- Map_tovstring(this[, owned]): picks between `Map_tovstring_owned` and
+		  `Map_tovstring_unowned` depending on the ownership mode.
+		- map_dedup_shuffle_det(strings, count): shuffle a list of C-strings using a map.
+		  Deterministic so long as the map key doesn't change between calls. not reentrant.
+		- map_dedup_shuffle(strings, count): the same as `map_dedup_shuffle_det`, except it
+		  randomizes the hash key between calls to remove the strict determinism.
+		- map_key([val]): with an argument given, it sets the map key and returns nothing. with
+		  no argument given, it returns the map key.
+		- map_size(size): returns the closest usable map size to the input value. rounds up on tie.
+		- map_hash(str): C-string hash function.
+		- vstring_cmp(a, b): similar to `strcmp` but for `vstring *` instead of `char *`
+		- vstring_hash(vstr): V-string (`vstring *`) hash function.
+	5. Before including, define `MAP_H_IMPL` to pull in the actual implementation. To compile this
 	   separately as an object or DLL and link later, define `MAP_H_SEPARATE`; this will remove
 	   `static` from all function declarations and definitions. `MAP_H_BUILD` defines both
 	   `MAP_H_IMPL` and `MAP_H_SEPARATE`. define `MAP_H_NO_FUN` if you hate fun so it will not
 	   include the extra fun stuff like `map_dedup_shuffle`. define `MAP_H_DEFAULT_OWNED` or
 	   `MAP_H_DEFAULT_UNOWNED` to specify the default ownership model (owned is the default
-	   default). define MAP_H_HASH128 or MAP_H_HASH64 to select jhash128 or jhash64. jhash64 is
-	   the default. define `MAP_H_MIN_OCAP` to set the minimum overflow arena size (default is 4).
-	   Define `MAP_H_CHAR_ENTRIES` to define `MapEntry` with keys and values of `char *`. Or
-	   define `MAP_H_VOID_ENTRIES` to explicitly keep them as `void *.
-	   instead of `void *`. It is `void *` by default to accomodate non C-string keys and values.
-	5. the `setall` functions are really only for if you are creating a map from nothing *and*
+	   default). define `MAP_H_HASH128` or `MAP_H_HASH64` to select `jhash128` or `jhash64`.
+	   `jhash64` is the default. define `MAP_H_MIN_OCAP` to set the minimum overflow arena size
+	   (default is 4). Define `MAP_H_CHAR_ENTRIES` to define `MapEntry` with keys and values of
+	   `char *`, or define `MAP_H_VOID_ENTRIES` to explicitly keep them as `void *. instead of
+	   `void *`. It is `void *` by default to accommodate non C-string keys and values.
+	6. the `setall` functions are really only for when creating a map from nothing *and*
 	   it is easier to create a list and call one function instead of doing some kind of iterator
 	   and calling `Map_set` for each entry object.
-	6. the keys and values in the map should either all be owned by the map, or all non-owning
-	   views. If they aren't all the same, you have to figure out which is which and call `Map_set`
-	   with the correct `owning` value for each one; it will cause heap corruption if you get it
-	   wrong, so probably just don't do that.
-	7. `vstring` is assumed to be a view into an externally-allocated string, so from the point of
-	   view of the map, there is nothing to take ownership of. So MapEntryVList is just a list of
-	   views. MapEntryCList is the version that has C strings.
+	7. the keys and values in the map should either all be owned by the map, or all non-owning
+	   views. If they aren't all the same, you have to figure out which is which and call
+	   `Map_set`/`Map_set_by` with the correct `owning` value for each one; it will cause heap
+	   corruption if you get it wrong, so probably just don't do that.
 	8. `Map` allocations are aligned to 64 bytes. freeing the map without `Map_destroy_ref` /
 	   `Map_destroy_shallow_ref` can cause issues. On Linux, it is fine, though still not
 	   recommended. On Windows, it will not work.
@@ -155,10 +267,13 @@
 	    that the entry is not live. you can, however, values can be set to NULL/nullptr since
 	    they are never dereferenced from inside the map implementation. Also, never reuse pointers
 	    for keys and/or values in an owned map. it will cause multi frees.
-	16. See each specific function for comments on its specific API (only for some functions)
+	16. when using `_by` deletion functions, note that when they free the key and value, they only
+	    free the struct container, since they don't have a way to know where the memory is that
+	    would need to be freed anyway.
+	17. see each specific function for comments on its specific API (only for some functions)
 
 	this library will work with all GCC warning flags, except for the following:
-		-Wcast-qual    (casting away const)
+		-Wcast-qual    (disallow explicitly casting away `const`)
 		-Wuseless-cast (casting away const in macros is sometimes useless)
 		-Wc++-compat
 		-Wpedantic
@@ -166,27 +281,60 @@
 		-Wtraditional-conversion
 		-Wsystem-headers (probably this one depends)
 
+		most of these are stupid anyway
+
 	Cache lines are assumed to be 64 bytes long.
 
-	with MAP_H_HASH128, if using -nostdlib and linking manually, you must pass -lgcc and give
-	ld the path to it, since for whatever reason, it doesn't know it by default.
+	With `MAP_H_HASH128`, if using -nostdlib and linking manually, it requires -lgcc.
 */
 
 #ifndef MAP_H_PROTO
 #define MAP_H_PROTO
 
-#define MAP_VMAJOR 0llu
-#define MAP_VMINOR 9llu
-#define MAP_VMICRO 2llu
-#define MAP_VERSION ((MAP_VMAJOR << 16) | (MAP_VMINOR << 8) | MAP_VMICRO)
-
 #include <stdlib.h>
 #include <string.h>
+
 #include "int-types.h" // u8, u32, u64, u128
+#include "va-if.h"     // VA_IF
+
+// GCC's multichars are always big-endian regardless of target endianness for whatever
+// reason, so I have to byte swap on little-endian systems. bypassing `-Wmultichar` is
+// okay because it only exists because the feature is non-intuitive and error prone,
+// but I am using it correctly, so that isn't an issue.
+
+#define _MC_IMPL(x) ({                                \
+	_Pragma("GCC diagnostic push")                    \
+	_Pragma("GCC diagnostic ignored \"-Wmultichar\"") \
+	x;                                                \
+	_Pragma("GCC diagnostic pop")                     \
+})
+
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+	#define MC8(x)  ((u8)  _MC_IMPL(x))
+	#define MC16(x) ((u16) _MC_IMPL(__builtin_bswap16(x)))
+	#define MC32(x) ((u32) _MC_IMPL(__builtin_bswap32(x)))
+	#define MC64(x) ((u64) _MC_IMPL(__builtin_bswap64(x)))
+#elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+	#define MC8(x)  ((u8)  _MC_IMPL(x))
+	#define MC16(x) ((u16) _MC_IMPL(x))
+	#define MC32(x) ((u32) _MC_IMPL(x))
+	#define MC64(x) ((u64) _MC_IMPL(x))
+#else
+	#error "target has unknown byte order. define __BYTE_ORDER__ manually."
+#endif
 
 #if defined(__AVX2__) || defined(__SSE2__)
 	#include <immintrin.h>
 #endif
+
+#define MAP_VMAJOR  ((u64) 0)
+#define MAP_VMINOR  ((u64) 9)
+#define MAP_VMICRO  ((u64) 3)
+#define MAP_VERSION ((MAP_VMAJOR << 16) | (MAP_VMINOR << 8) | MAP_VMICRO)
+
+#define MAP_JSON_MODE_PACK u8'\0' // single-line without padding
+#define MAP_JSON_MODE_LINE u8' '  // single-line with padding
+#define MAP_JSON_MODE_FULL u8'\t' // multiline
 
 #ifndef FORCE_INLINE
 	#define FORCE_INLINE [[gnu::always_inline, gnu::gnu_inline]] inline
@@ -243,8 +391,6 @@
 	#define MAP_H_MIN_OCAP 4
 #endif
 
-#include "va-if.h"
-
 #ifndef nullstr
 	// so you can do `printf("%s\n", Map_get(map, key) ?: nullstr);` if you use `-Wall`
 	#define nullstr "(null)"
@@ -276,7 +422,7 @@ typedef struct {
 	u64 len;
 } vstring;
 
-typedef struct { // not used internally
+typedef struct {
 	vstring *array;
 	u64 count;
 } vstring_list;
@@ -527,7 +673,7 @@ typedef struct {
 #define Map__with1( m,o,kv)      Map__set_##o(m, EXPAND kv, 0)
 #define Map__with0( m,o)
 
-// basically `Map_vsetall`, but where the inputs are either constants or serparate variables.
+// basically `Map_vsetall`, but where the inputs are either constants or separate variables.
 // NOTE: if you get weird errors about the number of arguments, probably you have a mismatch
 //       between `count`, and the number of variable arguments.
 #define map_with(count, owned, x...) ({   \
@@ -616,8 +762,11 @@ Map Map_destroy_shallow(Map this);
 	VA_IF(Map_set_raw_ref4(pthis, key, val, owned), Map_set_raw_ref3(pthis, key, val), owned)
 
 #define Map_set_raw_by5(this, key, val, cmp, hash) Map_set_raw_by6(this, key, val, cmp, hash, MAP_DEF_OWNED)
-#define Map_set_raw_by(this, key, val, cmp, hash, owned...) \
-	VA_IF(Map_set_raw_by6(this, key, val, cmp, hash, owned), Map_set_raw_by5(this, key, val, cmp, hash), owned)
+#define Map_set_raw_by(this, key, val, cmp, hash, owned...) VA_IF( \
+	Map_set_raw_by6(this, key, val, cmp, hash, owned),             \
+	Map_set_raw_by5(this, key, val, cmp, hash),                    \
+	owned                                                          \
+)
 
 #define Map_set_raw_by_ref6(pthis, key, val, cmp, hash, owned) ({ \
 	Map *const p = pthis;                                         \
@@ -707,7 +856,7 @@ Map Map_destroy_shallow(Map this);
 	*p = Map_csetall(*p, entries, owned);          \
 	(void) 0;                                      \
 })
-#define Map_csetall_ref2(pthis, entries) Map_csetall_ref3(this, entries, MAP_DEF_OWNED)
+#define Map_csetall_ref2(pthis, entries) Map_csetall_ref3(pthis, entries, MAP_DEF_OWNED)
 #define Map_csetall_ref(this, entries, owned...) \
 	VA_IF(Map_csetall_ref3(this, entries, owned), Map_csetall_ref2(this, entries), owned)
 
@@ -717,6 +866,24 @@ Map Map_destroy_shallow(Map this);
 	(void) 0;                            \
 })
 
+#define Map_mresize_by_ref(pthis, m_cap, cmp, hashfn) ({ \
+	Map *const p = pthis;                                \
+	*p = Map_mresize_by(*p, m_cap, cmp, hashfn);         \
+	(void) 0;                                            \
+})
+
+#define Map_rehash_ref(pthis) ({ \
+	Map *const p = pthis;        \
+	*p = Map_rehash(*p);         \
+	(void) 0;                    \
+})
+
+#define Map_rehash_by_ref(pthis, cmp, hashfn) ({ \
+	Map *const p = pthis;                        \
+	*p = Map_rehash_by(*p, cmp, hashfn);         \
+	(void) 0;                                    \
+})
+
 #define Map_delete3(this, key, h) Map_delete4(this, key, h, MAP_DEF_OWNED)
 #define Map_delete3_4(this, key, h, owned...) \
 	VA_IF(Map_delete4(this, key, h, owned), Map_delete3(this, key, h), owned)
@@ -724,8 +891,11 @@ Map Map_destroy_shallow(Map this);
 #define Map_delete(this, key, h...) VA_IF(Map_delete3_4(this, key, h), Map_delete2(this, key), h)
 
 #define Map_delete_by4(this, key, cmp, hash) Map_delete_by5(this, key, cmp, hash, MAP_DEF_OWNED)
-#define Map_delete_by(this, key, cmp, hash, owned...) \
-	VA_IF(Map_delete_by5(this, key, cmp, hash, owned), Map_delete_by4(this, key, cmp, hash), owned)
+#define Map_delete_by(this, key, cmp, hash, owned...) VA_IF( \
+	Map_delete_by5(this, key, cmp, hash, owned),             \
+	Map_delete_by4(this, key, cmp, hash),                    \
+	owned                                                    \
+)
 
 #define Map_clear1(this) Map_clear2(this, MAP_DEF_OWNED)
 #define Map_clear(this, owned...) VA_IF(Map_clear2(this, owned), Map_clear1(this), owned)
@@ -773,6 +943,7 @@ MAP_INLINE void map_key1(map_hash_t key);
 [[nodiscard, gnu::nonnull, gnu::malloc]] MAP_STATIC Map Map_mresize(Map this, u64 m_cap);
 [[nodiscard, gnu::nonnull, gnu::malloc]] MAP_STATIC Map Map_mresize_by(Map this, u64 m_cap, map_cmp_t cmp, map_hashfn_t hashfn);
 [[nodiscard, gnu::nonnull, gnu::malloc]] MAP_INLINE Map Map_rehash(Map this);
+[[nodiscard, gnu::nonnull, gnu::malloc]] MAP_INLINE Map Map_rehash_by(Map this, map_cmp_t cmp, map_hashfn_t hashfn);
 [[gnu::nonnull(1,2)]] MAP_STATIC bool Map_set_raw4(Map this, const char *restrict key, const char *restrict val, bool owned);
 [[gnu::nonnull(1,2,4)]] MAP_STATIC bool Map_set_raw_by6(Map this, const void *restrict key, const void *restrict val, map_cmp_t cmp, map_hash_t hash, bool owned);
 [[nodiscard, gnu::nonnull(1,2)]] MAP_STATIC Map Map_set4(Map this, const char *restrict key, const char *restrict val, bool owned);
@@ -780,13 +951,14 @@ MAP_INLINE void map_key1(map_hash_t key);
 [[nodiscard, maybe_unused, gnu::nonnull(1,2,4,6)]] MAP_STATIC Map Map_set_by7(Map this, const void *restrict key, const void *restrict val, map_cmp_t cmp, map_hash_t hash, map_hashfn_t hashfn, bool owned);
 [[nodiscard, maybe_unused, gnu::nonnull]] MAP_STATIC Map Map_vsetall(Map this, MapEntryVList entries);
 [[nodiscard, maybe_unused, gnu::nonnull]] MAP_STATIC Map Map_csetall3(Map this, MapEntryCList entries, bool owned);
-[[maybe_unused, gnu::nonnull]] MAP_STATIC void Map_getall(ConstMap this, const char *keys[], u64 count);
+[[maybe_unused, gnu::nonnull]] MAP_STATIC void Map_cgetall(ConstMap this, const char *keys[], u64 count);
+[[maybe_unused, gnu::nonnull]]MAP_STATIC void Map_vgetall(ConstMap this, vstring_list keys);
 [[maybe_unused, gnu::nonnull]] MAP_STATIC MapIter Map_iter(ConstMap this);
 [[maybe_unused, gnu::nonnull]] MAP_STATIC MapIter Map_next(ConstMap this, MapIter iter);
 [[maybe_unused, gnu::nonnull]] MAP_STATIC void Map_clear2(Map this, bool owned);
 [[nodiscard, maybe_unused, gnu::nonnull]] MAP_STATIC Map Map_copy2(ConstMap this, bool owned);
 [[nodiscard, maybe_unused, gnu::nonnull(1)]] MAP_STATIC Map Map_merge4(Map this, Map other, bool owned1, bool owned2);
-[[nodiscard, maybe_unused, gnu::nonnull, gnu::malloc]] MAP_STATIC char *Map_tojson(ConstMap this, char indent);
+[[nodiscard, maybe_unused, gnu::nonnull, gnu::malloc]] MAP_STATIC char *Map_tojson(ConstMap this, u8 mode);
 [[maybe_unused, gnu::nonnull]] MAP_STATIC void *Map_tovstring_owned(Map this);
 [[nodiscard, maybe_unused, gnu::nonnull]] MAP_STATIC void *Map_tovstring_unowned(Map this);
 #ifndef MAP_H_NO_FUN
@@ -836,7 +1008,7 @@ static constexpr u32 map_small_sizes[48] = {
 [[gnu::pure]]
 MAP_STATIC u64 map_size(u64 size) {
 	// returns the actual size of the map. not all map sizes are valid.
-	// it picks the nearest valid siize to the value given.
+	// it picks the nearest valid size to the value given.
 
 	// prime nearest to 2 * 1.5^(i + 6), except the first one is 11 and not 17, and the last
 	// one is 2^32 - 5. also the first 6 are slightly faster so it could take 6 elements
@@ -895,7 +1067,7 @@ static map_hash_t map_h_jhash_key = 0;
 
 [[gnu::nonnull, gnu::pure]]
 MAP_STATIC u128 jhash128(const void *in, u64 len, u128 key) {
-	// look at the 64-bit variant for explanitory comments.
+	// look at the 64-bit variant for explanatory comments.
 	// probably don't bother using this over the 64-bit one since it is like 12 times slower I think.
 
 	const u128 *data = (const u128 *) in;
@@ -1560,6 +1732,13 @@ MAP_INLINE Map Map_rehash(Map this) {
 	return Map_mresize(this, m_cap);
 }
 
+[[nodiscard, gnu::nonnull, gnu::malloc]]
+MAP_INLINE Map Map_rehash_by(Map this, map_cmp_t cmp, map_hashfn_t hashfn) {
+	const u64 m_cap = this->m_cap;
+	this->m_cap = 0; // bypass the check for if it is an actual resize
+	return Map_mresize_by(this, m_cap, cmp, hashfn);
+}
+
 [[gnu::nonnull(1)]]
 MAP_INLINE Map Map__set_grow_impl(Map this, bool custom, map_cmp_t cmp, map_hashfn_t hashfn) {
 	/*
@@ -1744,12 +1923,28 @@ MAP_STATIC Map Map_csetall3(Map this, MapEntryCList entries, bool owned) {
 }
 
 [[maybe_unused, gnu::nonnull]]
-MAP_STATIC void Map_getall(ConstMap this, const char *keys[], u64 count) {
+MAP_STATIC void Map_cgetall(ConstMap this, const char *keys[], u64 count) {
 	// update the keys array to have the values instead.
 
 	while (count --> 0) {
 		*keys = Map_get(this, *keys);
 		keys++;
+	}
+}
+
+[[maybe_unused, gnu::nonnull]]
+MAP_STATIC void Map_vgetall(ConstMap this, vstring_list keys) {
+	// update the keys array to have the values instead.
+
+	while (keys.count --> 0) {
+		keys.array[0] = *(vstring *) Map_get_by(
+			this,
+			keys.array,
+			vstring_cmp,
+			jhash(keys.array->ptr, keys.array->len)
+		);
+
+		keys.array++;
 	}
 }
 
@@ -1769,8 +1964,8 @@ MAP_STATIC MapIter Map_iter(ConstMap this) {
 		};
 
 	return (MapIter) {
-		.item = nullptr,
-		.bucket = 0 // bucket doen't matter
+		.item   = nullptr,
+		.bucket = 0, // bucket doesn't matter
 	};
 }
 
@@ -1792,8 +1987,8 @@ MAP_STATIC MapIter Map_next(ConstMap this, MapIter iter) {
 		};
 
 	return (MapIter) {
-		.item = nullptr,
-		.bucket = 0 // bucket doen't matter
+		.item   = nullptr,
+		.bucket = 0, // bucket doesn't matter
 	};
 }
 
@@ -1840,7 +2035,7 @@ MAP_STATIC Map Map_copy2(ConstMap this, bool owned) {
 			entry.val = strdup(entry.val);
 
 			if (entry.key == nullptr || entry.val == nullptr) {
-				// assume the rest of hte things will all be null as well.
+				// assume the rest of the things will all be null as well.
 				// don't copy the rest of the elements.
 				map__free_entry(entry);
 				return new_map;
@@ -1907,89 +2102,132 @@ MAP_STATIC Map Map_merge4(Map this, Map other, bool owned1, bool owned2) {
 	return this;
 }
 
-#if defined(__APPLE__) || defined(__GLIBC__) && (defined(_DEFAULT_SOURCE) || defined(_GNU_SOURCE))
-	#define map_stpcpy stpcpy
-#else
-	#define map_stpcpy(DST, SRC) ({     \
-		char *dst = (char *) (DST);     \
-		char *src = (char *) (SRC);     \
-		while ((*dst = *src) != '\0') { \
-			dst++;                      \
-			src++;                      \
-		}                               \
-		dst;                            \
-	})
-#endif
+[[gnu::nonnull, gnu::pure]]
+MAP_INLINE u64 map__json_strlen(const char *s) {
+	static constexpr u8 map__json_width_tbl[256] = {
+	//	0  1  2  3  4  5  6  7  8  9  10 11 12 13 14 15
+		6, 6, 6, 6, 6, 6, 6, 6, 2, 2, 2, 6, 2, 2, 6, 6, //  16
+		6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, //  32
+		1, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, //  48
+		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, //  64
+		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, //  80
+		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 1, 1, 1, //  96
+		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 112
+		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 128
+		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 144
+		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 160
+		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 176
+		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 192
+		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 208
+		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 224
+		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 240
+		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 256
+	};
+
+	// total bytes needed to encode `s` as a JSON string body
+	u64 len = 0;
+
+	for (const u8 *p = (const u8 *) s; *p; p++)
+		len += map__json_width_tbl[*p];
+
+	return len;
+}
+
+[[gnu::nonnull]]
+MAP_INLINE char *map__json_stpcpy(char *dst, const char *src) {
+	static constexpr char hex[] = "0123456789abcdef";
+
+	for (const u8 *p = (const u8 *) src; *p; p++)
+		switch (*p) {
+			case '\\': *(u16 *) dst = MC16('\\\\'); dst += 2; break;
+			case '"':  *(u16 *) dst = MC16('\\"');  dst += 2; break;
+			case '\b': *(u16 *) dst = MC16('\\b');  dst += 2; break;
+			case '\f': *(u16 *) dst = MC16('\\f');  dst += 2; break;
+			case '\n': *(u16 *) dst = MC16('\\n');  dst += 2; break;
+			case '\r': *(u16 *) dst = MC16('\\r');  dst += 2; break;
+			case '\t': *(u16 *) dst = MC16('\\t');  dst += 2; break;
+			default:
+				if (*p < ' ') {
+					*(u32 *) dst = MC32('\\u00');
+					dst += 4;
+					*dst++ = hex[*p >> 4];
+					*dst++ = hex[*p & 0xF];
+				} else
+					*dst++ = (char) *p;
+		}
+
+	return dst;
+}
 
 [[nodiscard, maybe_unused, gnu::nonnull, gnu::malloc]]
-MAP_STATIC char *Map_tojson(ConstMap this, const char indent) {
-	// '\0' -> {"a":"b","c":"d"}
-	// ' '  -> {"a": "b", "c": "d"}
-	// '\t' -> {\n\t"a": "b",\n\t"c": "d"\n}
+MAP_STATIC char *Map_tojson(ConstMap this, const u8 mode) {
+	// PACK -> {"a":"b","c":"d"}
+	// LINE -> {"a": "b", "c": "d"}
+	// FULL -> {\n\t"a": "b",\n\t"c": "d"\n}
 
-	if (indent != '\0' && indent != ' ' && indent != '\t')
-		return nullptr;
+	if (mode != MAP_JSON_MODE_PACK &&
+		mode != MAP_JSON_MODE_LINE &&
+		mode != MAP_JSON_MODE_FULL
+	) return nullptr;
 
 	u64 size = Map_count(this);
 
 	if (size == 0) {
-		char *const json = (char *) malloc(4);
-		if (json == nullptr)
-			return nullptr;
-
-		memcpy(json, (char[]){'{', '}', 0, 0}, 4);
+		char *const json = malloc(4);
+		if (json != nullptr)
+			memcpy(json, (char[]) {'{', '}', 0, 0}, 4);
 		return json;
 	}
 
-	// stuff that is per pair
+	// stuff that is per kv pair
 	size *= (u64) (
-		(indent != '\0')*2 // leading '\t'/' ', space after colon
-		+ 3*2              // strlen("'':") + strlen("'',")
-		+ (indent == '\t') // trailing newline
+		(mode != MAP_JSON_MODE_PACK)*2 // leading '\t'/' ', space after colon
+		+ 3*2                          // strlen("'':") + strlen("'',")
+		+ (mode == MAP_JSON_MODE_FULL) // trailing newline
 	);
 
 	Map_foreach(this,
-		size += strlen(entry.key) + strlen(entry.val)
+		size += map__json_strlen(entry.key) + map__json_strlen(entry.val);
 	);
 
 	// stuff that is only once
-	// indent='\0' wastes one byte, and indent=' ' wastes two bytes
-	size += 2; // '{\n' for indent='\t'. the extra 1-2 byte savings in the other cases is not worth the logic.
+	// mode=PACK wastes one byte, and mode=LINE wastes two bytes
+	size += 2; // '{\n' for mode=FULL. the extra 1-2 byte savings in the other cases is not worth the logic.
 
-	char *const json = (char *) malloc(size + 1); // +1 for the null terminator
+	char *const json = malloc(size + 1); // +1 for the null terminator
 	if (json == nullptr)
 		return nullptr;
 
-	char *cur = json + (indent != ' ');
-	if (indent == '\t')
+	char *cur = json + (mode != MAP_JSON_MODE_LINE);
+	if (mode == MAP_JSON_MODE_FULL)
 		*cur++ = '\n';
 
 	Map_foreach(this,
-		if (indent != '\0')
-			*cur++ = indent;
+		if (mode != MAP_JSON_MODE_PACK)
+			*cur++ = mode == MAP_JSON_MODE_LINE ? ' ' : '\t';
 
 		*cur++ = '"';
-		cur     = map_stpcpy(cur, entry.key);
+		cur     = map__json_stpcpy(cur, entry.key);
 		*cur++ = '"';
 		*cur++ = ':';
 
-		if (indent != '\0')
+		if (mode != MAP_JSON_MODE_PACK)
 			*cur++ = ' ';
 
 		*cur++ = '"';
-		cur    = map_stpcpy(cur, entry.val);
+		cur    = map__json_stpcpy(cur, entry.val);
 		*cur++ = '"';
 		*cur++ = ',';
 
-		if (indent == '\t')
+		if (mode == MAP_JSON_MODE_FULL)
 			*cur++ = '\n';
 	);
 
 	// fix up the trailing separator left by the last entry into the closing brace
-	if (indent == '\t')
+	if (mode == MAP_JSON_MODE_FULL)
 		cur[-2] = '\n'; // ",\n" -> "\n}"
 
-	*json   = '{'; // do this now because it would get overwritten in indent=' ' mode.
+	*json   = '{'; // do this now because it would get overwritten with mode=LINE.
 	cur[-1] = '}'; // remove the trailing comma
 	*cur    = '\0';
 	return json;
@@ -2004,17 +2242,17 @@ MAP_INLINE void cleanup_array(const void *p) {
 
 #ifndef MAP_H_NO_FUN
 [[gnu::nonnull]]
-MAP_STATIC u64 map_dedup_shuffle_det(const char *strings[], const u64 len) {
+MAP_STATIC u64 map_dedup_shuffle_det(const char *strings[], const u64 count) {
 	// deterministic in that passing the same list in multiple times will give the same
 	// shuffled list, so long as the hash key doesn't change between calls. If you reorder
 	// the elements in the input, the change in the output will only be localized. calling
 	// this multiple times consecutively will only converge on the same output if there are
 	// never more than 3 strings that end up in the same bucket.
 
-	AF_ViewMap const set = Map_create(len*3 >> 1);
+	AF_ViewMap const set = Map_create(count*3 >> 1);
 	u64 i;
 
-	for (i = 0; i < len; i++)
+	for (i = 0; i < count; i++)
 		Map_set_raw(set, strings[i], /*no value*/ nullptr, MAP_UNOWNED);
 
 	i = 0;
@@ -2026,7 +2264,7 @@ MAP_STATIC u64 map_dedup_shuffle_det(const char *strings[], const u64 len) {
 }
 
 [[maybe_unused, gnu::nonnull]]
-MAP_STATIC u64 map_dedup_shuffle(const char *strings[], const u64 len) {
+MAP_STATIC u64 map_dedup_shuffle(const char *strings[], const u64 count) {
 	// funky function to shuffle an array of strings using a hash map,
 	// and also deduplicates the list at the same time.
 	// returns the new list length.
@@ -2035,14 +2273,14 @@ MAP_STATIC u64 map_dedup_shuffle(const char *strings[], const u64 len) {
 	// then you will get, at most, local changes to the output. And if you insert a new element,
 	// or delete an element, it will not change the ordering of the other elements (unless it
 	// puts it over the next boundary so the bucket count changes). "local changes" means that
-	// you might get a few consecutive output elements reodered, but the overall structure of
+	// you might get a few consecutive output elements reordered, but the overall structure of
 	// the output will not change.
 
 	// NOTE: if you ignore a nonzero return value, the array will
 	//       most likely have the wrong strings duplicated.
 
 	// this is not a exactly helper function. it is its own thing.
-	// not reentrant. if you want that, then wrap the detererministic version yourself.
+	// not reentrant. if you want that, then wrap the deterministic version yourself.
 
 	static map_hash_t key = 0; // this doesn't need the `= 0` for correctness.
 	static bool key_initialized = false;
@@ -2063,7 +2301,7 @@ MAP_STATIC u64 map_dedup_shuffle(const char *strings[], const u64 len) {
 	const map_hash_t old_key = map_key();
 
 	map_key(key);
-	const u64 new_len = map_dedup_shuffle_det(strings, len);
+	const u64 new_len = map_dedup_shuffle_det(strings, count);
 	map_key(old_key);
 
 	return new_len;
@@ -2085,7 +2323,7 @@ MAP_STATIC void *Map_tovstring_owned(Map this) {
 	// NOTE: this assumes that changing to string views does not effect the buckets that each
 	//       element lands in, which implies the comparison function must just run strcmp on the
 	//       pointers. A small caveat is that this only works because the strings that already
-	//       existed in the map were already null-termianted C strings, so strcmp actually works.
+	//       existed in the map were already null-terminated C strings, so strcmp actually works.
 	//       you may more realistically want to compare lengths and use strncmp if they match.
 	// NOTE: none of the code currently cares about whether the comparison function returns +1 or
 	//       -1, or whatever else for different values, only that it returns 0 when they are the

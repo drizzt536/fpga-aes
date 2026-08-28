@@ -34,32 +34,6 @@
 #define until_likelyp(x, p)   while   likelyp(!(x), p)
 #define until_unlikelyp(x, p) while unlikelyp(!(x), p)
 
-// GCC's fuckass multichars are always big-endian regardless of target endianness,
-// so I have to byte swap on little-endian systems. bypassing `-Wmultichar` is okay
-// because it only exists because the feature is non-intuitive and error prone, but
-// I am using it correctly, so that isn't an issue.
-
-#define _MC_IMPL(wc) ({                               \
-	_Pragma("GCC diagnostic push")                    \
-	_Pragma("GCC diagnostic ignored \"-Wmultichar\"") \
-	wc;                                               \
-	_Pragma("GCC diagnostic pop")                     \
-})
-
-#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-	#define MC8(wc)  ((u8)  _MC_IMPL(__builtin_bswap16(wc)))
-	#define MC16(wc) ((u16) _MC_IMPL(__builtin_bswap16(wc)))
-	#define MC32(wc) ((u32) _MC_IMPL(__builtin_bswap32(wc)))
-	#define MC64(wc) ((u64) _MC_IMPL(__builtin_bswap64(wc)))
-#elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-	#define MC8(wc)  ((u8)  _MC_IMPL(wc))
-	#define MC16(wc) ((u16) _MC_IMPL(wc))
-	#define MC32(wc) ((u32) _MC_IMPL(wc))
-	#define MC64(wc) ((u64) _MC_IMPL(wc))
-#else
-	#error "target has unknown byte order. define __BYTE_ORDER__ manually."
-#endif
-
 // swapping these will break everything.
 #define EXCEPTION_FOUND    true
 #define EXCEPTION_NOTFOUND false

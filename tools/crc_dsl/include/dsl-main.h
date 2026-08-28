@@ -1,5 +1,5 @@
 #pragma once
-#define CRC_DSL_H
+#define DSL_MAIN_H
 
 #include "dsl-lexer.h" // "dsl-except.h", "setjmp.h", "dsl-vars.h", <gmp.h>
 
@@ -93,7 +93,7 @@ static wide_buf dsl_out_buf;
 static wide_buf dsl_scratch;
 static prgm_t   dsl_out_prgm;
 static u64      dsl_total_bytes;
-static u8       dsl_total_lines;
+static u8       dsl_total_lines; // using `u8` is for the wrapping behavior
 
 #ifdef _WIN32
 static term_size_t term_size(void) {
