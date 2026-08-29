@@ -592,8 +592,7 @@ static token_list lex(vstring expr) {
 
 			// literals
 			{
-			case '0': case '1': case '2': case '3': case '4':
-			case '5': case '6': case '7': case '8': case '9':
+			case '0' ... '9':
 				if unlikely (i > 0 && line_isspace(expr.ptr[i - 1]) && is_primary(prev_token)) {
 					eprintf("%s: %s: concatenation by juxtaposition with whitespace separation is invalid.\n", THISFILE, "lex");
 					dsl_panic(EXCEPT_ERR_LEXER);

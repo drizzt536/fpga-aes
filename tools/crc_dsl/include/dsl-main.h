@@ -307,8 +307,6 @@ static bool strip_lines(vstring_list *p2in_prgm) {
 	return true;
 }
 
-// TODO: actually use this function in _preproc
-[[maybe_unused]]
 static void reset_scratch(void) {
 	// reset the temporary buffer (usage=0) and potentially shrink via EMA heuristic
 
@@ -433,7 +431,7 @@ static void _preproc(
 	(void) is_valid_varname;
 	(void) start_line;
 
-	for (u64 i = 0; i < in_prgm.count; i++) {
+	for (u64 i = 0; i < in_prgm.count; i++, reset_scratch()) {
 		vstring line = in_prgm.array[i];
 
 		if unlikely (IS_RAW_LINE(line)) {
@@ -448,6 +446,7 @@ static void _preproc(
 		//       The lexer doesn't know the dispatch line, so it needs to be set before calling it.
 		// TODO: when doing `%seteval`, set up a try/catch for in case there are invalid variables
 		//       and the line needs to be expanded fully to be valid
+		// TODO: after expanding, if the line starts with '\%', ptr++ and len-- and push the line as is.
 
 		// TODO: do the other constructs
 		if (debug)

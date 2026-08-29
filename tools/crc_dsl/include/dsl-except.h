@@ -19,12 +19,6 @@
 #define eprintf(FMT, ...)  fprintf(stderr, ANSI_RED    FMT ANSI_RST __VA_OPT__(,) __VA_ARGS__)
 #define ewprintf(FMT, ...) fprintf(stderr, ANSI_ORANGE FMT ANSI_RST __VA_OPT__(,) __VA_ARGS__)
 
-#define   likely(x)     (__builtin_expect(!!(x), 1))
-#define unlikely(x)     (__builtin_expect(!!(x), 1))
-
-#define   likelyp(x, p) (__builtin_expect_with_probability(!!(x), 1, p))
-#define unlikelyp(x, p) (__builtin_expect_with_probability(!!(x), 0, p))
-
 // p is the chance that it stays in the loop
 #define until(x) while (!(x))
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 /*
-	map.h v0.9.3
+	map.h v0.9.4
 	Copyright (c) 2026 Daniel Janusch
 
 	Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -89,7 +89,7 @@
 		- map_with(count, owned, pairs...) -> Map: create a new map with a constant set of keys.
 		  e.g `AF_ViewMap = map_with(2, views, ("a", "b"), ("c", "d"));`. the second argument can
 		  be view/views, or copy/copies. the rest of the arguments must be given as tuples.
-		- Map_dump(map[, indent[, format]]) -> Map: log out the map. if format == 0, use JSON,
+		- Map_dump(map[, mode[, format]]) -> Map: log out the map. if format == 0, use JSON,
 		  otherwise use basic formatting.
 		- Map_transfer(dst, src[, owned]): transfer key-value pairs from the src map to the dst
 		  map. If owned, the old map is cleared to prevent potential double frees.
@@ -189,7 +189,7 @@
 		- Map_iter(this): returns an iterator for the map containing the first entry. If the map is
 		  empty, it gives a null pointer for the entry pointer.
 		- Map_next(this, iterator): advances to the next entry, or gives a null pointer.
-		- Map_tojson(this, indent): returns a dynamically-allocated JSON C-string. `indent` can be
+		- Map_tojson(this, mode): returns a dynamically-allocated JSON C-string. `mode` can be
 		  '\0' for minified JSON, ' ' for spaces in-between stuff, and '\t' for pretty-printing.
 		  This function assumes the map only contains C-string keys and values.
 		- Map_tovstring_owned(this): in-place convert a C-string => C-string to a V-string =>
@@ -297,6 +297,10 @@
 #include "int-types.h" // u8, u32, u64, u128
 #include "va-if.h"     // VA_IF
 
+#if defined(__AVX2__) || defined(__SSE2__)
+	#include <immintrin.h>
+#endif
+
 // GCC's multichars are always big-endian regardless of target endianness for whatever
 // reason, so I have to byte swap on little-endian systems. bypassing `-Wmultichar` is
 // okay because it only exists because the feature is non-intuitive and error prone,
@@ -323,9 +327,11 @@
 	#error "target has unknown byte order. define __BYTE_ORDER__ manually."
 #endif
 
-#if defined(__AVX2__) || defined(__SSE2__)
-	#include <immintrin.h>
-#endif
+#define   likely(x)     (__builtin_expect(!!(x), 1))
+#define unlikely(x)     (__builtin_expect(!!(x), 0))
+
+#define   likelyp(x, p) (__builtin_expect_with_probability(!!(x), 1, p))
+#define unlikelyp(x, p) (__builtin_expect_with_probability(!!(x), 0, p))
 
 #define MAP_VMAJOR  ((u64) 0)
 #define MAP_VMINOR  ((u64) 9)
@@ -550,11 +556,12 @@ typedef struct {
 	entry   = *p2entry;                                      \
 	/* NOTE 1: overflow[0].key == nullptr      */            \
 	/* NOTE 2: entry.next == 0 for final entry */            \
-	while (entry.key != nullptr) {                           \
+	for (; entry.key != nullptr;                             \
+		prev_next = &p2entry->next,                          \
+		p2entry   = (THIS)->overflow + entry.next,           \
+		entry     = *p2entry                                 \
+	) {                                                      \
 		BLOCK;                                               \
-		prev_next = &p2entry->next;                          \
-		p2entry   = (THIS)->overflow + entry.next;           \
-		entry     = *p2entry;                                \
 	}                                                        \
 [[maybe_unused]] bucket_done:                                \
 	THIS;                                                    \
@@ -585,14 +592,14 @@ typedef struct {
 // call this if you switch from `Map_set_raw` to `Map_set`.
 // you don't need to normalize on the other way though.
 // this should only ever need `==`, but use `>=` anyway.
-#define Map_normalize(this) ({        \
-	const Map t_ = this;               \
-	_Pragma("GCC diagnostic push")                          \
+#define Map_normalize(this) ({                               \
+	const Map t_ = this;                                     \
+	_Pragma("GCC diagnostic push")                           \
 	_Pragma("GCC diagnostic ignored \"-Wnull-dereference\"") \
-	if (t_->o_size + 1 >= t_->o_cap)      \
-		Map_oresize(t_, t_->o_cap*3 >> 1); \
-	_Pragma("GCC diagnostic pop")           \
-	t_;                                      \
+	if unlikely (t_->o_size + 1 >= t_->o_cap)                \
+		Map_oresize(t_, t_->o_cap*3 >> 1);                   \
+	_Pragma("GCC diagnostic pop")                            \
+	t_;                                                      \
 })
 
 // resize the map buckets to fit the size
@@ -678,33 +685,33 @@ typedef struct {
 //       between `count`, and the number of variable arguments.
 #define map_with(count, owned, x...) ({   \
 	Map map_ = Map_create(count*3 >> 1);  \
-	if (map_ != nullptr) {                \
+	if likely (map_ != nullptr) {         \
 		Map__with##count(map_, owned, x); \
 	}                                     \
 	Map_normalize(map_);                  \
 	map_;                                 \
 })
 
-#define Map_dump3(this, indent, format) ({          \
+#define Map_dump3(this, mode, format) ({            \
 	const typeof(this) t_ = this;                   \
 	if (format == 0) {                              \
-		char *const json = Map_tojson(t_, indent);  \
+		char *const json = Map_tojson(t_, mode);    \
 		puts(json);                                 \
 		free(json);                                 \
 	}                                               \
 	else /* basically just pass anything else */    \
 		Map_foreach(t_, printf("\"%s\" = \"%s\"\n", \
 			entry.key, entry.val                    \
-		)); /* `indent` does nothing here */        \
+		)); /* `mode` does nothing here */          \
 	t_;                                             \
 })
 
-#define Map_dump2(this, indent) Map_dump3(this, indent, 0)
+#define Map_dump2(this, mode) Map_dump3(this, mode, 0)
 #define Map_dump1(this) Map_dump2(this, '\t')
 
-#define Map_dump2_3(this, indent, format...) \
-	VA_IF(Map_dump3(this, indent, format), Map_dump2(this, indent), format)
-#define Map_dump(this, indent...) VA_IF(Map_dump2_3(this, indent), Map_dump1(this), indent)
+#define Map_dump2_3(this, mode, format...) \
+	VA_IF(Map_dump3(this, mode, format), Map_dump2(this, mode), format)
+#define Map_dump(this, mode...) VA_IF(Map_dump2_3(this, mode), Map_dump1(this), mode)
 
 #define Map_has(...)    (Map_get_entry(__VA_ARGS__) != nullptr)
 #define Map_has_by(...) (Map_get_entry_by(__VA_ARGS__) != nullptr)
@@ -1014,7 +1021,7 @@ MAP_STATIC u64 map_size(u64 size) {
 	// one is 2^32 - 5. also the first 6 are slightly faster so it could take 6 elements
 	// instead of 7 to get to 173. (173/11)^(1/5) ~~ 1.735 instead of 1.5
 
-	if (size > (1llu << 32) - 5)
+	if unlikely (size > (1llu << 32) - 5)
 		// these values will not be in the table
 		// with that many elements, the length being prime doesn't really matter.
 		// just make sure it is at least odd.
@@ -1260,13 +1267,14 @@ MAP_STATIC Map Map_create2(u64 m_cap, u64 o_cap) {
 	);
 	static_assert(MAP_H_STRUCT_MAPIMPL_NON_VA_BUCKETS <= MAP_SIZE_SMALLEST);
 
-	Map map = (Map) map__alloc(
+	Map map = map__alloc(
 		sizeof(struct MapImpl) + sizeof(MapEntry)*(m_cap - MAP_H_STRUCT_MAPIMPL_NON_VA_BUCKETS)
 	);
 
-	if (map == nullptr)
+	if unlikely (map == nullptr)
 		return nullptr;
 
+	// NOTE: these emit `movaps`, which is fine since map is 64-byte aligned.
 	#ifdef __AVX2__
 		// this also zeros m_cap, but it gets set properly afterwards
 		*(__m256i *) map = (__m256i) {0};
@@ -1282,7 +1290,7 @@ MAP_STATIC Map Map_create2(u64 m_cap, u64 o_cap) {
 	map->o_cap    = o_cap;
 	map->overflow = (MapEntry *) malloc(sizeof(MapEntry)*o_cap);
 
-	if (map->overflow == nullptr) {
+	if unlikely (map->overflow == nullptr) {
 		map__free(map);
 		return nullptr;
 	}
@@ -1290,14 +1298,13 @@ MAP_STATIC Map Map_create2(u64 m_cap, u64 o_cap) {
 
 	static_assert(MAP_H_MIN_OCAP > 1);
 
-	// unaligned loads always exist for AVX2, so just ignore errors from -Wcast-align=strict
 	#pragma GCC diagnostic push
 	#pragma GCC diagnostic ignored "-Wcast-align"
 
 	// key and next fields are empty for the reserved entry.
 	#ifdef __AVX2__
 		// this also zeros the key of the next entry, but that is fine.
-		*(__m256i *) map->overflow = (__m256i) {0};
+		_mm256_storeu_si256((__m256i *) map->overflow, (__m256i) {0});
 	#else
 		map->overflow->key  = nullptr;
 		map->overflow->next = 0;
@@ -1323,7 +1330,8 @@ MAP_STATIC void Map_destroy_ref1(Map *pthis) {
 	// make the user pass a pointer to their variable to avoid use after frees
 	Map this = *pthis;
 
-	if (this == nullptr)
+	if unlikely (this == nullptr)
+		// destroy an already-destroyed map => do nothing.
 		return;
 
 	Map_foreach(this,
@@ -1337,7 +1345,7 @@ MAP_STATIC void Map_destroy_ref1(Map *pthis) {
 [[maybe_unused, gnu::nonnull]]
 MAP_INLINE void Map_destroy_shallow_ref(const Map *pthis) {
 	const Map this = *pthis;
-	if (this == nullptr)
+	if unlikely (this == nullptr)
 		return;
 
 	free((void *) this->overflow);
@@ -1363,9 +1371,9 @@ MAP_STATIC bool Map_gc(Map this) {
 	// except for you skip the first entry in every bucket (the inline entries).
 	// it could also be a reasonable name to make this `Map_sort`.
 
-	MapEntry *new_overflow = (MapEntry *) malloc(sizeof(MapEntry)*this->o_cap);
+	MapEntry *new_overflow = malloc(sizeof(MapEntry)*this->o_cap);
 
-	if (new_overflow == nullptr)
+	if unlikely (new_overflow == nullptr)
 		return false;
 
 	// this is the same zeroing block as in Map_create2
@@ -1373,9 +1381,9 @@ MAP_STATIC bool Map_gc(Map this) {
 	#pragma GCC diagnostic ignored "-Wcast-align"
 
 	#ifdef __AVX2__
-		*(__m256i *) new_overflow = (__m256i) {0};
+		_mm256_storeu_si256((__m256i *) new_overflow, (__m256i) {0});
 	#elifdef __SSE2__
-		*(__m128i *) new_overflow = (__m128i) {0};
+		_mm_storeu_si128((__m128i *) new_overflow, (__m128i) {0});
 		((u64 *) new_overflow)[2] = 0;
 	#else
 		new_overflow[0] = (MapEntry) {0};
@@ -1385,8 +1393,9 @@ MAP_STATIC bool Map_gc(Map this) {
 
 	u64 new_id = 1; // index 0 is reserved, so start at 1.
 	// the two preprocessor branches are logically identical.
-	// the Map_foreach way is slightly slower, but it is way simpler.
-#if 1
+	// the Map_foreach way is slightly slower since it checks prev_next == nullptr for every element,
+	// but it is way simpler.
+#if 0
 	u64 *new_prev_next = nullptr;
 
 	Map_foreach(this,
@@ -1418,7 +1427,7 @@ MAP_STATIC bool Map_gc(Map this) {
 			prev_next = &new_overflow[new_id].next; // advance new chain for writing
 			old_id    =  old_overflow[old_id].next; // advance old chain for reading
 			new_id++;
-		} while (old_id != 0);
+		} while unlikely (old_id != 0);
 	}
 #endif
 
@@ -1447,11 +1456,11 @@ MAP_STATIC bool Map_oresize2(Map this, u64 o_cap) {
 	if (this->o_cap < MAP_H_MIN_OCAP || this->o_cap < this->o_size + 1)
 		unreachable();
 
-	if (o_cap < MAP_H_MIN_OCAP || o_cap < this->o_size + 2)
+	if unlikely (o_cap < MAP_H_MIN_OCAP || o_cap < this->o_size + 2)
 		return false; // not allowed
 
-	MapEntry *new_overflow = (MapEntry *) realloc(this->overflow, sizeof(MapEntry)*o_cap);
-	if (new_overflow == nullptr)
+	MapEntry *new_overflow = realloc(this->overflow, sizeof(MapEntry)*o_cap);
+	if unlikely (new_overflow == nullptr)
 		return false;
 
 	this->o_cap = o_cap;
@@ -1577,7 +1586,7 @@ found:
 	//       just ran does not effect the live count (`o_size - o_tcnt`).
 
 	if (this->o_cap >= MAP_H_MIN_OCAP << 1 && this->o_size - this->o_tcnt < this->o_cap >> 2) {
-		if (this->o_size + 2 >= this->o_cap >> 1 && !Map_gc(this))
+		if unlikely (this->o_size + 2 >= this->o_cap >> 1 && !Map_gc(this))
 			return true; // can't resize if GC failed
 
 		// this is a shrink, so it will never fail
@@ -1618,7 +1627,7 @@ MAP_INLINE bool Map__set_raw_existing(
 	this->o_size++;
 
 	if (this->o_size == this->o_cap) {
-		if (!Map_oresize(this, this->o_cap*3 >> 1)) {
+		if unlikely (!Map_oresize(this, this->o_cap*3 >> 1)) {
 			if (owned)
 				map__free_kv(key, val);
 
@@ -1648,6 +1657,7 @@ MAP_INLINE bool Map__set_raw_existing(
 
 [[gnu::nonnull(1,2)]]
 MAP_STATIC bool Map_set_raw4(Map this, const char *restrict key, const char *restrict val, bool owned) {
+	// returns whether or not the element already existed
 	const u64 bucket = Map_bucket(this, key);
 
 	if (this->buckets[bucket].key == nullptr)
@@ -1695,7 +1705,7 @@ MAP_INLINE Map Map__mresize_by(Map this, u64 m_cap, bool custom, map_cmp_t cmp, 
 		return this;
 
 	Map new_map = Map_create(m_cap, this->o_cap);
-	if (new_map == nullptr)
+	if unlikely (new_map == nullptr)
 		return this;
 
 	Map_foreach(this,
@@ -1706,7 +1716,8 @@ MAP_INLINE Map Map__mresize_by(Map this, u64 m_cap, bool custom, map_cmp_t cmp, 
 			Map_set_raw(new_map, entry.key, entry.val, MAP_UNOWNED);
 	);
 
-	if (Map_count(new_map) != Map_count(this)) {
+	if unlikely (Map_count(new_map) != Map_count(this)) {
+		// resize failed
 		Map__destroy_shallow(new_map);
 		return this;
 	}
@@ -1781,8 +1792,8 @@ MAP_INLINE Map Map__set_grow_impl(Map this, bool custom, map_cmp_t cmp, map_hash
 		// size >= 75% of cap => buckets almost full
 		return MRESIZE(this, this->m_cap*3 >> 1);
 
-	if (this->o_size + 1 < this->o_cap)
-		// buckets and overflow are both not almost full
+	if likely (this->o_size + 1 < this->o_cap)
+		// buckets and overflow are both *not* almost full
 		return this;
 
 	// overflow filled the last slot
@@ -1888,12 +1899,12 @@ MAP_STATIC Map Map_vsetall(Map this, MapEntryVList entries) {
 	while (entries.count --> 0) {
 		// NOTE: these cannot be a single `malloc(2*sizeof(vstring))`
 		pkey = malloc(sizeof(vstring));
-		if (pkey == nullptr)
+		if unlikely (pkey == nullptr)
 			return this;
 
 		pval = malloc(sizeof(vstring));
 
-		if (pval == nullptr) {
+		if unlikely (pval == nullptr) {
 			free(pkey);
 			return this;
 		}
@@ -1972,7 +1983,8 @@ MAP_STATIC MapIter Map_iter(ConstMap this) {
 [[maybe_unused, gnu::nonnull]]
 MAP_STATIC MapIter Map_next(ConstMap this, MapIter iter) {
 	// return the next element after the current one.
-	if (iter.item == nullptr)
+	if unlikely (iter.item == nullptr)
+		// iterating a finished iterator is strange
 		return iter;
 
 	if (iter.item->next != 0) {
@@ -2001,7 +2013,7 @@ MAP_STATIC void Map_clear2(Map this, bool owned) {
 		map__free_entry(entry);
 
 		#ifdef __SSE2__
-			*(__m128i *) p2entry = (__m128i) {0};
+			_mm_storeu_si128((__m128i *) p2entry, (__m128i) {0});
 		#else
 			p2entry->key = nullptr;
 			p2entry->val = nullptr;
@@ -2026,7 +2038,7 @@ MAP_STATIC void Map_clear2(Map this, bool owned) {
 [[nodiscard, maybe_unused, gnu::nonnull]]
 MAP_STATIC Map Map_copy2(ConstMap this, bool owned) {
 	Map new_map = Map_create(this->m_cap, this->o_cap);
-	if (new_map == nullptr)
+	if unlikely (new_map == nullptr)
 		return nullptr;
 
 	if (owned)
@@ -2034,7 +2046,7 @@ MAP_STATIC Map Map_copy2(ConstMap this, bool owned) {
 			entry.key = strdup(entry.key);
 			entry.val = strdup(entry.val);
 
-			if (entry.key == nullptr || entry.val == nullptr) {
+			if unlikely (entry.key == nullptr || entry.val == nullptr) {
 				// assume the rest of the things will all be null as well.
 				// don't copy the rest of the elements.
 				map__free_entry(entry);
@@ -2147,7 +2159,8 @@ MAP_INLINE char *map__json_stpcpy(char *dst, const char *src) {
 			case '\r': *(u16 *) dst = MC16('\\r');  dst += 2; break;
 			case '\t': *(u16 *) dst = MC16('\\t');  dst += 2; break;
 			default:
-				if (*p < ' ') {
+				if unlikely (*p < u8' ') {
+					// most characters should be normal
 					*(u32 *) dst = MC32('\\u00');
 					dst += 4;
 					*dst++ = hex[*p >> 4];
@@ -2165,9 +2178,9 @@ MAP_STATIC char *Map_tojson(ConstMap this, const u8 mode) {
 	// LINE -> {"a": "b", "c": "d"}
 	// FULL -> {\n\t"a": "b",\n\t"c": "d"\n}
 
-	if (mode != MAP_JSON_MODE_PACK &&
-		mode != MAP_JSON_MODE_LINE &&
-		mode != MAP_JSON_MODE_FULL
+	if unlikely (mode != MAP_JSON_MODE_PACK
+		&& mode != MAP_JSON_MODE_LINE
+		&& mode != MAP_JSON_MODE_FULL
 	) return nullptr;
 
 	u64 size = Map_count(this);
@@ -2195,7 +2208,7 @@ MAP_STATIC char *Map_tojson(ConstMap this, const u8 mode) {
 	size += 2; // '{\n' for mode=FULL. the extra 1-2 byte savings in the other cases is not worth the logic.
 
 	char *const json = malloc(size + 1); // +1 for the null terminator
-	if (json == nullptr)
+	if unlikely (json == nullptr)
 		return nullptr;
 
 	char *cur = json + (mode != MAP_JSON_MODE_LINE);
@@ -2335,13 +2348,13 @@ MAP_STATIC void *Map_tovstring_owned(Map this) {
 		vstring *tmp;
 
 		// viewify the key
-		tmp = (typeof(tmp)) malloc(sizeof(*tmp));
+		tmp = malloc(sizeof(*tmp));
 		tmp->ptr = (char *) entry.key;
 		tmp->len = strlen(entry.key);
 		entry.key = (char *) tmp;
 
 		// viewify the value
-		tmp = (typeof(tmp)) malloc(sizeof(*tmp));
+		tmp = malloc(sizeof(*tmp));
 		tmp->ptr = (char *) entry.val;
 		tmp->len = strlen(entry.val);
 
@@ -2361,7 +2374,7 @@ MAP_STATIC void *Map_tovstring_unowned(Map this) {
 	//       null. If it is null, it did not work, otherwise it fully worked.
 
 	vstring *const buf = malloc(2 * Map_count(this) * sizeof(vstring));
-	if (buf == nullptr)
+	if unlikely (buf == nullptr)
 		return nullptr;
 
 	vstring *tmp = buf;
