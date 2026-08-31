@@ -52,11 +52,6 @@
 	#define DSL_PLATFORM "unknown"
 #endif
 
-#define _strlen __builtin_strlen
-
-// `volatile` without the reordering restrictions and forced rereads
-#define force_mem(var) asm ("" : "+m" (var))
-
 // the argument should be an identifier, but it can be either `prgm_t` or `vstring_list`
 #define free_prgm(prgm) ({               \
 	free(prgm.array->ptr - sizeof(u64)); \
@@ -153,7 +148,7 @@ FORCE_INLINE static void msleep(u32 ms) {
 			.tv_nsec = (ms % 1000) * 1'000'000l,
 		};
 
-		nanosleep(&ts, NULL);
+		nanosleep(&ts, nullptr);
 	#endif
 }
 
@@ -528,7 +523,7 @@ static vstring_list preproc(vstring_list in_prgm, MapEntryCList start_vars, bool
 
 	#if DEBUG
 		if unlikely (dsl_vars != nullptr) {
-			eprintf("%s: %s: [BUG] `dsl_vars` is not NULL at the start of `preproc`.\n", THISFILE, "preproc");
+			eprintf("%s: %s: [BUG] `dsl_vars` is not null at the start of `preproc`.\n", THISFILE, "preproc");
 			exit(1);
 		}
 	#endif
@@ -647,13 +642,13 @@ static vstring_list preproc(vstring_list in_prgm, MapEntryCList start_vars, bool
 			log_tokens(tokens);
 			free(tokens.array);
 		}
-		// NOTE: if successful
 		break;
 	default:
 		// TODO: check for the specific exit codes
 		// NOTE: only negative codes are for errors
 		if (res < 0)
-			eprintf("%s: %s: exit code %zd from line %zu.\n", THISFILE, "preproc", res, dsl_except.dispatch_line);
+			eprintf("%s: %s: preproc failed on line %zu with exit code %zd.\n",
+				THISFILE, "preproc", dsl_except.dispatch_line, res);
 		break;
 	);
 
@@ -671,7 +666,7 @@ static vstring_list preproc(vstring_list in_prgm, MapEntryCList start_vars, bool
 
 	// destroy the variable map
 	Map_foreach(dsl_vars,
-		dsl_log_var ((var_t *) p2entry);
+		dsl_dump_var((var_t *) p2entry);
 		dsl_free_var((var_t *) p2entry);
 	);
 

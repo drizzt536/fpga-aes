@@ -33,22 +33,7 @@ static var_val_t tok_to_var(token_t x) {
 #endif
 #define THISFILE "dsl-ops.h"
 
-#define spz_abs2(X, NEG) ({                   \
-	const spz_t x_abs2 = (X);                 \
-	(NEG) ? -(spn_t) x_abs2 : (spn_t) x_abs2; \
-})
-
-#define spz_abs1(X) ({            \
-	const spz_t x_abs1 = (X);     \
-	spz_abs2(x_abs1, x_abs1 < 0); \
-})
-
-#define spz_abs(X, NEG...) VA_IF(spz_abs2(X, NEG), spz_abs1(X), NEG)
-
-// where sign(0) = 1. to compare with 0, compare directly.
-// #define spz_sgn(X) ((X) >= 0 : 1 : -1)
-
-#define SPZ_MAG_BITS (8*sizeof(spz_t) - 1)
+//////////////////////////////// helpers ////////////////////////////////
 
 #define mpz_is_small(x) (mpz_sizeinbase(x, 2) <= SPZ_MAG_BITS)
 #define mpz_is_tiny(x)  (mpz_sizeinbase(x, 2) <= (8*sizeof(long ) - 1))
@@ -70,98 +55,9 @@ static var_val_t tok_to_var(token_t x) {
 	out_var_;                                 \
 })
 
-FORCE_INLINE static u32 spn_size(spn_t x) {
-	return (u32) __builtin_stdc_bit_width(x);
-}
-
-FORCE_INLINE static u32 spz_size(spz_t x) {
-	return spn_size(spz_abs(x));
-}
-
-static u32 spz__sizeinbase10(spz_t z) {
-	const spn_t n = spz_abs(z);
-	// if you ignore that this is O(1), it is kind of like O(log log n)
-
-	// I had to make this a binary search tree myself, because when it
-	// was a linear scan, GCC wasn't optimizing it to this.
-
-	if (n < 10000000000000000000llu) {
-		if (n < 10000000000llu) {
-			if (n < 100000llu) {
-				if (n < 1000llu) {
-					if (n < 100llu)
-						return n < 10llu ? 1 : 2;
-					return 3;
-				}
-
-				return n < 10000llu ? 4 : 5;
-			}
-
-			if (n < 100000000llu) {
-				if (n < 10000000llu)
-					return n < 1000000llu ? 6 : 7;
-				return 8;
-			}
-
-			return n < 1000000000llu ? 9 : 10;
-		}
-
-		if (n < 1000000000000000llu) {
-			if (n < 10000000000000llu) {
-				if (n < 1000000000000llu)
-					return n < 100000000000llu ? 11 : 12;
-				return 13;
-			}
-
-			return n < 100000000000000llu ? 14 : 15;
-		}
-
-		if (n < 100000000000000000llu)
-			return n < 10000000000000000llu ? 16 : 17;
-
-		return n < 1000000000000000000llu ? 18 : 19;
-	}
-
-	if (n < (spz_t) 10000000000llu * (spz_t) 10000000000000000000llu) {
-		if (n < (spz_t) 100000llu * (spz_t) 10000000000000000000llu) {
-			if (n < (spz_t) 1000llu * (spz_t) 10000000000000000000llu) {
-				if (n < (spz_t) 100llu * (spz_t) 10000000000000000000llu)
-					return n < (spz_t) 10llu * (spz_t) 10000000000000000000llu ? 20 : 21;
-				return 22;
-			}
-
-			return n < (spz_t) 10000llu * (spz_t) 10000000000000000000llu ? 23 : 24;
-		}
-
-		if (n < (spz_t) 100000000llu * (spz_t) 10000000000000000000llu) {
-			if (n < (spz_t) 10000000llu * (spz_t) 10000000000000000000llu)
-				return n < (spz_t) 1000000llu * (spz_t) 10000000000000000000llu ? 25 : 26;
-			return 27;
-		}
-
-		return n < (spz_t) 1000000000llu * (spz_t) 10000000000000000000llu ? 28 : 29;
-	}
-
-	if (n < (spz_t) 1000000000000000llu * (spz_t) 10000000000000000000llu) {
-		if (n < (spz_t) 10000000000000llu * (spz_t) 10000000000000000000llu) {
-			if (n < (spz_t) 1000000000000llu * (spz_t) 10000000000000000000llu)
-				return n < (spz_t) 100000000000llu * (spz_t) 10000000000000000000llu ? 30 : 31;
-			return 32;
-		}
-
-		return n < (spz_t) 100000000000000llu * (spz_t) 10000000000000000000llu ? 33 : 34;
-	}
-
-	if (n < (spz_t) 100000000000000000llu * (spz_t) 10000000000000000000llu)
-		return n < (spz_t) 10000000000000000llu * (spz_t) 10000000000000000000llu ? 35 : 36;
-
-	return n < (spz_t) 1000000000000000000llu * (spz_t) 10000000000000000000llu ? 37 : 38;
-}
-
-[[maybe_unused]]
 FORCE_INLINE static bool spz_cat_overflows(spz_t z1, spz_t z2) {
 	// returns whether or not the result of an `SPZ . SPZ` concat will fit in an SPZ
-	return spz__sizeinbase10(z1) + spz__sizeinbase10(z2) >= 39;
+	return spz_sizeinbase10(z1) + spz_sizeinbase10(z2) >= 39;
 }
 
 #if DEBUG
@@ -240,15 +136,145 @@ static spz_t trunc_mpz_to_spz(mpz_t in) {
 	mpz_fdiv_r_2exp(tmp, in, 128);
 
 	spz_t out;
-	mpz_export(&out, nullptr, -1, sizeof(out), 0, 0, tmp);
+	mpz_export(&out, nullptr, 1, sizeof(out), 0, 0, tmp);
 
 	mpz_clear(tmp);
 	return out;
 }
 
+static void dsl_put_val(var_val_t x) {
+#if DEBUG
+	switch (x.type) {
+		case VAR_SPZ: printf("[SPZ] "); break;
+		case VAR_MPZ: printf("[MPZ] "); break;
+		case VAR_STR: printf("[STR] "); break;
+		default:
+			unreachable();
+	}
+#endif
+
+	switch (x.type) {
+		case VAR_SPZ:
+			put_spz(x.spz);
+			break;
+
+		case VAR_MPZ: {
+			#pragma GCC diagnostic push
+			#pragma GCC diagnostic ignored "-Waddress-of-packed-member"
+			char *str = mpz_get_str(nullptr, 10, x.mpz);
+			printf("%s", str);
+			free(str);
+			#pragma GCC diagnostic pop
+			break;
+		}
+
+		case VAR_STR:
+			// this work because string variable pointers are supposed to be C strings as well as V strings.
+			// the do-while is always correct though.
+			printf("%s", x.str.ptr);
+
+			/*
+			do {
+				int chunk = x.str.len >= INT_MAX ? INT_MAX : (int) x.str.len;
+				printf("%.*s", chunk, x.str.ptr);
+
+				if (chunk < 0)
+					unreachable();
+
+				x.str.ptr +=       chunk;
+				x.str.len -= (u64) chunk;
+			} while (x.str.len > 0);
+			*/
+			break;
+
+		default:
+			unreachable();
+	}
+}
+
+FORCE_INLINE static void dsl_puts_val(var_val_t x) {
+	dsl_put_val(x);
+	putchar('\n');
+}
+
+
+FORCE_INLINE static void dsl_clear_val(var_val_t x) {
+	// this is intended to be used only for temporary variables, so they should not be VAR_STR.
+	// if it is an actual variable in the variable map, use `dsl_free_var`.
+	if (x.type == VAR_MPZ)
+		mpz_clear(x.mpz);
+}
+
+/////////////////////////////// operators ///////////////////////////////
+
+// TODO: consider making an operator for sign(x)?
+//       currently, it is achievable via `x / (&x + 0^&x)` => sign(x)
+
 // NOTE: all division operations are truncated, not floored
 
-// TODO: var_val_t var_atoi(var_val_t in);
+[[maybe_unused]]
+static var_val_t dsl_atoi(var_val_t in) {
+	// NOTE: in.str.ptr is a C string
+
+#if DEBUG
+	if (in.type != VAR_STR) {
+		eprintf("%s: %s: input value must be VAR_STR.\n", THISFILE, "dsl_atoi");
+		exit(1);
+	}
+#endif
+
+	// NOTE: this should not run until it is guaranteed that the variable's value is valid.
+	// constraints:
+	//   - no starting or ending whitespace
+	//   - no prefixes (only decimal)
+	//   - first and last characters are not '_'
+	//   - no consecutive '_'
+
+	// NOTE: allocate the same size buffer since the string can never get longer, only shorter.
+	// skip leading zeros
+	while unlikely (*in.str.ptr == '0') {
+		in.str.ptr++;
+		in.str.len--;
+	}
+
+	vstring tmp;
+	tmp.ptr = malloc(in.str.len + 1);
+	if unlikely (tmp.ptr == nullptr) {
+		eprintf("%s: %s: out of memory.\n", THISFILE, "dsl_atoi");
+		exit(1);
+	}
+
+	// NOTE: the `<=` means this also copies the null terminator.
+	u64 w = 0;
+	for (u64 r = 0; r <= in.str.len; r++) {
+		char c = in.str.ptr[r];
+
+		if (c != '_')
+			tmp.ptr[w++] = c;
+	}
+
+	// `tmp.ptr` is a C string now.
+
+	tmp.len = w - 1 /*null*/;
+
+	if (tmp.len < 39) {
+		// parse from
+		spz_t out = 0;
+
+		for (u64 i = 0; i < tmp.len; i++) {
+			out *= 10;
+			out += tmp.ptr[i] - '0';
+		}
+
+		return spz_to_var(out);
+	}
+
+	mpz_t out;
+	mpz_init_set_str(out, tmp.ptr, 10); // this should not fail unless it runs out of memory
+
+	// NOTE: a 39-digit number sometimes fits in spz_t, but 40+ never does.
+	return tmp.len == 39 ? mpz_to_var_constrict(out) : mpz_to_var(out);
+}
 
 [[maybe_unused]]
 static var_val_t dsl_pow(var_val_t x, var_val_t y) {
@@ -273,7 +299,9 @@ static var_val_t dsl_pow(var_val_t x, var_val_t y) {
 		if (x.spz == -1)
 			return spz_to_var(y.spz & 1 ? -1 : 1);
 
-		if (y.spz <= SPZ_MAG_BITS && (spn_t)y.spz*__builtin_stdc_bit_ceil(spz_abs(x.spz)) <= SPZ_MAG_BITS) {
+		if ((u32) (spn_t) y.spz <= SPZ_MAG_BITS &&
+			(u32) (spn_t) y.spz * __builtin_stdc_bit_ceil(spz_abs(x.spz)) <= SPZ_MAG_BITS
+		) {
 			/*
 			assume y > 0.
 			f(x, y) := x**y < 2^127
@@ -282,9 +310,15 @@ static var_val_t dsl_pow(var_val_t x, var_val_t y) {
 			=> (stricter bound) y ceil(log2(x)) < 127
 			*/
 			spz_t out = 1;
+			static_assert(8*sizeof(spz_t) < 256, "increase `exp` `i` and past u8.");
+			u8 exp = (u8) (spn_t) y.spz;
 
-			while (y.spz --> 0)
-				out *= x.spz;
+			for (u8 i = (u8) (u32) __builtin_stdc_bit_width(exp); i --> 0 ;) {
+				out *= out;
+
+				if ((exp >> i) & 1)
+					out *= x.spz;
+			}
 
 			return spz_to_var(out);
 		}
@@ -400,7 +434,7 @@ static var_val_t dsl_cat(var_val_t x, var_val_t y) {
 	if (x.type == VAR_SPZ && y.type == VAR_SPZ && !spz_cat_overflows(x.spz, y.spz)) {
 		// shift = 10^len(str(y))
 		spz_t shift = 1;
-		for (u32 i = spz__sizeinbase10(y.spz); i --> 0 ;)
+		for (u32 i = spz_sizeinbase10(y.spz); i --> 0 ;)
 			shift *= 10;
 
 		// x*shift + y*sign(x)
@@ -988,5 +1022,7 @@ static var_val_t dsl_xor(var_val_t x, var_val_t y) {
 	mpz_xor(out, x.mpz, y.mpz);
 	return mpz_to_var_constrict(out);
 }
+
+#undef assert_var_int
 
 #pragma GCC diagnostic pop // -Waddress-of-packed-member

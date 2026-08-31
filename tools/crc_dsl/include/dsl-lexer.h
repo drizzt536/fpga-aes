@@ -3,8 +3,8 @@
 
 // lexer for `%seteval`
 
-#include "dsl-vars.h"
 #include "dsl-except.h"
+#include "dsl-vars.h"
 #include <ctype.h>
 
 #ifdef THISFILE
@@ -103,33 +103,6 @@ typedef struct {
 	u32 cap;
 } token_list_builder;
 
-static void put_i128(i128 val) {
-	if (val == 0) {
-		putchar('0');
-		return;
-	}
-
-	u128 uval;
-	if (val < 0) {
-		// ~x + 1 instead of -x to prevent overflow on `-signed`
-		putchar('-');
-		uval = (u128) ~val + 1;
-	} else
-		uval = (u128) val;
-
-	// requirement is actually 40
-	char buf[48];
-	u8 i = 47;
-	buf[i] = '\0';
-
-	do {
-		buf[--i] = (char) ('0' + uval % 10);
-		uval /= 10;
-	} until (uval == 0);
-
-	printf("%s", buf + i);
-}
-
 [[maybe_unused]]
 static void log_tokens(token_list tokens) {
 	const int width = (int) ({
@@ -189,7 +162,7 @@ static void log_tokens(token_list tokens) {
 
 			case TOKEN_SPZ:
 				printf("%11s%-5s = ", "", "value");
-				put_i128(t->val.spz);
+				put_spz(t->val.spz);
 				putchar('\n');
 				break;
 			case TOKEN_MPZ: {
@@ -243,7 +216,7 @@ static void log_tokens_expr(token_list tokens) {
 				break;
 
 			case TOKEN_SPZ:
-				put_i128(t->val.spz);
+				put_spz(t->val.spz);
 				break;
 			case TOKEN_MPZ: {
 				#pragma GCC diagnostic push
@@ -615,10 +588,10 @@ static token_list lex(vstring expr) {
 				u64 j = i;
 				u64 len;
 
-				if unlikely (i == expr.len) {
-					eprintf("%s: %s: `$` os not a valid variable name.\n", THISFILE, "lex");
-					dsl_panic(EXCEPT_ERR_LEXER);
-				}
+				if unlikely (i == expr.len)
+					// NOTE: normally, this would be just a plain dollar sign, but since that is not valid
+					//       in this context, it is an error instead.
+					goto case_unknown;
 
 				if (expr.ptr[i] == '{') {
 					i++;
@@ -653,7 +626,7 @@ static token_list lex(vstring expr) {
 				var_t *const var = dsl_get_var(token.atom);
 
 				if unlikely (var == nullptr) {
-					eprintf("%s: %s: variable '%.*s' does not exist.\n",
+					eprintf("%s: %s: variable '$%.*s' does not exist.\n",
 						THISFILE, "lex",
 						(int) token.atom.len, token.atom.ptr
 					);

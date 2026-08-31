@@ -23,6 +23,27 @@
 #define MAP_H_HASH64
 #include "map.h" // <stdlib.h>, <stdint.h>, <string.h>, "va-if.h"
 
+#define ANSI_RED    "\e[31m"
+#define ANSI_ORANGE "\e[38;2;180;100;0m"
+#define ANSI_RST    "\e[m"
+
+#define eprintf(FMT, ...)  fprintf(stderr, ANSI_RED    FMT ANSI_RST __VA_OPT__(,) __VA_ARGS__)
+#define ewprintf(FMT, ...) fprintf(stderr, ANSI_ORANGE FMT ANSI_RST __VA_OPT__(,) __VA_ARGS__)
+
+// p is the chance that it stays in the loop
+#define until(x) while (!(x))
+
+// p is the chance that it exits
+#define until_likely(x)       while   likely(!(x))
+#define until_unlikely(x)     while unlikely(!(x))
+#define until_likelyp(x, p)   while   likelyp(!(x), p)
+#define until_unlikelyp(x, p) while unlikelyp(!(x), p)
+
+#define _strlen __builtin_strlen
+
+// `volatile` without the reordering restrictions and forced rereads
+#define force_mem(var) asm ("" : "+m" (var))
+
 #ifdef THISFILE
 	#undef THISFILE
 #endif
@@ -64,6 +85,156 @@ typedef struct {
 
 static Map dsl_vars;
 
+/// SPZ functions
+
+#define spz_abs2(X, NEG) ({                   \
+	const spz_t x_abs2 = (X);                 \
+	(NEG) ? -(spn_t) x_abs2 : (spn_t) x_abs2; \
+})
+
+#define spz_abs1(X) ({            \
+	const spz_t x_abs1 = (X);     \
+	spz_abs2(x_abs1, x_abs1 < 0); \
+})
+
+#define spz_abs(X, NEG...) VA_IF(spz_abs2(X, NEG), spz_abs1(X), NEG)
+
+// where sign(0) = 1. to compare with 0, compare directly.
+#define spz_sgn(X) ((X) >= 0 : 1 : -1)
+
+#define SPZ_MAG_BITS (8*sizeof(spz_t) - 1)
+
+[[gnu::const]]
+FORCE_INLINE static u32 spn_size(spn_t x) {
+	return (u32) __builtin_stdc_bit_width(x);
+}
+
+[[gnu::const]]
+FORCE_INLINE static u32 spz_size(spz_t x) {
+	return spn_size(spz_abs(x));
+}
+
+[[gnu::const]]
+static u32 spz_sizeinbase10(spz_t z) {
+	const spn_t n = spz_abs(z);
+	// if you ignore that this is O(1), it is kind of like O(log log n)
+
+	// I had to make this a binary search tree myself, because when it
+	// was a linear scan, GCC wasn't optimizing it to this.
+
+	if (n < 10000000000000000000llu) {
+		if (n < 10000000000llu) {
+			if (n < 100000llu) {
+				if (n < 1000llu) {
+					if (n < 100llu)
+						return n < 10llu ? 1 : 2;
+					return 3;
+				}
+
+				return n < 10000llu ? 4 : 5;
+			}
+
+			if (n < 100000000llu) {
+				if (n < 10000000llu)
+					return n < 1000000llu ? 6 : 7;
+				return 8;
+			}
+
+			return n < 1000000000llu ? 9 : 10;
+		}
+
+		if (n < 1000000000000000llu) {
+			if (n < 10000000000000llu) {
+				if (n < 1000000000000llu)
+					return n < 100000000000llu ? 11 : 12;
+				return 13;
+			}
+
+			return n < 100000000000000llu ? 14 : 15;
+		}
+
+		if (n < 100000000000000000llu)
+			return n < 10000000000000000llu ? 16 : 17;
+
+		return n < 1000000000000000000llu ? 18 : 19;
+	}
+
+	if (n < (spz_t) 10000000000llu * 10000000000000000000llu) {
+		if (n < (spz_t) 100000llu * 10000000000000000000llu) {
+			if (n < (spz_t) 1000llu * 10000000000000000000llu) {
+				if (n < (spz_t) 100llu * 10000000000000000000llu)
+					return n < (spz_t) 10llu * 10000000000000000000llu ? 20 : 21;
+				return 22;
+			}
+
+			return n < (spz_t) 10000llu * 10000000000000000000llu ? 23 : 24;
+		}
+
+		if (n < (spz_t) 100000000llu * 10000000000000000000llu) {
+			if (n < (spz_t) 10000000llu * 10000000000000000000llu)
+				return n < (spz_t) 1000000llu * 10000000000000000000llu ? 25 : 26;
+			return 27;
+		}
+
+		return n < (spz_t) 1000000000llu * 10000000000000000000llu ? 28 : 29;
+	}
+
+	if (n < (spz_t) 1000000000000000llu * 10000000000000000000llu) {
+		if (n < (spz_t) 10000000000000llu * 10000000000000000000llu) {
+			if (n < (spz_t) 1000000000000llu * 10000000000000000000llu)
+				return n < (spz_t) 100000000000llu * 10000000000000000000llu ? 30 : 31;
+			return 32;
+		}
+
+		return n < (spz_t) 100000000000000llu * 10000000000000000000llu ? 33 : 34;
+	}
+
+	if (n < (spz_t) 100000000000000000llu * 10000000000000000000llu)
+		return n < (spz_t) 10000000000000000llu * 10000000000000000000llu ? 35 : 36;
+
+	// I forgot about 39, so this is in a weird place
+	if (n >= (spz_t) 10000000000000000000llu * 10000000000000000000llu)
+		return 39;
+
+	return n < (spz_t) 1000000000000000000llu * 10000000000000000000llu ? 37 : 38;
+}
+
+static void put_spz(spz_t val) {
+	if (val == 0) {
+		putchar('0');
+		return;
+	}
+
+	spn_t uval;
+	if (val < 0) {
+		// ~x + 1 instead of -x to prevent overflow on `-signed`
+		putchar('-');
+		uval = (spn_t) ~val + 1;
+	} else
+		uval = (spn_t) val;
+
+	char buf[spz_sizeinbase10(SPZ_MAX) + 1];
+	static_assert(8*sizeof(spz_t) < 256, "increase `i` to u32");
+	u8 i = (u8) spz_sizeinbase10(SPZ_MAX);
+	buf[i] = '\0';
+
+	do {
+		buf[--i] = (char) ('0' + uval % 10);
+		uval /= 10;
+	} until (uval == 0);
+
+	printf("%s", buf + i);
+}
+
+[[maybe_unused]]
+FORCE_INLINE static void puts_spz(spz_t x) {
+	put_spz(x);
+	putchar('\n');
+}
+
+/// variable functions
+
+[[gnu::const]]
 FORCE_INLINE static bool line_isspace(char c) {
 	// stuff that can be whitespace inside of a line
 	// I don't care about \r, \n, or \f
@@ -126,7 +297,7 @@ static void dsl_set_var(var_key_t *pkey, var_val_t *pval) {
 }
 
 [[maybe_unused, gnu::nonnull]]
-static void dsl_log_var(var_t *p2entry) {
+static void dsl_dump_var(var_t *p2entry) {
 	// NOTE: the key pointer is a C string as well as a V string.
 #if DEBUG
 	printf("\"%s\" => { ", p2entry->key->ptr);
@@ -150,7 +321,7 @@ static void dsl_log_var(var_t *p2entry) {
 		case VAR_MPZ: {
 			#pragma GCC diagnostic push
 			#pragma GCC diagnostic ignored "-Waddress-of-packed-member"
-			const char *str = mpz_get_str(NULL, 10, pval->mpz);
+			const char *str = mpz_get_str(nullptr, 10, pval->mpz);
 			#pragma GCC diagnostic pop
 
 			printf(".type = VAR_MPZ, .val = %s", str);
@@ -197,7 +368,7 @@ static void dsl_log_var(var_t *p2entry) {
 		case VAR_MPZ: {
 			#pragma GCC diagnostic push
 			#pragma GCC diagnostic ignored "-Waddress-of-packed-member"
-			const char *str = mpz_get_str(NULL, 10, pval->mpz);
+			const char *str = mpz_get_str(nullptr, 10, pval->mpz);
 			#pragma GCC diagnostic pop
 
 			printf(".type = %s\n", "VAR_MPZ");

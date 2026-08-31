@@ -2,6 +2,7 @@
 #define DSL_EXCEPT_H
 
 #include "setjmp.h" // "va-if.h", "int-types.h"
+#include "dsl-vars.h" // "map.h" (FORCE_INLINE), until
 
 #ifdef THISFILE
 	#undef THISFILE
@@ -11,22 +12,6 @@
 #ifndef PAGE_SIZE
 	#define PAGE_SIZE 4096llu
 #endif
-
-#define ANSI_RED    "\e[31m"
-#define ANSI_ORANGE "\e[38;2;180;100;0m"
-#define ANSI_RST    "\e[m"
-
-#define eprintf(FMT, ...)  fprintf(stderr, ANSI_RED    FMT ANSI_RST __VA_OPT__(,) __VA_ARGS__)
-#define ewprintf(FMT, ...) fprintf(stderr, ANSI_ORANGE FMT ANSI_RST __VA_OPT__(,) __VA_ARGS__)
-
-// p is the chance that it stays in the loop
-#define until(x) while (!(x))
-
-// p is the chance that it exits
-#define until_likely(x)       while   likely(!(x))
-#define until_unlikely(x)     while unlikely(!(x))
-#define until_likelyp(x, p)   while   likelyp(!(x), p)
-#define until_unlikelyp(x, p) while unlikelyp(!(x), p)
 
 // swapping these will break everything.
 #define EXCEPTION_FOUND    true

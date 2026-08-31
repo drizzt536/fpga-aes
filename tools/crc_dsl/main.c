@@ -333,5 +333,31 @@ extra_stuff:
 		str = mpz_get_str(nullptr, 10, a); printf("c = %s\n", str); free(str);
 	}
 
+	// test operations
+	printf("SPZ_MAX = "); puts_spz(SPZ_MAX);
+	printf("#digits = %u\n", spz_sizeinbase10(SPZ_MAX));
+
+	{
+		var_val_t x, y, z;
+		x = spz_to_var(721);
+		y = spz_to_var(33);
+
+		printf("x = "); dsl_puts_val(x);
+		printf("y = "); dsl_puts_val(y);
+
+		z = dsl_add(x, y); printf("x + y   = " ); dsl_puts_val(z); dsl_clear_val(z);
+		z = dsl_sub(x, y); printf("x - y   = " ); dsl_puts_val(z); dsl_clear_val(z);
+		z = dsl_mul(x, y); printf("x * y   = " ); dsl_puts_val(z); dsl_clear_val(z);
+		z = dsl_div(x, y); printf("x / y   = " ); dsl_puts_val(z); dsl_clear_val(z);
+		z = dsl_mod(x, y); printf("x %% y   = "); dsl_puts_val(z); dsl_clear_val(z);
+		z = dsl_cat(x, y); printf("x . y   = " ); dsl_puts_val(z); dsl_clear_val(z);
+		z = dsl_pow(x, y); printf("x ^ y   = " ); dsl_puts_val(z); dsl_clear_val(z);
+		z = dsl_shl(x, y); printf("x << y  = " ); dsl_puts_val(z); dsl_clear_val(z);
+		z = dsl_shr(x, y); printf("x >> y  = " ); dsl_puts_val(z); dsl_clear_val(z);
+		z = dsl_and(x, y); printf("x and y = " ); dsl_puts_val(z); dsl_clear_val(z);
+		z = dsl_ior(x, y); printf("x or y  = " ); dsl_puts_val(z); dsl_clear_val(z);
+		z = dsl_xor(x, y); printf("x xor y = " ); dsl_puts_val(z); dsl_clear_val(z);
+	}
+
 	return 0;
 }
