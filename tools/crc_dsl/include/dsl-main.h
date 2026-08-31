@@ -2,6 +2,7 @@
 #define DSL_MAIN_H
 
 #include "dsl-lexer.h" // "dsl-except.h", "setjmp.h", "dsl-vars.h", <gmp.h>
+#include "dsl-ops.h"
 
 #ifdef _WIN32
 	#include <windows.h>
@@ -358,7 +359,7 @@ static void push_line(vstring line) {
 		vstring *const new_array = realloc(dsl_out_prgm.array, new_cap * sizeof(*dsl_out_prgm.array));
 
 		if unlikely (new_array == nullptr) {
-			eprintf("%s: %s: %s realloc failed. could not allocate %zu bytes. preproc exiting early.\n",
+			eprintf("%s: %s: %s realloc failed. could not allocate %zu bytes.\n",
 				THISFILE, "push_line", "array", new_cap * sizeof(*dsl_out_prgm.array)
 			);
 			goto oom;

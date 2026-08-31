@@ -8,6 +8,15 @@
 #include <gmp.h>
 #pragma GCC diagnostic pop
 
+#ifndef MP_BITCNT_MAX
+	// GMP doesn't currently define this, but idk if they plan to or not
+	#define MP_BITCNT_MAX (~(mp_bitcnt_t) 0)
+#endif
+
+#define mp_limbcnt_t typeof(((mpz_t) {0})->_mp_size)
+#define MP_MAX_LIMBS ((1llu << (8*sizeof(mp_limbcnt_t) - 1)) - 1)
+#define MP_MAX_BITS  (8llu * sizeof(mp_limb_t) * MP_MAX_LIMBS)
+
 #define MAP_H_DEFAULT_OWNED
 #define MAP_H_NO_FUN
 #define MAP_H_IMPL
@@ -20,16 +29,24 @@
 #define THISFILE "dsl-vars.h"
 
 typedef enum : u8 {
-	VAR_SPZ, // i128
+	VAR_SPZ, // spz_t
 	VAR_MPZ, // mpz_t
 	VAR_STR, // vstring
 } var_type_t;
 
+typedef u128 spn_t; // single-precision natural number (because 0 is a natural number)
+typedef i128 spz_t; // single precision integer
 typedef vstring var_key_t;
+
+#define SPN_MIN U128_MIN
+#define SPN_MAX U128_MAX
+
+#define SPZ_MIN I128_MIN
+#define SPZ_MAX I128_MAX
 
 typedef union {
 	// NOTE: these should all be 16 bytes long
-	i128    spz; // single-precision integer
+	spz_t   spz; // single-precision integer
 	mpz_t   mpz; // multiple-precision integer
 	vstring str; // `.ptr` should be a C string.
 } var_val_union_t;
@@ -46,6 +63,12 @@ typedef struct {
 } var_t; // same structure as `MapEntry`
 
 static Map dsl_vars;
+
+FORCE_INLINE static bool line_isspace(char c) {
+	// stuff that can be whitespace inside of a line
+	// I don't care about \r, \n, or \f
+	return c == ' ' || c == '\t';
+}
 
 [[gnu::nonnull]]
 static void dsl_free_var(var_t *p2entry) {

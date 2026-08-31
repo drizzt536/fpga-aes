@@ -12,42 +12,6 @@
 #endif
 #define THISFILE "dsl-lexer.h"
 
-/*
-static void mpz_rol(mpz_t out, mpz_t in, mp_bitcnt_t n) {
-	const mp_bitcnt_t bits = mpz_sizeinbase(in, 2) + 63 & ~63;
-
-	n %= bits;
-
-	mpz_t tmp;
-	mpz_init(tmp);
-
-	mpz_mul_2exp   (out, in,        n); // out = in << n
-	mpz_fdiv_q_2exp(tmp, in, bits - n); // tmp = in >> (bits - n)
-	mpz_fdiv_r_2exp(tmp, tmp, bits);    // tmp %= 2**bits
-
-	mpz_ior(out, out, tmp); // out |= tmp;
-
-	mpz_clear(tmp);
-}
-
-static void mpz_ror(mpz_t out, mpz_t in, mp_bitcnt_t n) {
-	const mp_bitcnt_t bits = mpz_sizeinbase(in, 2) + 63 & ~63;
-
-	n %= bits;
-
-	mpz_t tmp;
-	mpz_init(tmp);
-
-	mpz_mul_2exp   (out, in, bits - n); // out = in << (bits - n)
-	mpz_fdiv_q_2exp(tmp, in,        n); // tmp = in >> n
-	mpz_fdiv_r_2exp(tmp, tmp, bits);    // tmp %= 2**bits
-
-	mpz_ior(out, out, tmp); // out |= tmp;
-
-	mpz_clear(tmp);
-}
-*/
-
 typedef enum : u8 {
 	TOKEN_OP_UNARY,
 	TOKEN_OP_BINARY,
@@ -138,12 +102,6 @@ typedef struct {
 	token_list;
 	u32 cap;
 } token_list_builder;
-
-FORCE_INLINE static bool line_isspace(char c) {
-	// stuff that can be whitespace inside of a line
-	// I don't care about \r, \n, or \f
-	return c == ' ' || c == '\t';
-}
 
 static void put_i128(i128 val) {
 	if (val == 0) {

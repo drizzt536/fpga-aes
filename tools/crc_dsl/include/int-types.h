@@ -14,3 +14,9 @@ typedef uint16_t u16;
 typedef uint32_t u32;
 typedef uint64_t u64;
 typedef unsigned __int128 u128;
+
+#define U128_MIN  ((u128) 0)
+#define U128_MAX  (~U128_MIN)
+
+#define I128_MAX  ((i128) (U128_MAX >> 1))
+#define I128_MIN  (-I128_MAX - 1)
