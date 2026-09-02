@@ -11,110 +11,172 @@ from expr_lexer import concat
 #       middle element doesn't have a pre-known offset from the start, that would be O(n) per split.
 
 class Node:
-	def __init__(self, value):
+	__slots__ = ("value", "next")
+
+	def __init__(self, value, next=0):
 		self.value = value
-		self.next = None
+		self.next  = next
+
+LOG = True
 
 class LinkedList:
+	"""
+	this (mostly) simulates the invariants of `token_list`. `append` doesn't,
+	since this is specifically for the concat stage
+	"""
+
 	def __init__(self):
-		self.head = None
-		self.length = 0
+		self.arena = [Node(None, 0)]
+		self.count = 0 # number of live nodes
 
-	def append(self, value, inside: bool = True):
-		new_node = Node(value)
-		if not self.head:
-			self.head = new_node
-		else:
-			current = self.head
-			i = 0
-			while i < self.length - 1:
-				current = current.next
-				i += 1
-			current.next = new_node
+	def append(self, value):
+		"assumes all appends happen before any mutation"
 
-		if inside:
-			# if inside == False, it simulates this being a sublist of a larger list.
-			# in that case, `.next` on the last node may still point to a real node
-			self.length += 1
+		self.arena[-1].next = len(self.arena)
+		self.arena.append(Node(value, 0))
+		self.count += 1
+
+	def repr_range(self, start, length):
+		if length == 0:
+			return "empty"
+
+		values  = []
+		current = start
+		i = 0
+
+		while current != 0 and i < length:
+			node = self.arena[current]
+			values.append(str(node.value))
+			current = node.next
+			i += 1
+
+		return " -> ".join(values)
 
 	def __repr__(self):
-		values = []
-		current = self.head
-		i = 0
-		while current and i < self.length:
-			values.append(current.value)
-			current = current.next
-			i += 1
-		return " -> ".join(str(x) for x in values)
+		return self.repr_range(1, self.count)
 
-def concat_implicit_v1(ll):
+def concat_implicit_v1(ll, start, length):
 	# this version is simpler, but is kind of bad for if the length isn't near a power of 2
 
-	if not ll.head:
-		raise ValueError("head must exist")
+	if start == 0 or length <= 0:
+		raise ValueError("start must be nonzero and length must be positive")
 
-	while ll.length > 1:
-		print(ll)
+	ll.count -= length - 1 # NOTE: because of this, exiting early corrupts state
 
-		current = ll.head
+	arena = ll.arena
+
+	while length > 1:
+		if LOG:
+			print(ll.repr_range(start, length))
+
+		current = start
 		merges = 0
-		target_merges = ll.length >> 1 # one pass of pairwise merges
+		target_merges = length >> 1 # one pass of pairwise merges
 
 		while merges < target_merges:
-			current.value = concat(current.value, current.next.value)
-			current.next = current.next.next
-			current = current.next
+			node = arena[current]
+			next_node  = arena[node.next]
+			node.value = concat(node.value, next_node.value)
+			node.next  = next_node.next
+			current    = node.next
 			merges += 1
 
-		ll.length -= merges
+		length -= merges
 
-	print(ll)
+	if LOG:
+		print(ll.repr_range(start, length))
 
-def concat_implicit_v2(ll):
-	# this version still doesn't get full binary
+def concat_implicit_v2(ll, start, length):
+	if start == 0 or length <= 0:
+		raise ValueError("start must be nonzero and length must be positive")
 
-	if not ll.head:
-		raise ValueError("head must exist")
+	ll.count -= length - 1 # NOTE: because of this, exiting early corrupts state
 
-	while ll.length > 1:
-		print(ll)
+	arena = ll.arena
 
-		current = ll.head
-		prev = None
+	while length > 1:
+		if LOG:
+			print(ll.repr_range(start, length))
+
+		current = start
+		prev = 0
 		merges = 0
-		target_merges = ll.length >> 1
+		target_merges = length >> 1
 
 		while merges < target_merges:
-			current.value = concat(current.value, current.next.value)
-			current.next = current.next.next
+			node = arena[current]
+			next_node = arena[node.next]
+			node.value = concat(node.value, next_node.value)
+			node.next = next_node.next
 			prev = current
-			current = current.next
+			current = node.next
 			merges += 1
 
 		# NOTE: in C, this can happen after the branching. `print(ll)` needs the length to be correct, but
 		#       that is not required for the C version.
-		ll.length -= merges
+		length -= merges
 
-		# if the list had an odd number of elements, merge the leftover
+		# if the range had an odd number of elements, merge the leftover
 		# node with the last merged pair.
-		if (ll.length + merges & 1) and prev and current:
-			print(ll)
-			prev.value = concat(prev.value, current.value)
-			prev.next  = current.next
-			ll.length -= 1
+		if (length + merges & 1) and prev != 0 and current != 0:
+			if LOG:
+				print(ll.repr_range(start, length))
+			prev_node = arena[prev]
+			current_node = arena[current]
+			prev_node.value = concat(prev_node.value, current_node.value)
+			prev_node.next  = current_node.next
+			length -= 1
 
-	print(ll)
+	if LOG:
+		print(ll.repr_range(start, length))
 
-def demo(concat_implicit=concat_implicit_v2):
+def _concat_bisect(arena, start, length):
+	if length == 1:
+		return start
+
+	mid = length >> 1
+	left  = _concat_bisect(arena, start, mid)
+	right = _concat_bisect(arena, start + mid, length - mid)
+
+	left_node  = arena[left]
+	right_node = arena[right]
+	left_node.value = concat(left_node.value, right_node.value)
+
+	return left
+
+def concat_implicit_v3(ll, start, length):
+	# [start, start + length) is a contiguous block in the arena, so real recursive bisection is possible.
+	# the result will always be in `arena[start]`.
+
+	# logging with this one isn't really possible.
+
+	if start == 0 or length <= 0:
+		raise ValueError("start must be nonzero and length must be positive")
+
+	arena  = ll.arena
+	result = _concat_bisect(arena, start, length)
+	ll.count -= length - 1
+
+	# point to the node immediately following the range.
+	# NOTE: `arena[start + length]` almost works, except for that the region this cares about could
+	#       theoretically be at the end of the list (e.g. `%seteval[2 + $x$y$z]`) ends with a concat region.
+	arena[result].next = arena[start + length - 1].next
+
+def demo(concat_implicit=concat_implicit_v2, n=20, bits=32):
 	from secrets import randbits
 	ll = LinkedList()
 
-	for i in range(0, 29):
-		ll.append(randbits(32))
+	ll.append('?')
+	ll.append("<A>")
 
-	ll.append('?', inside=False)
-	ll.append('<', inside=False)
-	ll.append('|', inside=False)
-	ll.append('>', inside=False)
+	for i in range(n):
+		ll.append(randbits(bits))
 
-	concat_implicit(ll)
+	ll.append('?')
+	ll.append("<B>")
+
+	concat_implicit(ll, 3, n)
+
+	if LOG:
+		print(ll)
+		print(f"ll.count = {ll.count}")
