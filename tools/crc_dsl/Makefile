@@ -22,7 +22,7 @@ GCC_ERRFLAGS := -Wdouble-promotion -Wauto-profile -Winvalid-pch -Wkeyword-macro 
 				-Wsuggest-attribute=noreturn -Woverlength-strings -Warith-conversion -Wtrampolines \
 				-Wsuggest-final-methods -Wopenacc-parallelism -fstrict-flex-arrays -Wunused-macros \
 				-Wpointer-arith -Wcast-align -Wduplicated-branches -Wsuggest-final-types -Wpacked  \
-				-Wbad-function-cast -Wdate-time
+				-Wbad-function-cast -Wdate-time -Wno-main
 
 # -Wcast-align=strict
 # -Waggregate-return
@@ -30,7 +30,8 @@ GCC_ERRFLAGS := -Wdouble-promotion -Wauto-profile -Winvalid-pch -Wkeyword-macro 
 LD_LINUX ?= /lib64/ld-linux-x86-64.so.2
 
 GCC_FLAGS	:=  -Ofast -nostdlib -fno-asynchronous-unwind-tables -fno-ident -fms-extensions \
-				-flive-range-shrinkage -fipa-pta -fshort-enums -fweb -fwrapv -masm=intel -Iinclude
+				-flive-range-shrinkage -fipa-pta -fshort-enums -fweb -fwrapv -masm=intel -Iinclude \
+				-ffile-prefix-map=include/=
 LD_FLAGS    :=  -Ofast --fatal-warnings -Llib -L"$(shell dirname "$$(gcc -print-libgcc-file-name)")"
 
 ifeq ($(UNAME_S),Windows_NT)

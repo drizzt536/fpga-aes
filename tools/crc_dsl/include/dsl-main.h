@@ -1,39 +1,48 @@
 #pragma once
 #define DSL_MAIN_H
 
-#include "dsl-lexer.h" // "dsl-except.h", "setjmp.h", "dsl-vars.h", <gmp.h>
-#include "dsl-ops.h"
+/*
+include hierarchy:
+parser
+	lexer
+		ctype
+		except
+			setjmp
+			vars
+				gmp
+					stddef
+					limits
+				map
+					stdlib
+					string
+					stdio
+					va-if
+					int-types
+						stdint
+	ops
+		va-if
+		vars
+*/
+
+#include "dsl-parser.h" // "dsl-lexer.h", "dsl-ops.h", "dsl-except.h", "setjmp.h", "dsl-vars.h", <gmp.h>
 
 #ifdef _WIN32
 	#include <windows.h>
-
-	// from CRYPTBASE.dll or Advapi32.dll (-lcryptbase or -ladvapi32)
-	bool SystemFunction036(void *buf, u32 len);
-	#define dsl_rand(buf, len) ({ until_likely (SystemFunction036(buf, len)); (void) 0; })
 #else
-	#include <sys/random.h>
 	#include <sys/ioctl.h>
 	#include <unistd.h>
 	#include <time.h>
-
-	// under the constraints, this will never fail (<=256 bytes), relatively new glibc+kernel
-	#define dsl_rand(buf, len) ((void) getrandom(buf, len, /*flags*/ 0))
 #endif
-
-#ifdef THISFILE
-	#undef THISFILE
-#endif
-#define THISFILE "dsl-main.h"
 
 #define DSL_MAJOR "1"
 #define DSL_MINOR "5"
 #define DSL_MICRO "0a" // patch version
 #define DSL_VERSION DSL_MAJOR "." DSL_MINOR "." DSL_MICRO
 
-#ifdef __linux__
-	#define DSL_PLATFORM "linux"
-#elifdef _WIN32
+#ifdef _WIN32
 	#define DSL_PLATFORM "win32"
+#elifdef __linux__
+	#define DSL_PLATFORM "linux"
 #elif defined(__APPLE__) && defined(__MACH__)
 	#define DSL_PLATFORM "darwin"
 #elifdef __FreeBSD__
@@ -64,13 +73,8 @@ typedef union {
 	u64 raw;
 
 	__attribute__((packed)) struct {
-		union {
-			u32 rows, height, lines;
-		};
-
-		union {
-			u32 cols, width;
-		};
+		union { u32 rows, height, lines; };
+		union { u32 cols, width; };
 	};
 } term_size_t;
 
@@ -190,9 +194,7 @@ static bool strip_lines(vstring_list *p2in_prgm) {
 		if unlikely(null_pos != nullptr) {
 			if (null_pos < buf) unreachable();
 
-			eprintf("%s: %s: program contains null character at position %zu\n",
-				THISFILE, "strip_lines", (u64) (null_pos - buf) + 1
-			);
+			eprintf("program contains null character at position %zu.", (u64) (null_pos - buf) + 1);
 			return false;
 		}
 	}
@@ -354,9 +356,8 @@ static void push_line(vstring line) {
 		vstring *const new_array = realloc(dsl_out_prgm.array, new_cap * sizeof(*dsl_out_prgm.array));
 
 		if unlikely (new_array == nullptr) {
-			eprintf("%s: %s: %s realloc failed. could not allocate %zu bytes.\n",
-				THISFILE, "push_line", "array", new_cap * sizeof(*dsl_out_prgm.array)
-			);
+			eprintf("%s realloc failed. could not allocate %zu bytes.",
+				"array", new_cap * sizeof(*dsl_out_prgm.array));
 			goto oom;
 		}
 
@@ -380,9 +381,7 @@ static void push_line(vstring line) {
 		char *const new_buf = realloc(tmp_buf.ptr, tmp_buf.size);
 
 		if unlikely (new_buf == nullptr) {
-			eprintf("%s: %s: %s realloc failed. could not allocate %zu bytes.\n",
-				THISFILE, "push_line", "buffer", tmp_buf.size
-			);
+			eprintf("%s realloc failed. could not allocate %zu bytes.", "buffer", tmp_buf.size);
 			goto oom;
 		}
 
@@ -483,7 +482,8 @@ static vstring_list preproc(vstring_list in_prgm, MapEntryCList start_vars, bool
 		goto catastrophic_oom;
 
 	if unlikely (!strip_lines(&in_prgm)) {
-		eprintf("%s: %s: errors were encountered.\n", THISFILE, "strip_lines");
+		// this vague message is okay becayse strip_lines gives its own more detailed message.
+		eprintf("errors were encountered.");
 		goto done;
 	}
 
@@ -491,11 +491,7 @@ static vstring_list preproc(vstring_list in_prgm, MapEntryCList start_vars, bool
 	static_assert(sizeof(mpz_t) == 16 && sizeof(i128) == 16 && sizeof(vstring) == 16);
 
 	volatile const map_hash_t old_map_key = map_key();
-	{
-		map_hash_t key;
-		dsl_rand(&key, sizeof key);
-		map_key(key);
-	}
+	map_init_key();
 
 	// set up `dsl_vars`
 	{
@@ -522,10 +518,8 @@ static vstring_list preproc(vstring_list in_prgm, MapEntryCList start_vars, bool
 		}
 
 	#if DEBUG
-		if unlikely (dsl_vars != nullptr) {
-			eprintf("%s: %s: [BUG] `dsl_vars` is not null at the start of `preproc`.\n", THISFILE, "preproc");
-			exit(1);
-		}
+		if unlikely (dsl_vars != nullptr)
+			fatal(1, "[BUG] `dsl_vars` is not null at the start of `preproc`.");
 	#endif
 
 		dsl_vars = Map_create();
@@ -647,8 +641,7 @@ static vstring_list preproc(vstring_list in_prgm, MapEntryCList start_vars, bool
 		// TODO: check for the specific exit codes
 		// NOTE: only negative codes are for errors
 		if (res < 0)
-			eprintf("%s: %s: preproc failed on line %zu with exit code %zd.\n",
-				THISFILE, "preproc", dsl_except.dispatch_line, res);
+			eprintf("preproc failed on line %zu with exit code %zd.", dsl_except.dispatch_line, res);
 		break;
 	);
 
@@ -691,7 +684,7 @@ done:
 
 #if DEBUG
 	if unlikely (dsl_out_prgm.array->ptr != dsl_out_buf.ptr + sizeof(u64))
-		eprintf("%s: %s: `dsl_out_prgm.array->ptr` and `dsl_out_buf.ptr + 8` don't match\n", THISFILE, "preproc");
+		eprintf("`dsl_out_prgm.array->ptr` and `dsl_out_buf.ptr + 8` don't match.");
 #endif
 
 	// shrink line arrray
@@ -704,6 +697,5 @@ done:
 	};
 
 catastrophic_oom:
-	eprintf("%s: %s: catastrophic OOM.\n", THISFILE, "preproc");
-	exit(1);
+	fatal(1, "catastrophic OOM.");
 }

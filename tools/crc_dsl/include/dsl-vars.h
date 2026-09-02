@@ -21,14 +21,25 @@
 #define MAP_H_NO_FUN
 #define MAP_H_IMPL
 #define MAP_H_HASH64
-#include "map.h" // <stdlib.h>, <stdint.h>, <string.h>, "va-if.h"
+#include "map.h" // <stdlib.h>, <string.h>, "int-types.h", "va-if.h"
 
 #define ANSI_RED    "\e[31m"
 #define ANSI_ORANGE "\e[38;2;180;100;0m"
-#define ANSI_RST    "\e[m"
+#define ANSI_RESET  "\e[m"
 
-#define eprintf(FMT, ...)  fprintf(stderr, ANSI_RED    FMT ANSI_RST __VA_OPT__(,) __VA_ARGS__)
-#define ewprintf(FMT, ...) fprintf(stderr, ANSI_ORANGE FMT ANSI_RST __VA_OPT__(,) __VA_ARGS__)
+#define eprintf(FMT, ...)                                       \
+	fprintf(stderr, ANSI_RED "%s:%d: %s: " FMT ANSI_RESET "\n", \
+		__FILE__, __LINE__, __func__ __VA_OPT__(,) __VA_ARGS__)
+
+#define fatal(code, ...) ({ \
+	eprintf(__VA_ARGS__);   \
+	exit(code);             \
+	(void) 0;               \
+})
+
+#define ewprintf(FMT, ...)                                         \
+	fprintf(stderr, ANSI_ORANGE "%s:%d: %s: " FMT ANSI_RESET "\n", \
+		__FILE__, __LINE__, __func__ __VA_OPT__(,) __VA_ARGS__)
 
 // p is the chance that it stays in the loop
 #define until(x) while (!(x))
@@ -43,11 +54,6 @@
 
 // `volatile` without the reordering restrictions and forced rereads
 #define force_mem(var) asm ("" : "+m" (var))
-
-#ifdef THISFILE
-	#undef THISFILE
-#endif
-#define THISFILE "dsl-vars.h"
 
 typedef enum : u8 {
 	VAR_SPZ, // spz_t
@@ -213,9 +219,15 @@ static void put_spz(spz_t val) {
 	} else
 		uval = (spn_t) val;
 
-	char buf[spz_sizeinbase10(SPZ_MAX) + 1];
-	static_assert(8*sizeof(spz_t) < 256, "increase `i` to u32");
-	u8 i = (u8) spz_sizeinbase10(SPZ_MAX);
+	// 2 + len(str(2**152)) == 48, but 2+len(str(2**153)) == 49
+	// since the top bit is for the sign, 153 is okay
+	static_assert(8*sizeof(spz_t) <= 153);
+
+	// `1 + spz_sizeinbase10(SPZ_MIN) + 1` is not constant enough for GCC apparently. It
+	char buf[48];
+
+	static_assert(sizeof(buf) <= 256, "increase `i` to u32");
+	u8 i = sizeof(buf) -1;
 	buf[i] = '\0';
 
 	do {

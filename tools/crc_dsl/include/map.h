@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 /*
-	map.h v0.9.4
+	map.h v0.9.5
 	Copyright (c) 2026 Daniel Janusch
 
 	Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -95,6 +95,9 @@
 		  map. If owned, the old map is cleared to prevent potential double frees.
 		- jhash(in, len[, key]): the underlying hash function below `map_hash`, usable for types
 		  other than C strings. The key defaults to `map_key()`
+		- map_key([val]): with an argument given, it sets the map key and returns nothing. with
+		  no argument given, it returns the map key.
+		- map_init_key(): randomize the map key. requires RDRAND (-mrdrnd)
 	4. the following functions exist for public use:
 		- Map_create([m_cap[, o_cap]]): creates and returns a new map object. `m_cap` defaults to
 		  `MAP_SIZE_SMALLEST`, and `o_cap` default to `MAP_H_MIN_OCAP`. Ignoring the return value
@@ -203,8 +206,6 @@
 		  Deterministic so long as the map key doesn't change between calls. not reentrant.
 		- map_dedup_shuffle(strings, count): the same as `map_dedup_shuffle_det`, except it
 		  randomizes the hash key between calls to remove the strict determinism.
-		- map_key([val]): with an argument given, it sets the map key and returns nothing. with
-		  no argument given, it returns the map key.
 		- map_size(size): returns the closest usable map size to the input value. rounds up on tie.
 		- map_hash(str): C-string hash function.
 		- vstring_cmp(a, b): similar to `strcmp` but for `vstring *` instead of `char *`
@@ -293,6 +294,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h> // for Map_dump
 
 #include "int-types.h" // u8, u32, u64, u128
 #include "va-if.h"     // VA_IF
@@ -441,8 +443,7 @@ typedef map_hash_t (*map_hashfn_t)(const void *);
 
 #define jhash(in, len, key...) VA_IF(_jhash3(in, len, key), _jhash2(in, len), key)
 
-// NOTE: index 0 will be invalid, indicating there is no next
-// String -> String hash map
+// NOTE: index 0 will be invalid, indicating there is no next entry.
 
 #if defined(MAP_H_CHAR_ENTRIES) && defined(MAP_H_VOID_ENTRIES)
 	#error "MAP_H_CHAR_ENTRIES and MAP_H_VOID_ENTRIES cannot both be defined."
@@ -464,12 +465,10 @@ typedef struct {
 //  - 11 == MAP_SIZE_SMALLEST
 #define MAP_H_STRUCT_MAPIMPL_NON_VA_BUCKETS 6
 
-// if I use [[gnu::aligned(64)]], then the fuckass compiler will add 16 extra padding bytes,
-// so I have to inline some of the buckets to make it work. It has to inline the exact amount
-// to where sizeof(struct MapImpl) % 64 == 0, but it also has to be less than MAP_SIZE_SMALLEST + 1,
-// because if you inline more buckets than the minimum amount of buckets, you are wasting memory.
-// fuck you GCC. shit ass garbage compiler and bullshit language. NASM would never have this issue.
-// NASM always lets me do exactly what I want to do without a problem. ILY NASM <3.
+// if I use [[gnu::aligned(64)]] like normal, then the compiler will add 16 extra padding bytes, so
+// I have to inline some of the buckets to make it work. It has to inline the exact amount to where
+// sizeof(struct MapImpl) % 64 == 0, but it also has to be less than MAP_SIZE_SMALLEST + 1, because
+// if you inline more buckets than the minimum amount of buckets, you waste memory.
 struct [[gnu::aligned(64)]] MapImpl {
 	// NOTE: o_size includes tombstones
 	u64 m_size, o_size; // number of buckets used, number of overflow slots used
@@ -508,12 +507,14 @@ typedef struct {
 	// this has to be a pointer to the entry to prevent use after frees
 	// in a case where you call Map_delete in the middle of execution.
 	// you can still get undefined behavior if an insert triggers a resize
-	// mid iteration. probably just don't do that unless you need to.
+	// mid iteration. probably just don't do that unless you really need to.
+	// Or I guess you could manually check the map attributes and make sure
+	// an insert can't trigger a full resize.
 	MapEntry *item;
 	u64 bucket;
 } MapIter;
 
-// you don't need C++ for RAII
+// We have RAII at home
 #define AF_Map     [[gnu::cleanup(Map_destroy_ref1)]]        Map
 #define AF_ViewMap [[gnu::cleanup(Map_destroy_shallow_ref)]] Map
 #define AF_ConstMap comptime_error("RAII for a const map makes no sense"); Map
@@ -627,8 +628,9 @@ typedef struct {
 	#warning "macro `views` is defined, which will make `map_with` not work."
 #endif
 
-// the shitass dumb fuck compiler counts the number of arguments in the preprocessor
-// before it actually expands out the arguments, so it can, and does, count wrong.
+// the compiler counts the number of arguments in the preprocessor before
+// it actually expands out the arguments, so it can, and does, count wrong.
+
 // NOTE: these can use `Map_set_raw` because `map_with` creates it with roughly 50% extra
 //       buckets than the number of things it is inserting.
 #define Map__set_copy_impl(m,k,v) Map_set_raw(m, strdup(k), strdup(v), MAP_OWNED)
@@ -659,9 +661,12 @@ typedef struct {
 
 #define EXPAND(x...) x
 
-// pass extra `0` to satisfy the retarded compiler's dumb shit nonsense. imagine how
-// crazy it would be if they wrote the compiler in a way that isn't brain-dead retarded.
-// like holy fuck it isn't 1954 anymore, we are allowed to have nice things.
+// these pass the extra `0`s to get around a compiler bug. GCC counts macro arguments
+// before actually expanding the arguments, so in the case where one of the arguments
+// expands to more than one argument, the preprocessor uses the wrong number.
+// I seriously doubt this will ever be fixed, since probably a lot of code relies on this,
+// e.g. this code.
+// I have no clue if Clang or MSVC have the same issue. Clang probably does.
 #define Map__with16(m,o,kv,x...) Map__set_##o(m, EXPAND kv, 0); Map__with15(m,o,x)
 #define Map__with15(m,o,kv,x...) Map__set_##o(m, EXPAND kv, 0); Map__with14(m,o,x)
 #define Map__with14(m,o,kv,x...) Map__set_##o(m, EXPAND kv, 0); Map__with13(m,o,x)
@@ -707,7 +712,7 @@ typedef struct {
 })
 
 #define Map_dump2(this, mode) Map_dump3(this, mode, 0)
-#define Map_dump1(this) Map_dump2(this, '\t')
+#define Map_dump1(this) Map_dump2(this, MAP_JSON_MODE_FULL)
 
 #define Map_dump2_3(this, mode, format...) \
 	VA_IF(Map_dump3(this, mode, format), Map_dump2(this, mode), format)
@@ -724,6 +729,82 @@ Map Map_destroy(Map this);
 
 #define map_key0() map_h_jhash_key
 #define map_key(key...) VA_IF(map_key1(key), map_key0(), key)
+
+#ifdef map__rng_type
+	#undef map__rng_type
+#endif
+
+#ifdef map__rng_func
+	#undef map__rng_func
+#endif
+
+#ifdef __RDRND__
+	#define map__rng_type unsigned long long
+	#define map__rng_func __builtin_ia32_rdrand64_step
+#elifdef __RDSEED__
+	#define map__rng_type unsigned long long
+	#define map__rng_func __builtin_ia32_rdseed64_step
+#elifdef __ARM_FEATURE_RNG
+	#include <arm_acle.h>
+	#define map__rng_type u64
+	#define map__rng_func __rndr
+#elifdef _WIN32
+	// try using the operating system's provided functions.
+
+	// this exists past like 2003
+	// RtlGenRandom (CRYPTBASE.dll or Advapi32.dll)
+
+	// this isn't declared by `#include <windows.h>`, so it is safe to declare it here.
+	[[gnu::dllimport]]
+	bool SystemFunction036(void *buf, u32 len);
+
+	#define map_init_key() ({                                     \
+		map_hash_t key_;                                          \
+		while unlikely (!SystemFunction036(&key_, sizeof(key_))); \
+		map_key(key_);                                            \
+	})
+#elifdef __linux__
+	#if defined(__GLIBC__) && !(__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 25))
+		// glibc, but not new enough.
+		[[gnu::error("map_init_key requires RDRAND or RDSEED (x86), RNDR (arm), or getrandom, but none are available.")]]
+		void map_init_key(...);
+	#else
+		// musl, or a sufficient version of glibc.
+		// Doesn't check ENOSYS because I don't care. Update your kernel, Dawg. ts from 2014
+		#include <sys/random.h>
+
+		#define map_init_key() ({              \
+			map_hash_t key_;                   \
+			getrandom(&key_, sizeof(key_), 0); \
+			map_key(key_);                     \
+		})
+	#endif
+#else
+	// no RDRAND, no RDSEED, ARM __rndr, and unknown system
+	[[gnu::error("map_init_key requires RDRAND or RDSEED, but neither is available.")]]
+	void map_init_key(...);
+#endif // map_init_key
+
+#if defined(map__rng_type) && defined(map__rng_func)
+	#ifdef MAP_H_HASH128
+		#define map_init_key() ({                        \
+			map__rng_type ukey_;                         \
+			map__rng_type lkey_;                         \
+			while unlikely (map__rng_func(&ukey_) == 0); \
+			while unlikely (map__rng_func(&lkey_) == 0); \
+			map_key((map_hash_t)ukey_ << 64 | lkey_);    \
+		})
+	#else // HASH64
+		#define map_init_key() ({                       \
+			map__rng_type key_;                         \
+			while unlikely (map__rng_func(&key_) == 0); \
+			map_key((map_hash_t) key_);                 \
+		})
+	#endif
+
+	#undef map__rng_type
+	#undef map__rng_func
+#endif
 
 #define Map_create1(m_cap) Map_create2(m_cap, 0)
 #define Map_create0() Map_create1(0)
@@ -1057,8 +1138,8 @@ MAP_STATIC u64 map_size(u64 size) {
 
 #define jhash_bswap128(x) __builtin_bswap128(x)
 
-// this is an approximation. multiplication with `unsigned _BitInt(256)` is slow as shit, and I also don't
-// need the entire result, so I will just not do that.
+// this is an approximation. multiplication with `unsigned _BitInt(256)` is super slow,
+// and I also don't need the entire result, so I will just not do that.
 #define jhash_mulhi128(_x, _y) ({             \
 	const u128 x = _x;                         \
 	const u128 y = _y;                          \
@@ -1266,6 +1347,7 @@ MAP_STATIC Map Map_create2(u64 m_cap, u64 o_cap) {
 		"struct MapImpl should not have any trailing padding."
 	);
 	static_assert(MAP_H_STRUCT_MAPIMPL_NON_VA_BUCKETS <= MAP_SIZE_SMALLEST);
+	static_assert(sizeof(void *) == 8);
 
 	Map map = map__alloc(
 		sizeof(struct MapImpl) + sizeof(MapEntry)*(m_cap - MAP_H_STRUCT_MAPIMPL_NON_VA_BUCKETS)
@@ -1816,7 +1898,7 @@ MAP_INLINE Map Map__set_grow_impl(Map this, bool custom, map_cmp_t cmp, map_hash
 	if (this->m_size*10 >= this->m_cap*3) {
 		// 0.3 <= k < 0.45 : if o_tcnt >= o_cap/4, GC, else 2x the overflow
 		// probably the overflow just wasn't large enough for the map
-		if (this->o_tcnt < this->o_cap >> 2) 
+		if (this->o_tcnt < this->o_cap >> 2)
 			Map_oresize(this, this->o_cap << 1);
 		else
 			Map_gc(this);
@@ -1830,7 +1912,7 @@ MAP_INLINE Map Map__set_grow_impl(Map this, bool custom, map_cmp_t cmp, map_hash
 	// used may or may not be good a protecting from hash flooding. Or maybe, the map was reserved
 	// with significantly less overflow slots than buckets.
 
-	if (this->o_tcnt >= this->o_cap >> 2) 
+	if (this->o_tcnt >= this->o_cap >> 2)
 		Map_gc(this);
 	else if (this->m_cap < 0x1000 && this->m_cap < this->o_cap >> 3)
 		// idk, maybe the hash collisions are only because of a bad prime or something.

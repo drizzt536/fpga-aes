@@ -4,11 +4,6 @@
 #include "setjmp.h" // "va-if.h", "int-types.h"
 #include "dsl-vars.h" // "map.h" (FORCE_INLINE), until
 
-#ifdef THISFILE
-	#undef THISFILE
-#endif
-#define THISFILE "dsl-except.h"
-
 #ifndef PAGE_SIZE
 	#define PAGE_SIZE 4096llu
 #endif

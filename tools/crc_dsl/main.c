@@ -15,11 +15,6 @@
 #include <stdio.h>
 #include "dsl-main.h" // <stdlib.h>, <stdint.h>, <string.h>, "map.h", "va-if.h", "setjmp.h"
 
-#ifdef THISFILE
-	#undef THISFILE
-#endif
-#define THISFILE "main.c"
-
 #ifdef _WIN32
 	#define fseek _fseeki64_nolock
 	#define ftell _ftelli64_nolock
@@ -181,8 +176,7 @@ done:
 
 	if unlikely (lines.count != line_cap)
 		// this is not a hard error, so it can still return `result == 0` in this case.
-		ewprintf("WARNING: parse_lines: lines.count (%zu) != line_cap (%zu)\n",
-			lines.count, line_cap);
+		ewprintf("lines.count (%zu) != line_cap (%zu)\n", lines.count, line_cap);
 #endif
 
 	*out_lines = lines;
@@ -196,8 +190,8 @@ done:
 u8 mainCRTStartup(void);
 u8 mainCRTStartup(void)
 #else
-int main(int argc, char **argv);
-int main(int argc, char **argv)
+u8 main(u32 argc, char **argv);
+u8 main(u32 argc, char **argv)
 #endif
 
 {
@@ -224,7 +218,7 @@ int main(int argc, char **argv)
 		goto extra_stuff;
 
 	if (argc > 1)
-		ewprintf("WARNING: program arguments past the first are ignored.\n");
+		ewprintf("only the first argument is used. ignoring %u arguments.", argc - 1);
 
 	// lines.array[i] are views into a buffer. they should not be freed independently.
 	// lines.array[0].ptr is always a pointer to the start of a valid C string.
@@ -238,25 +232,23 @@ int main(int argc, char **argv)
 			case PARSE_LINES_EOK:
 				break;
 			case PARSE_LINES_EOPEN:
-				eprintf("%s: %s: input file could not be opened.\n", THISFILE, "main");
+				eprintf("input file could not be opened.");
 				return ret;
 			case PARSE_LINES_ESEEK:
-				eprintf("%s: %s: input file could not be seeked.\n", THISFILE, "main");
+				eprintf("input file could not be seeked.");
 				return ret;
 			case PARSE_LINES_EOOM:
-				eprintf("%s: %s: OOM. requested %zu bytes.\n", THISFILE, "main", in_prgm.count * sizeof(vstring));
+				eprintf("OOM. requested %zu bytes.", in_prgm.count * sizeof(vstring));
 				return ret;
 			case PARSE_LINES_ENULL:
-				eprintf("%s: %s: file line %zu contains a null byte.\n", THISFILE, "main", in_prgm.count + 1);
+				eprintf("file line %zu contains a null byte.", in_prgm.count + 1);
 				return ret;
 		#if DEBUG
 			case PARSE_LINES_EBUG1:
-				eprintf("%s: %s: [BUG] not enough lines allocated. allocated %zu.\n",
-					THISFILE, "main", in_prgm.count);
+				eprintf("[BUG] not enough lines allocated. allocated %zu.", in_prgm.count);
 				return ret;
 			case PARSE_LINES_EBUG2:
-				eprintf("%s: %s: [BUG] first line pointer is not 8 bytes past a freeable pointer.\n",
-					THISFILE, "main");
+				eprintf("[BUG] first line pointer is not 8 bytes past a freeable pointer.");
 				return ret;
 		#endif
 			default:
@@ -287,26 +279,6 @@ int main(int argc, char **argv)
 	free_prgm(out_prgm);
 
 extra_stuff:
-	{
-		jmp_buf env;
-		u64 i = 1;
-		force_mem(i);
-
-		i64 ret = setjmp(&env);
-		printf("\ri = %zu, ret=%zd", i, ret);
-		#ifndef _WIN32
-			// ucrt printf auto flushes in between, but glibc printf doesn't
-			fflush(stdout);
-		#endif
-
-		i++;
-		msleep(25);
-		if (i <= 16)
-			longjmp(&env, (i64) i);
-
-		putchar('\n');
-	}
-
 	dsl_try_root(
 	// before
 		printf("dsl_try_root returned %zd\n", res),
@@ -334,8 +306,6 @@ extra_stuff:
 	}
 
 	// test operations
-	printf("SPZ_MAX = "); puts_spz(SPZ_MAX);
-	printf("#digits = %u\n", spz_sizeinbase10(SPZ_MAX));
 
 	{
 		var_val_t x, y, z;

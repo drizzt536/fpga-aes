@@ -26,14 +26,14 @@ class LinkedList:
 	"""
 
 	def __init__(self):
-		self.arena = [Node(None, 0)]
+		self.array = [Node(None, 0)]
 		self.count = 0 # number of live nodes
 
 	def append(self, value):
 		"assumes all appends happen before any mutation"
 
-		self.arena[-1].next = len(self.arena)
-		self.arena.append(Node(value, 0))
+		self.array[-1].next = len(self.array)
+		self.array.append(Node(value, 0))
 		self.count += 1
 
 	def repr_range(self, start, length):
@@ -45,7 +45,7 @@ class LinkedList:
 		i = 0
 
 		while current != 0 and i < length:
-			node = self.arena[current]
+			node = self.array[current]
 			values.append(str(node.value))
 			current = node.next
 			i += 1
@@ -63,7 +63,7 @@ def concat_implicit_v1(ll, start, length):
 
 	ll.count -= length - 1 # NOTE: because of this, exiting early corrupts state
 
-	arena = ll.arena
+	arena = ll.array
 
 	while length > 1:
 		if LOG:
@@ -92,7 +92,7 @@ def concat_implicit_v2(ll, start, length):
 
 	ll.count -= length - 1 # NOTE: because of this, exiting early corrupts state
 
-	arena = ll.arena
+	arena = ll.array
 
 	while length > 1:
 		if LOG:
@@ -153,7 +153,7 @@ def concat_implicit_v3(ll, start, length):
 	if start == 0 or length <= 0:
 		raise ValueError("start must be nonzero and length must be positive")
 
-	arena  = ll.arena
+	arena  = ll.array
 	result = _concat_bisect(arena, start, length)
 	ll.count -= length - 1
 

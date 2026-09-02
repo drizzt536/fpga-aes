@@ -1,25 +1,10 @@
 #pragma once
 #define DSL_OPS_H
 
-#include "va-if.h"
-#include "dsl-vars.h" // gmp.h
+#include "dsl-vars.h" // <gmp.h>, "va-if.h"
 
-// TODO: consider changing the `exit(1)` stuff to use `dsl_panic`. I haven't done it
-//       already because I don't know where all this stuff is going to be used.
-
-/*
-// TODO: move this into dsl-parser.h once that exists
-//       this requires stuff from both dsl-lexer.h and dsl-ops.h
-[[maybe_unused]]
-static var_val_t tok_to_var(token_t x) {
-	if (x.type == TOKEN_SPZ) return spz_to_var(x.val.spz);
-	if (x.type == TOKEN_MPZ) return mpz_to_var(x.val.mpz);
-	if (x.type == TOKEN_STR) return str_to_var(x.val.str);
-
-	eprintf("%s: %s: invalid token. must be SPZ, MPZ, or STR", THISFILE, "tok_to_var");
-	exit(1);
-}
-*/
+// TODO: consider changing the `fatal()` stuff to `dsl_panic()`. I haven't done it already because
+//      I don't know where all this stuff is going to be used.
 
 // NOTE: rol and ror aren't realistic to implement because mp_bitcnt_t is long and not long long.
 
@@ -27,11 +12,6 @@ static var_val_t tok_to_var(token_t x) {
 // the variable struct, and `malloc` aligns to 16 bytes anyway, so this warning is just noise here.
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Waddress-of-packed-member"
-
-#ifdef THISFILE
-	#undef THISFILE
-#endif
-#define THISFILE "dsl-ops.h"
 
 //////////////////////////////// helpers ////////////////////////////////
 
@@ -61,15 +41,13 @@ FORCE_INLINE static bool spz_cat_overflows(spz_t z1, spz_t z2) {
 }
 
 #if DEBUG
-	#define assert_var_int(x, op) do {                             \
-		if ((x).type != VAR_STR)                                   \
-			break;                                                 \
-		eprintf("%s: %s: arguments should not be type VAR_STR.\n", \
-			THISFILE, "dsl_" op);                                  \
-		exit(1);                                                   \
+	#define assert_var_int(x) do {                         \
+		if ((x).type != VAR_STR)                           \
+			break;                                         \
+		fatal(1, "arguments should not be type VAR_STR."); \
 	} while (false)
 #else
-	#define assert_var_int(x, op) ((void) 0)
+	#define assert_var_int(x) ((void) 0)
 #endif
 
 static void spz_to_mpz(mpz_t out, spz_t in) {
@@ -104,10 +82,8 @@ static spz_t mpz_to_spz(mpz_t in) {
 	// should be performed elsewhere. If it is larger, this will probably crash.
 
 #if DEBUG
-	if (!mpz_is_small(in)) {
-		eprintf("%s: %s: input value doesn't fit in spz_t.\n", THISFILE, "mpz_to_spz");
-		exit(1);
-	}
+	if (!mpz_is_small(in))
+		fatal(1, "input value doesn't fit in spz_t.");
 #endif
 
 	if (mpz_is_tiny(in))
@@ -217,10 +193,8 @@ static var_val_t dsl_atoi(var_val_t in) {
 	// NOTE: in.str.ptr is a C string
 
 #if DEBUG
-	if (in.type != VAR_STR) {
-		eprintf("%s: %s: input value must be VAR_STR.\n", THISFILE, "dsl_atoi");
-		exit(1);
-	}
+	if (in.type != VAR_STR)
+		fatal(1, "input value must be VAR_STR.");
 #endif
 
 	// NOTE: this should not run until it is guaranteed that the variable's value is valid.
@@ -239,10 +213,9 @@ static var_val_t dsl_atoi(var_val_t in) {
 
 	vstring tmp;
 	tmp.ptr = malloc(in.str.len + 1);
-	if unlikely (tmp.ptr == nullptr) {
-		eprintf("%s: %s: out of memory.\n", THISFILE, "dsl_atoi");
-		exit(1);
-	}
+
+	if unlikely (tmp.ptr == nullptr)
+		fatal(1, "out of memory.");
 
 	// NOTE: the `<=` means this also copies the null terminator.
 	u64 w = 0;
@@ -278,17 +251,15 @@ static var_val_t dsl_atoi(var_val_t in) {
 
 [[maybe_unused]]
 static var_val_t dsl_pow(var_val_t x, var_val_t y) {
-	assert_var_int(x, "pow");
-	assert_var_int(y, "pow");
+	assert_var_int(x);
+	assert_var_int(y);
 
 	if (x.type == VAR_SPZ && y.type == VAR_SPZ) {
 		// 0^-n => 1/0^n => error. n^-k => 0
 
 		if (y.spz < 0) {
-			if unlikely (x.spz == 0) {
-				eprintf("%s: %s: division by zero.", THISFILE, "dsl_pow");
-				exit(1);
-			}
+			if unlikely (x.spz == 0)
+				fatal(1, "division by zero.");
 
 			return spz_to_var(0);
 		}
@@ -339,10 +310,8 @@ static var_val_t dsl_pow(var_val_t x, var_val_t y) {
 	var_val_t res;
 
 	if (mpz_sgn(y.mpz) < 0) {
-		if unlikely (mpz_sgn(x.mpz) == 0) {
-			eprintf("%s: %s: division by zero.", THISFILE, "dsl_pow");
-			exit(1);
-		}
+		if unlikely (mpz_sgn(x.mpz) == 0)
+			fatal(1, "division by zero.");
 
 		res = spz_to_var(0);
 		goto done;
@@ -381,7 +350,7 @@ done:
 
 [[maybe_unused]]
 static var_val_t dsl_neg(var_val_t x) {
-	assert_var_int(x, "neg");
+	assert_var_int(x);
 
 	if (x.type == VAR_SPZ) {
 		x.spz = -x.spz;
@@ -396,7 +365,7 @@ static var_val_t dsl_neg(var_val_t x) {
 
 [[maybe_unused]]
 static var_val_t dsl_not(var_val_t x) {
-	assert_var_int(x, "not");
+	assert_var_int(x);
 
 	if (x.type == VAR_SPZ) {
 		x.spz = ~x.spz;
@@ -411,7 +380,7 @@ static var_val_t dsl_not(var_val_t x) {
 
 [[maybe_unused]]
 static var_val_t dsl_abs(var_val_t x) {
-	assert_var_int(x, "abs");
+	assert_var_int(x);
 
 	if (x.type == VAR_SPZ) {
 		if (x.spz < 0)
@@ -428,8 +397,8 @@ static var_val_t dsl_abs(var_val_t x) {
 
 [[maybe_unused]]
 static var_val_t dsl_cat(var_val_t x, var_val_t y) {
-	assert_var_int(x, "cat");
-	assert_var_int(y, "cat");
+	assert_var_int(x);
+	assert_var_int(y);
 
 	if (x.type == VAR_SPZ && y.type == VAR_SPZ && !spz_cat_overflows(x.spz, y.spz)) {
 		// shift = 10^len(str(y))
@@ -512,8 +481,8 @@ static var_val_t dsl_cat(var_val_t x, var_val_t y) {
 
 [[maybe_unused]]
 static var_val_t dsl_mul(var_val_t x, var_val_t y) {
-	assert_var_int(x, "mul");
-	assert_var_int(y, "mul");
+	assert_var_int(x);
+	assert_var_int(y);
 
 	if (x.type == VAR_SPZ) {
 		if (y.type == VAR_SPZ) {
@@ -561,15 +530,13 @@ static var_val_t dsl_mul(var_val_t x, var_val_t y) {
 
 [[maybe_unused]]
 static var_val_t dsl_div(var_val_t x, var_val_t y) {
-	assert_var_int(x, "div");
-	assert_var_int(y, "div");
+	assert_var_int(x);
+	assert_var_int(y);
 
 	if (x.type == VAR_SPZ) {
 		if (y.type == VAR_SPZ) {
-			if unlikely (y.spz == 0) {
-				eprintf("%s: %s: division by zero.", THISFILE, "dsl_div");
-				exit(1);
-			}
+			if unlikely (y.spz == 0)
+				fatal(1, "division by zero.");
 
 			// SPZ / SPZ
 			return spz_to_var(x.spz / y.spz);
@@ -607,15 +574,13 @@ static var_val_t dsl_div(var_val_t x, var_val_t y) {
 
 [[maybe_unused]]
 static var_val_t dsl_mod(var_val_t x, var_val_t y) {
-	assert_var_int(x, "mod");
-	assert_var_int(y, "mod");
+	assert_var_int(x);
+	assert_var_int(y);
 
 	if (x.type == VAR_SPZ) {
 		if (y.type == VAR_SPZ) {
-			if unlikely (y.spz == 0) {
-				eprintf("%s: %s: division by zero.", THISFILE, "dsl_mod");
-				exit(1);
-			}
+			if unlikely (y.spz == 0)
+				fatal(1, "division by zero.");
 
 			// SPZ % SPZ
 			return spz_to_var(x.spz % y.spz);
@@ -653,8 +618,8 @@ static var_val_t dsl_mod(var_val_t x, var_val_t y) {
 
 [[maybe_unused]]
 static var_val_t dsl_add(var_val_t x, var_val_t y) {
-	assert_var_int(x, "add");
-	assert_var_int(y, "add");
+	assert_var_int(x);
+	assert_var_int(y);
 
 	if (x.type == VAR_SPZ) {
 		if (y.type == VAR_SPZ) {
@@ -701,8 +666,8 @@ static var_val_t dsl_add(var_val_t x, var_val_t y) {
 
 [[maybe_unused]]
 static var_val_t dsl_sub(var_val_t x, var_val_t y) {
-	assert_var_int(x, "sub");
-	assert_var_int(y, "sub");
+	assert_var_int(x);
+	assert_var_int(y);
 	// assume neither argument is VAR_STR.
 
 	if (x.type == VAR_SPZ) {
@@ -752,8 +717,8 @@ static var_val_t dsl_sub(var_val_t x, var_val_t y) {
 static var_val_t dsl_shr(var_val_t x, var_val_t y); // resolve circular reference
 
 static var_val_t dsl_shl(var_val_t x, var_val_t y) {
-	assert_var_int(x, "shl");
-	assert_var_int(y, "shl");
+	assert_var_int(x);
+	assert_var_int(y);
 
 	if (y.type == VAR_MPZ) {
 		// see dsl_shr for the comments in this section
@@ -764,8 +729,7 @@ static var_val_t dsl_shl(var_val_t x, var_val_t y) {
 		if unlikely (mpz_sgn(y.mpz) < 0)
 			return spz_to_var(0);
 
-		eprintf("%s: %s: out of memory.\n", THISFILE, "dsl_shl");
-		exit(1);
+		fatal(1, "out of memory.");
 	}
 
 	if unlikely (y.spz < 0) {
@@ -800,10 +764,8 @@ static var_val_t dsl_shl(var_val_t x, var_val_t y) {
 	if unlikely (mpz_sgn(x.mpz) == 0)
 		return spz_to_var(0);
 
-	if unlikely (y.spz >= MP_MAX_BITS || mpz_sizeinbase(x.mpz, 2) + y.spz > MP_MAX_BITS) {
-		eprintf("%s: %s: out of memory.\n", THISFILE, "dsl_shl");
-		exit(1);
-	}
+	if unlikely (y.spz >= MP_MAX_BITS || mpz_sizeinbase(x.mpz, 2) + y.spz > MP_MAX_BITS)
+		fatal(1, "out of memory.");
 
 	mpz_t out;
 	mpz_init(out);
@@ -833,8 +795,8 @@ static var_val_t dsl_shl(var_val_t x, var_val_t y) {
 }
 
 static var_val_t dsl_shr(var_val_t x, var_val_t y) {
-	assert_var_int(x, "shr");
-	assert_var_int(y, "shr");
+	assert_var_int(x);
+	assert_var_int(y);
 
 	if (y.type == VAR_MPZ) {
 		if unlikelyp (mpz_is_small(y.mpz), 0.9999d)
@@ -848,8 +810,7 @@ static var_val_t dsl_shr(var_val_t x, var_val_t y) {
 			return spz_to_var(0); // `x >> massive number` => 0
 
 		// `x << massive number` is not representable
-		eprintf("%s: %s: out of memory.\n", THISFILE, "dsl_shr");
-		exit(1);
+		fatal(1, "out of memory.");
 	}
 
 	// ?PZ >> SPZ
@@ -913,8 +874,8 @@ static var_val_t dsl_shr(var_val_t x, var_val_t y) {
 
 [[maybe_unused]]
 static var_val_t dsl_and(var_val_t x, var_val_t y) {
-	assert_var_int(x, "and");
-	assert_var_int(y, "and");
+	assert_var_int(x);
+	assert_var_int(y);
 
 	if (x.type == VAR_SPZ) {
 		if (y.type == VAR_SPZ)
@@ -951,8 +912,8 @@ static var_val_t dsl_and(var_val_t x, var_val_t y) {
 
 [[maybe_unused]]
 static var_val_t dsl_ior(var_val_t x, var_val_t y) {
-	assert_var_int(x, "ior");
-	assert_var_int(y, "ior");
+	assert_var_int(x);
+	assert_var_int(y);
 
 	if (x.type == VAR_SPZ) {
 		if (y.type == VAR_SPZ)
@@ -990,8 +951,8 @@ static var_val_t dsl_ior(var_val_t x, var_val_t y) {
 
 [[maybe_unused]]
 static var_val_t dsl_xor(var_val_t x, var_val_t y) {
-	assert_var_int(x, "xor");
-	assert_var_int(y, "xor");
+	assert_var_int(x);
+	assert_var_int(y);
 
 	if (x.type == VAR_SPZ) {
 		if (y.type == VAR_SPZ)
