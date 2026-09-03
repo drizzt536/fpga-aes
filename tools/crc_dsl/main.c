@@ -21,30 +21,35 @@
 #endif
 
 [[gnu::pure]]
-FORCE_INLINE static u128 cstr_count_nonempty_lines(const char *buf) {
+FORCE_INLINE static u64 cstr_count_nonempty_lines(const char *buf) {
 	// count lines, except ignore empty lines.
-	// assumes null termination
+	// assumes null termination at buf[n]
 	const char *const orig_buf = buf;
+	const u64 n = *(u64 *) (buf - sizeof(u64));
 	u64 lines = 0;
 
-	if unlikely (buf[0] == '\0')
-		return 1; // 0 characters. 0 lines, but say 1 anyway.
+	if (n == 0 || memchr(buf, '\0', n) != nullptr)
+		return 0;
 
 	if (buf[0] == '\n')
 		// the first line is always included
 		lines++;
 
-	do {
+	while (true) {
 		buf++;
+		buf = memchr(buf, '\n', n - (u64) (buf - orig_buf));
+
+		if (buf == nullptr)
+			break;
 
 		if (buf[0] == '\n' && buf[-1] != '\n')
 			lines++;
-	} until (buf[0] == '\0');
+	}
 
-	if (buf[-1] != '\n')
+	if (orig_buf[n - 1] != '\n')
 		lines++;
 
-	return (u128)(buf - orig_buf) << 64 | lines;
+	return lines;
 }
 
 #define PARSE_LINES_EOK			0
@@ -59,7 +64,7 @@ FORCE_INLINE static u128 cstr_count_nonempty_lines(const char *buf) {
 
 static u8 parse_lines(char *file_path, vstring_list *out_lines) {
 	u8 result = 0;
-	u128 file_data = 0;
+	u64 line_cap = 0;
 	vstring_list lines = {
 		.array = nullptr,
 		.count = 0,
@@ -100,9 +105,13 @@ static u8 parse_lines(char *file_path, vstring_list *out_lines) {
 	buf[n] = '\0';
 
 	// parse into lines
-	file_data = cstr_count_nonempty_lines(buf);
+	line_cap = cstr_count_nonempty_lines(buf);
 
-	#define line_cap ((u64) file_data)
+	if unlikely (line_cap == 0) {
+		free(buf - sizeof(u64));
+		result = PARSE_LINES_ENULL;
+		goto done;
+	}
 
 	lines.array = (vstring *) malloc(line_cap * sizeof(*lines.array));
 
@@ -110,13 +119,6 @@ static u8 parse_lines(char *file_path, vstring_list *out_lines) {
 		free(buf - sizeof(u64));
 		lines.count = line_cap; // for the diagnostic messages
 		result = PARSE_LINES_EOOM;
-		goto done;
-	}
-
-	if unlikely ((u64) (file_data >> 64) != n) {
-		free(buf - sizeof(u64));
-		lines.count = line_cap; // for the diagnostic messages
-		result = PARSE_LINES_ENULL;
 		goto done;
 	}
 
@@ -241,7 +243,7 @@ u8 main(u32 argc, char **argv)
 				eprintf("OOM. requested %zu bytes.", in_prgm.count * sizeof(vstring));
 				return ret;
 			case PARSE_LINES_ENULL:
-				eprintf("file line %zu contains a null byte.", in_prgm.count + 1);
+				eprintf("file contains a null byte.");
 				return ret;
 		#if DEBUG
 			case PARSE_LINES_EBUG1:
@@ -303,6 +305,9 @@ extra_stuff:
 		str = mpz_get_str(nullptr, 10, b); printf("b = %s\n", str); free(str);
 		mpz_mul(a, a, b);
 		str = mpz_get_str(nullptr, 10, a); printf("c = %s\n", str); free(str);
+
+		mpz_clear(a);
+		mpz_clear(b);
 	}
 
 	// test operations

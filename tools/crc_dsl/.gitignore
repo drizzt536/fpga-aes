@@ -1,6 +1,8 @@
 include/gmp.h
 test.c
 lib
+cachegrind.out.*
+callgrind.out.*
 
 # linux binary
 main

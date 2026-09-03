@@ -35,7 +35,7 @@
 	out_var_;                                 \
 })
 
-FORCE_INLINE static bool spz_cat_overflows(spz_t z1, spz_t z2) {
+FORCE_INLINE static bool spz__cat_overflows(spz_t z1, spz_t z2) {
 	// returns whether or not the result of an `SPZ . SPZ` concat will fit in an SPZ
 	return spz_sizeinbase10(z1) + spz_sizeinbase10(z2) >= 39;
 }
@@ -400,7 +400,7 @@ static var_val_t dsl_cat(var_val_t x, var_val_t y) {
 	assert_var_int(x);
 	assert_var_int(y);
 
-	if (x.type == VAR_SPZ && y.type == VAR_SPZ && !spz_cat_overflows(x.spz, y.spz)) {
+	if (x.type == VAR_SPZ && y.type == VAR_SPZ && !spz__cat_overflows(x.spz, y.spz)) {
 		// shift = 10^len(str(y))
 		spz_t shift = 1;
 		for (u32 i = spz_sizeinbase10(y.spz); i --> 0 ;)

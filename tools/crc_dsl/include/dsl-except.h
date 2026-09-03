@@ -54,12 +54,7 @@ typedef struct {
 	u64 dispatch_line; // this needs to be set manually
 } except_stack_t;
 
-static except_stack_t dsl_except = {
-	.array = nullptr,
-	.count = 0,
-	.cap   = 0,
-	.dispatch_line = 0,
-};
+static except_stack_t dsl_except;
 
 #define dsl_free_except() do {       \
 	if (dsl_except.array == nullptr) \
@@ -85,8 +80,6 @@ static except_stack_t dsl_except = {
 	dsl_except.array[0].type = EXCEPT_EXIT_PROGRAM;  \
 	dsl_except.array[0].tag  = EXCEPT_TAG_NONE;      \
 	result = setjmp((jmp_buf *) dsl_except.array);   \
-	if (result != 0)                                 \
-		dsl_free_except();                           \
 done:                                                \
 	result;                                          \
 })
@@ -255,6 +248,7 @@ static i64 dsl__try2(except_type_t type, u64 tag) {
 	const i64 VAR = dsl__try_root();         \
 	BEFORE;                                  \
 	switch (VAR) { CASES; }                  \
+	dsl_free_except();                       \
 	VAR;                                     \
 })
 #define dsl_try_root2(BEFORE, BLOCK) dsl_try_root3(res, BEFORE, BLOCK)

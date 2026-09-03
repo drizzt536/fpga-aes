@@ -653,7 +653,6 @@ static vstring_list preproc(vstring_list in_prgm, MapEntryCList start_vars, bool
 	};
 
 	// replace the final newline with null
-	dsl_out_buf.ptr[dsl_out_buf.usage /*sizeof(u64) + *(u64 *) dsl_out_buf.ptr*/] = '\0';
 
 	puts("vars:");
 
@@ -677,7 +676,8 @@ done:
 		};
 	}
 
-	dsl_out_buf.ptr = realloc(dsl_out_buf.ptr, dsl_out_buf.usage); // shrink buffer
+	dsl_out_buf.ptr = realloc(dsl_out_buf.ptr, dsl_out_buf.usage + 1); // shrink buffer
+	dsl_out_buf.ptr[dsl_out_buf.usage++] = '\0';
 
 	for (u64 i = 0; i < dsl_out_prgm.count; i++)
 		dsl_out_prgm.array[i].ptr = dsl_out_buf.ptr + dsl_out_prgm.array[i].ofs;
@@ -689,7 +689,6 @@ done:
 
 	// shrink line arrray
 	dsl_out_prgm.array = realloc(dsl_out_prgm.array, dsl_out_prgm.count * sizeof(*dsl_out_prgm.array));
-
 
 	return (vstring_list) {
 		.array = dsl_out_prgm.array,

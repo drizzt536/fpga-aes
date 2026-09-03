@@ -263,6 +263,7 @@ oom:
 	lexer_oom();
 }
 
+[[gnu::pure]]
 static bool is_int_var(var_t *var) {
 	// returns true if the variable is an integer or coercible to an integer.
 

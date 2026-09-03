@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 /*
-	map.h v0.9.5
+	map.h v0.9.6
 	Copyright (c) 2026 Daniel Janusch
 
 	Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -801,9 +801,6 @@ Map Map_destroy(Map this);
 			map_key((map_hash_t) key_);                 \
 		})
 	#endif
-
-	#undef map__rng_type
-	#undef map__rng_func
 #endif
 
 #define Map_create1(m_cap) Map_create2(m_cap, 0)
@@ -1398,11 +1395,11 @@ MAP_STATIC Map Map_create2(u64 m_cap, u64 o_cap) {
 	memset(map->buckets, 0, sizeof(MapEntry)*m_cap);
 
 	// the rest of the overflow is cold, so prefetch the first few cache lines.
-	// since sizeof(MapEntry) == 24, this is roughly 10 inserts.
+	// since sizeof(MapEntry) == 24, this is roughly 2.7 inserts per prefetch.
 	__builtin_prefetch((char *) map->overflow + 64*1, 1, 3); // rw=write, L1
 	__builtin_prefetch((char *) map->overflow + 64*2, 1, 3);
-	__builtin_prefetch((char *) map->overflow + 64*3, 1, 3);
-	__builtin_prefetch((char *) map->overflow + 64*4, 1, 3);
+	// __builtin_prefetch((char *) map->overflow + 64*3, 1, 3);
+	// __builtin_prefetch((char *) map->overflow + 64*4, 1, 3);
 
 	return map;
 }
@@ -1523,8 +1520,8 @@ MAP_STATIC bool Map_gc(Map this) {
 	// same prefetch strategy as in `Map_create2`.
 	__builtin_prefetch((char *) (new_overflow + new_id) + 64*0, 1, 3); // rw=write, L1
 	__builtin_prefetch((char *) (new_overflow + new_id) + 64*1, 1, 3);
-	__builtin_prefetch((char *) (new_overflow + new_id) + 64*2, 1, 3);
-	__builtin_prefetch((char *) (new_overflow + new_id) + 64*3, 1, 3);
+	// __builtin_prefetch((char *) (new_overflow + new_id) + 64*2, 1, 3);
+	// __builtin_prefetch((char *) (new_overflow + new_id) + 64*3, 1, 3);
 
 	return true;
 }

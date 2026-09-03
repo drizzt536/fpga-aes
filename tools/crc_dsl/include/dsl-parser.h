@@ -1,7 +1,7 @@
 #pragma once
 #define DSL_PARSER_H
 
-#include "dsl-lexer.h"
+#include "dsl-lexer.h" // "dsl-vars.h"
 #include "dsl-ops.h"
 
 static var_val_t tok_to_var(token_t x) {
@@ -77,7 +77,7 @@ static void dsl_cat_all(token_list *ll, u32 start, u32 length) {
 #endif
 
 	// point to the node immediately following the range.
-	// NOTE: using `array[start + length]` almost works, except for that the concat region could theoretically
+	// NOTE: using `array[start + length]` almost works, except for the concat region could theoretically
 	//       be at the end of the list (e.g. `%seteval[2 + $x$y$z]`) ends with a concat region.
 	// NOTE: this is okay to happen before the bisection process since `dsl__cat_all_bisect` doesn't touch
 	//       the `.next` field on any of the elements.
@@ -87,4 +87,12 @@ static void dsl_cat_all(token_list *ll, u32 start, u32 length) {
 	dsl__cat_all_bisect(ll->array, start, length);
 }
 
-// TODO: add the rest of the parser code. dsl_cat_all is just the driver for the first stage.
+[[maybe_unused]]
+static void resolve_expr(token_list *tokens, u32 *lparens) {
+	// lparens should be able to fit at least `tokens.count >> 1` integers, so it should be at least
+	// `(tokens.count & ~1) << 1` bytes long. `tokens.count << 1` is probably best.
+
+	(void) tokens;
+	(void) lparens;
+
+}

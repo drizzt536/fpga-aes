@@ -219,15 +219,10 @@ static void put_spz(spz_t val) {
 	} else
 		uval = (spn_t) val;
 
-	// 2 + len(str(2**152)) == 48, but 2+len(str(2**153)) == 49
-	// since the top bit is for the sign, 153 is okay
-	static_assert(8*sizeof(spz_t) <= 153);
+	char buf[spz_sizeinbase10(SPZ_MAX) + 1];
 
-	// `1 + spz_sizeinbase10(SPZ_MIN) + 1` is not constant enough for GCC apparently. It
-	char buf[48];
-
-	static_assert(sizeof(buf) <= 256, "increase `i` to u32");
-	u8 i = sizeof(buf) -1;
+	static_assert(8*sizeof(spz_t) <= 256, "increase `i` to u32");
+	u8 i = (u8) (sizeof(buf) - 1);
 	buf[i] = '\0';
 
 	do {
