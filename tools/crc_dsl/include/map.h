@@ -661,12 +661,10 @@ typedef struct {
 
 #define EXPAND(x...) x
 
-// these pass the extra `0`s to get around a compiler bug. GCC counts macro arguments
-// before actually expanding the arguments, so in the case where one of the arguments
-// expands to more than one argument, the preprocessor uses the wrong number.
-// I seriously doubt this will ever be fixed, since probably a lot of code relies on this,
-// e.g. this code.
-// I have no clue if Clang or MSVC have the same issue. Clang probably does.
+// these pass the extra `0`s to get around preprocessor nonsense. GCC counts macro arguments
+// before actually expanding the arguments, so in the case where one of the arguments expands
+// to more than one argument, the preprocessor uses the wrong number. I seriously doubt this
+// will ever be fixed, since it is apparently not a bug.
 #define Map__with16(m,o,kv,x...) Map__set_##o(m, EXPAND kv, 0); Map__with15(m,o,x)
 #define Map__with15(m,o,kv,x...) Map__set_##o(m, EXPAND kv, 0); Map__with14(m,o,x)
 #define Map__with14(m,o,kv,x...) Map__set_##o(m, EXPAND kv, 0); Map__with13(m,o,x)

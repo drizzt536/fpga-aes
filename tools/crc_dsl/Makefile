@@ -17,12 +17,12 @@ GCC_ERRFLAGS := -Wdouble-promotion -Wauto-profile -Winvalid-pch -Wkeyword-macro 
 				-Wswitch-enum -Wnested-externs -Wtrivial-auto-var-init -Wunsafe-loop-optimizations \
 				-Wstrict-flex-arrays -Winvalid-utf8 -Wdisabled-optimization -Wmissing-include-dirs \
 				-Wmultichar -Wformat-nonliteral -Wformat-security -Wformat-signedness -Wconversion \
-				-Wabi -Walloca -Wanalyzer-symbol-too-complex -Wanalyzer-too-complex -Wshadow -Wall \
 				-Wsuggest-attribute=noreturn -Woverlength-strings -Warith-conversion -Wtrampolines \
 				-Wsuggest-final-methods -Wopenacc-parallelism -fstrict-flex-arrays -Wunused-macros \
-				-Wpointer-arith -Wcast-align -Wduplicated-branches -Wsuggest-final-types -Wpacked  \
-				-Wunsuffixed-float-constants -Wvariadic-macros -Wsign-conversion -Wdate-time       \
-				-Wbad-function-cast -Wno-main
+				-Wpointer-arith -Wcast-align -Wduplicated-branches -Wsuggest-final-types -Wno-main \
+				-Wunsuffixed-float-constants -Wvariadic-macros -Wsign-conversion -Wdate-time -Wall \
+				-Wabi -Walloca-larger-than=64KiB -Wanalyzer-symbol-too-complex -Wshadow -Wpacked \
+				-Wbad-function-cast -Wanalyzer-too-complex
 
 LD_LINUX ?= /lib64/ld-linux-x86-64.so.2
 
@@ -45,6 +45,12 @@ ifneq ($O,g)
 endif
 
 GCC_FLAGS += -O$O
+
+ifeq ($(DEBUG),on)
+	DEBUG := basic
+else ifeq ($(DEBUG),true)
+	DEBUG := basic
+endif
 
 ifeq ($(DEBUG),all)
 	ifneq ($(UNAME_S),Windows_NT)

@@ -23,8 +23,8 @@ typedef enum : u8 {
 	TOKEN_STR, // this one shouldn't come up, I think.
 } token_type_t;
 
-#define is_primary(token) (token.type >= TOKEN_PRIMARY)
-#define is_op(token)      (token.type <= TOKEN_OP)
+#define tok_is_primary(token) (token.type >= TOKEN_PRIMARY)
+#define tok_is_op(token)      (token.type <= TOKEN_OP)
 
 typedef enum : u8 {
 	/*
@@ -33,7 +33,7 @@ typedef enum : u8 {
 		0a. concatenation by juxtaposition (only for literals and variables)
 		0b. ()
 		1. ^ (right-to-left)
-		2. unary +, -, ~, & (right-to-left)
+		2. unary +, -, ~, &, ! (right-to-left)
 		3. .
 		4. *, /, %
 		5. binary +, -
@@ -43,7 +43,7 @@ typedef enum : u8 {
 	*/
 
 	ORDER_OTHER = 0, // NONE, VAR, LITERAL, LPAREN, RPAREN, SPZ, MPZ, STR
-	ORDER_UNARY = 2, // unary +, -, ~, &. right-to-left
+	ORDER_UNARY = 2, // unary +, -, ~, &, !. right-to-left
 	ORDER_SHIFT = 6, // <<, >>
 	ORDER_OR    = 8, // or, xor
 
@@ -101,14 +101,20 @@ typedef struct {
 static void log_tokens(token_list tokens) {
 	const int width = (int) ({
 		// max required is 11 bytes
-		char widthbuf[16];
-		sprintf(widthbuf, "%u", tokens.count - 1);
-		strlen(widthbuf);
+		char width_buf[16];
+		sprintf(width_buf, "%u", tokens.count - 1);
+		strlen(width_buf);
 	});
 
-	printf("tokens: array=%#zx, count=%u\n", (u64) (uintptr_t) tokens.array, tokens.count);
+	printf("tokens: array=%#zx, count=%u. i=[actual:logical]\n", (u64) (uintptr_t) tokens.array, tokens.count);
+
+	// width of the combined "[logical/array]" field when they differ,
+	// so that every line's index block takes the same space.
+	// format is "logical/array" -> width + 1 (slash) + width
+	const int combined_width = 2*width + 1;
 
 	u32 i = 0;
+	u32 logical = 0;
 	do {
 		// NOTE: 11 == strlen("  order=x  ");
 		token_t *t = tokens.array + i;
@@ -128,7 +134,12 @@ static void log_tokens(token_list tokens) {
 			default:              unreachable();
 		}
 
-		printf("\t[%*u] type=%-10s next=%3u", width, i, type_name, t->next);
+		if (logical == i)
+			printf("\t[%*u]", combined_width, i);
+		else
+			printf("\t[%*u:%*u]", width, i, width, logical);
+
+		printf(" type=%-10s next=%3u", type_name, t->next);
 
 		switch (t->type) {
 			case TOKEN_SOF:
@@ -157,8 +168,8 @@ static void log_tokens(token_list tokens) {
 			case TOKEN_SPZ:
 				printf("%11s%-5s = ", "", "value");
 				put_spz(t->val.spz);
-				putchar('\n');
 				break;
+
 			case TOKEN_MPZ: {
 				#pragma GCC diagnostic push
 				#pragma GCC diagnostic ignored "-Waddress-of-packed-member"
@@ -169,6 +180,7 @@ static void log_tokens(token_list tokens) {
 				free(str);
 				break;
 			}
+
 			case TOKEN_STR:
 				printf("%11s%-5s = ", "", "value");
 				printf("%.*s", (int) t->val.str.len, t->val.str.ptr);
@@ -179,7 +191,7 @@ static void log_tokens(token_list tokens) {
 		}
 
 		putchar('\n');
-
+		logical++;
 		i = t->next;
 	} while (i != 0);
 }
@@ -189,7 +201,7 @@ static void log_tokens_expr(token_list tokens) {
 	for (u32 i = 1; i != 0; i = tokens.array[i].next) {
 		token_t *t = tokens.array + i;
 
-		if (!( t[-1].type == TOKEN_OP_UNARY || ( is_primary(t[0]) && is_primary(t[-1]) ) ))
+		if (!( t[-1].type == TOKEN_OP_UNARY || ( tok_is_primary(t[0]) && tok_is_primary(t[-1]) ) ))
 			putchar(' ');
 
 		switch (t->type) {
@@ -237,7 +249,7 @@ static void log_tokens_expr(token_list tokens) {
 	eprintf("ran out of memory lexing `%%seteval` expression."); \
 	dsl_panic(EXCEPT_ERR_OOM);                                   \
 	(void) 0;                                                    \
-})                                                               \
+})
 
 static void push_token(token_list_builder *p2tokens, token_t token) {
 	if unlikely (p2tokens->count == UINT32_MAX)
@@ -281,7 +293,7 @@ static bool is_int_var(var_t *var) {
 
 	val.len--; // already checked the last digit
 
-	while (val.len --> 1) {
+	while (val.len --> 1) { // 1 instead of 0 because it already checked the first digit
 		char c = val.ptr[val.len];
 
 		if (c == '_') {
@@ -306,7 +318,7 @@ static bool is_int_var(var_t *var) {
 #define prev2_token prev_token_n(tokens, 2)
 
 [[maybe_unused]]
-static token_list lex(vstring expr) {
+static token_list dsl_lex(vstring expr) {
 	u64 depth = 0;
 	(void) depth;
 
@@ -341,7 +353,7 @@ static token_list lex(vstring expr) {
 				// skip whitespace
 				break;
 			case '(':
-				if unlikely (is_primary(prev_token)) {
+				if unlikely (tok_is_primary(prev_token)) {
 					eprintf("%s followed immediately by %s is invalid.", "LITERAL or VAR", "'('");
 					dsl_panic(EXCEPT_ERR_LEXER);
 				}
@@ -367,7 +379,7 @@ static token_list lex(vstring expr) {
 					dsl_panic(EXCEPT_ERR_LEXER);
 				}
 
-				if unlikely (is_op(prev_token)) {
+				if unlikely (tok_is_op(prev_token)) {
 					eprintf("%s followed immediately by %s is invalid.", "OPERATOR", "')'");
 					dsl_panic(EXCEPT_ERR_LEXER);
 				}
@@ -434,9 +446,37 @@ static token_list lex(vstring expr) {
 					//       so don't bother checking the length of the operator string.
 					pop_token();
 				break;
+			case '!': {
+				const token_t token = {
+					.op = {
+						.ptr = expr.ptr + i,
+						.len = 1,
+						.order = ORDER_UNARY,
+					},
+					.next = 0,
+					.type = TOKEN_OP_UNARY,
+				};
+
+				if (prev_token.type != TOKEN_OP_UNARY)
+					push_token(&tokens, token);
+				else
+
+				// previous token is unary
+				if (*prev_token.op.ptr == '&')
+					// &!x => !x
+					prev_token = token;
+				else if (tokens.count >= 1 && prev2_token.type == TOKEN_OP_UNARY && *prev2_token.op.ptr == '!')
+					// !!!x => !x
+					pop_token();
+				else
+					push_token(&tokens, token);
+				break;
+			}
 			case '&':
-				// NOTE: && => &
-				if likely (prev_token.type != TOKEN_OP_UNARY || *prev_token.op.ptr != '&')
+				if likely (prev_token.type != TOKEN_OP_UNARY || (
+					*prev_token.op.ptr != '&' && // && => &
+					*prev_token.op.ptr != '!'    // !&x => !x
+				))
 					push_token(&tokens, (token_t) {
 						.op = {
 							.ptr = expr.ptr + i,
@@ -497,7 +537,7 @@ static token_list lex(vstring expr) {
 				if unlikely (i + 1 + ofs >= expr.len)
 					goto case_unknown;
 
-				if unlikely (*(u16 *)(expr.ptr + i + ofs) != MC16('or'))
+				if unlikely (*(u16 *) (expr.ptr + i + ofs) != MC16('or'))
 					goto case_unknown;
 
 				push_token(&tokens, (token_t) {
@@ -517,7 +557,7 @@ static token_list lex(vstring expr) {
 			// literals
 			{
 			case '0' ... '9':
-				if unlikely (i > 0 && line_isspace(expr.ptr[i - 1]) && is_primary(prev_token)) {
+				if unlikely (i > 0 && line_isspace(expr.ptr[i - 1]) && tok_is_primary(prev_token)) {
 					eprintf("concatenation by juxtaposition with whitespace separation is invalid.");
 					dsl_panic(EXCEPT_ERR_LEXER);
 				}
@@ -570,7 +610,7 @@ static token_list lex(vstring expr) {
 			} // literal
 
 			case '$': {
-				if unlikely (i > 0 && line_isspace(expr.ptr[i - 1]) && is_primary(prev_token)) {
+				if unlikely (i > 0 && line_isspace(expr.ptr[i - 1]) && tok_is_primary(prev_token)) {
 					eprintf("concatenation by juxtaposition with whitespace separation is invalid.");
 					dsl_panic(EXCEPT_ERR_LEXER);
 				}
@@ -682,8 +722,9 @@ static token_list lex(vstring expr) {
 							continue;
 						}
 
-						if (*prev_token.op.ptr == '&')
+						if (*prev_token.op.ptr == '&' || *prev_token.op.ptr == '!')
 							// &- => &
+							// !- => !
 							continue;
 					}
 					else if (prev_token.type == TOKEN_OP_BINARY) {
@@ -696,15 +737,15 @@ static token_list lex(vstring expr) {
 							continue;
 						}
 					}
-				}
+				} // token is unary
 
 				push_token(&tokens, token);
 				break;
 			}
 
 			// explicitly mention these 8 so 32-62 is a fully used region.
-			case '!': case '"': case '#': case '\'': // 33, 34, 35, 39
-			case ',': case ':': case ';': case  '=': // 44, 58, 59, 61
+			case '"': case '#': case '\'': case ',': // 34, 35, 39, 44
+			case ':': case ';': case  '=':           // 44, 58, 59, 61
 			default:
 			case_unknown:
 				eprintf("unknown or invalid character or token '%c' at index %zu.", c, i);
@@ -763,7 +804,7 @@ static token_list lex(vstring expr) {
 		dsl_panic(EXCEPT_ERR_LEXER);
 	}
 
-	if unlikely (is_op(prev_token)) {
+	if unlikely (tok_is_op(prev_token)) {
 		eprintf("%s followed immediately by %s is invalid.", "OPERATOR", "EOF");
 		dsl_panic(EXCEPT_ERR_LEXER);
 	}
@@ -776,12 +817,10 @@ static token_list lex(vstring expr) {
 		.array = tokens.array,
 		.count = tokens.count
 	};
-} // lex
-
-#undef is_primary
-#undef is_op
+} // dsl_lex
 
 #undef prev_token_n
 #undef prev_token
 #undef prev2_token
+#undef pop_token
 #undef lexer_oom

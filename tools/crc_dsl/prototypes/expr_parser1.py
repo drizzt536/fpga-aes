@@ -46,6 +46,7 @@ def simple_pop_and_eval(ops: list[int], vals: list[int]):
 			case '-': vals[-1] = -vals[-1]
 			case '~': vals[-1] = ~vals[-1]
 			case '&': vals[-1] = abs(vals[-1])
+			case '!': vals[-1] = 1 if vals[-1] == 0 else 0
 			case _:
 				assert False, "unreachable"
 

@@ -55,6 +55,10 @@
 // `volatile` without the reordering restrictions and forced rereads
 #define force_mem(var) asm ("" : "+m" (var))
 
+// I do not care that this can technically be undefined behavior.
+// It will never do anything other than exactly what I want it to.
+#define var_val_cpy(a, b) ({ (a).spz = (b).spz; })
+
 typedef enum : u8 {
 	VAR_SPZ, // spz_t
 	VAR_MPZ, // mpz_t
@@ -312,19 +316,10 @@ static void dsl_dump_var(var_t *p2entry) {
 	var_val_t *pval = p2entry->val;
 
 	switch (pval->type) {
-		case VAR_SPZ: {
-			const bool sign = pval->spz >= 0;
-			const u128 magn = sign ? (u128) pval->spz : -(u128) pval->spz;
-
-			printf(
-				".type = VAR_SPZ, .val = %s%016zx%016zx",
-				"-" + !sign,
-				(u64)(magn >> 64),
-				(u64) magn
-			);
-
+		case VAR_SPZ:
+			printf(".type = VAR_SPZ, .val = ");
+			put_spz(pval->spz);
 			break;
-		}
 		case VAR_MPZ: {
 			#pragma GCC diagnostic push
 			#pragma GCC diagnostic ignored "-Waddress-of-packed-member"
@@ -363,15 +358,11 @@ static void dsl_dump_var(var_t *p2entry) {
 	var_val_t *pval = p2entry->val;
 
 	switch (pval->type) {
-		case VAR_SPZ: {
-			const bool sign = pval->spz >= 0;
-			const u128 magn = sign ? (u128) pval->spz : -(u128) pval->spz;
-
+		case VAR_SPZ:
 			printf(".type = %s\n", "VAR_SPZ");
-			printf("\t.val  = %s", "-" + !sign);
-			printf("%016zx%016zx", (u64)(magn >> 64), (u64) magn);
+			printf("\t.val  = %s", "");
+			put_spz(pval->spz);
 			break;
-		}
 		case VAR_MPZ: {
 			#pragma GCC diagnostic push
 			#pragma GCC diagnostic ignored "-Waddress-of-packed-member"

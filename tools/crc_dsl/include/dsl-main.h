@@ -621,19 +621,25 @@ static vstring_list preproc(vstring_list in_prgm, MapEntryCList start_vars, bool
 		_preproc(in_prgm, /*start_line*/ 0, debug);
 		{
 			char *expr = (char *)
-				"(((1))) ^ (~~2) . &&$term_width * (&7_3_4_1 / (10 + ~8)) %"
-				"--9 + -10 << &-11 >> 12$term_height xor 13 or +14 xor 15 + 2^-3";
+				"((((1))) + 0_07${term_width}4$term_height ^ (~~2) . &&$term_width * (&7_3_4_1 / (10 + ~8)) %"
+				"--9 +-10 << (&-11 >> 12$term_height) xor 13 or +(14 xor 2) - (15 + 2^-3))";
 
 			printf("test expr: %s\n", expr);
 
-			token_list tokens = lex((vstring) {
+			token_list tokens = dsl_lex((vstring) {
 				.ptr = expr,
 				.len = strlen(expr),
 			});
 
-			printf(" out expr: ");
+			printf(" out expr:");
 			log_tokens_expr(tokens);
 			log_tokens(tokens);
+
+			dsl_parse(&tokens);
+			printf("parsed expr:");
+			log_tokens_expr(tokens);
+			log_tokens(tokens);
+
 			free(tokens.array);
 		}
 		break;

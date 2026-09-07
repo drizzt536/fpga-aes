@@ -272,7 +272,7 @@ u8 main(u32 argc, char **argv)
 
 	puts("----------------------------------------------------------------------");
 	puts("preproc:");
-	vstring_list out_prgm = preproc(in_prgm, (MapEntryCList) {}, true);
+	vstring_list out_prgm = preproc(in_prgm, /*vars*/ (MapEntryCList) {}, true);
 
 	puts("----------------------------------------------------------------------");
 	printf("out_prgm: %zu line(s):\n" "%s\n", out_prgm.count, out_prgm.array->ptr);
@@ -320,6 +320,15 @@ extra_stuff:
 		printf("x = "); dsl_puts_val(x);
 		printf("y = "); dsl_puts_val(y);
 
+		z = dsl_neg(x); printf("-x = " ); dsl_puts_val(z); dsl_clear_val(z);
+		z = dsl_neg(y); printf("-y = " ); dsl_puts_val(z); dsl_clear_val(z);
+		z = dsl_not(x); printf("!x = " ); dsl_puts_val(z); dsl_clear_val(z);
+		z = dsl_not(y); printf("!y = " ); dsl_puts_val(z); dsl_clear_val(z);
+		z = dsl_com(x); printf("~x = " ); dsl_puts_val(z); dsl_clear_val(z);
+		z = dsl_com(y); printf("~y = " ); dsl_puts_val(z); dsl_clear_val(z);
+		z = dsl_abs(x); printf("&x = " ); dsl_puts_val(z); dsl_clear_val(z);
+		z = dsl_abs(y); printf("&y = " ); dsl_puts_val(z); dsl_clear_val(z);
+
 		z = dsl_add(x, y); printf("x + y   = " ); dsl_puts_val(z); dsl_clear_val(z);
 		z = dsl_sub(x, y); printf("x - y   = " ); dsl_puts_val(z); dsl_clear_val(z);
 		z = dsl_mul(x, y); printf("x * y   = " ); dsl_puts_val(z); dsl_clear_val(z);
@@ -332,6 +341,29 @@ extra_stuff:
 		z = dsl_and(x, y); printf("x and y = " ); dsl_puts_val(z); dsl_clear_val(z);
 		z = dsl_ior(x, y); printf("x or y  = " ); dsl_puts_val(z); dsl_clear_val(z);
 		z = dsl_xor(x, y); printf("x xor y = " ); dsl_puts_val(z); dsl_clear_val(z);
+
+		dsl_unary_repl(neg, x, x);
+		dsl_unary_repl(neg, y, x);
+		printf("x = "); dsl_puts_val(x);
+		printf("y = "); dsl_puts_val(y);
+
+		z = dsl_shr(x, y); printf("x >> y = " ); dsl_puts_val(z); dsl_clear_val(z);
+
+		putchar('\n');
+
+		{
+			mpz_t tmp;
+			spz_to_mpz(tmp, x.spz);
+			x = mpz_to_var(tmp);
+
+			spz_to_mpz(tmp, y.spz);
+			y = mpz_to_var(tmp);
+		}
+
+		printf("x = "); dsl_puts_val(x);
+		printf("y = "); dsl_puts_val(y);
+
+		z = dsl_shr(x, y); printf("x >> y = " ); dsl_puts_val(z); dsl_clear_val(z);
 	}
 
 	return 0;

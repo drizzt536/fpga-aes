@@ -11,7 +11,7 @@ the ordering between 1 and 2 doesn't matter
 0a. concatenation by juxtaposition (only for literals and variables)
 0b. ()
 1. ^ (right-to-left)
-2. unary +, -, ~, & (right-to-left)
+2. unary +, -, ~, &, ! (right-to-left)
 3. .
 4. *, /, %
 5. binary +, -
@@ -166,6 +166,11 @@ def lex(expr: str, vars: dict) -> list[Token]:
 					tokens.pop()
 				else:
 					tokens.append(Token(_expr=expr, type=TOKEN_OP_UNARY, ofs=i, len=1))
+
+			case '!':
+				# NOTE: the C port has optimizations for '!', but this one doesn't since I don't care.
+				#       (!!! => !, &! => !, !& => !, !- => !)
+				tokens.append(Token(_expr=expr, type=TOKEN_OP_UNARY, ofs=i, len=1))
 
 			case '&':
 				# multiple consecutive absolute values do nothing after the first one.
