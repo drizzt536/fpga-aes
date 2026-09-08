@@ -217,7 +217,7 @@ u8 main(u32 argc, char **argv)
 	argv++;
 
 	if (argc == 0)
-		goto extra_stuff;
+		return 0;
 
 	if (argc > 1)
 		ewprintf("only the first argument is used. ignoring %u arguments.", argc - 1);
@@ -279,92 +279,5 @@ u8 main(u32 argc, char **argv)
 
 	free_prgm(in_prgm);
 	free_prgm(out_prgm);
-
-extra_stuff:
-	dsl_try_root(
-	// before
-		printf("dsl_try_root returned %zd\n", res),
-	// cases
-		case 0:
-			dsl_panic(-300);
-		default:
-			break;
-	);
-
-	dsl_free_except();
-
-	// test basic GMP functionality.
-	{
-		mpz_t a, b;
-		char *str;
-
-		mpz_init_set_ui(a, 123'456'789);
-		mpz_init_set_ui(b, 987'654'321);
-
-		str = mpz_get_str(nullptr, 10, a); printf("a = %s\n", str); free(str);
-		str = mpz_get_str(nullptr, 10, b); printf("b = %s\n", str); free(str);
-		mpz_mul(a, a, b);
-		str = mpz_get_str(nullptr, 10, a); printf("c = %s\n", str); free(str);
-
-		mpz_clear(a);
-		mpz_clear(b);
-	}
-
-	// test operations
-
-	{
-		var_val_t x, y, z;
-		x = spz_to_var(721);
-		y = spz_to_var(33);
-
-		printf("x = "); dsl_puts_val(x);
-		printf("y = "); dsl_puts_val(y);
-
-		z = dsl_neg(x); printf("-x = " ); dsl_puts_val(z); dsl_clear_val(z);
-		z = dsl_neg(y); printf("-y = " ); dsl_puts_val(z); dsl_clear_val(z);
-		z = dsl_not(x); printf("!x = " ); dsl_puts_val(z); dsl_clear_val(z);
-		z = dsl_not(y); printf("!y = " ); dsl_puts_val(z); dsl_clear_val(z);
-		z = dsl_com(x); printf("~x = " ); dsl_puts_val(z); dsl_clear_val(z);
-		z = dsl_com(y); printf("~y = " ); dsl_puts_val(z); dsl_clear_val(z);
-		z = dsl_abs(x); printf("&x = " ); dsl_puts_val(z); dsl_clear_val(z);
-		z = dsl_abs(y); printf("&y = " ); dsl_puts_val(z); dsl_clear_val(z);
-
-		z = dsl_add(x, y); printf("x + y   = " ); dsl_puts_val(z); dsl_clear_val(z);
-		z = dsl_sub(x, y); printf("x - y   = " ); dsl_puts_val(z); dsl_clear_val(z);
-		z = dsl_mul(x, y); printf("x * y   = " ); dsl_puts_val(z); dsl_clear_val(z);
-		z = dsl_div(x, y); printf("x / y   = " ); dsl_puts_val(z); dsl_clear_val(z);
-		z = dsl_mod(x, y); printf("x %% y   = "); dsl_puts_val(z); dsl_clear_val(z);
-		z = dsl_cat(x, y); printf("x . y   = " ); dsl_puts_val(z); dsl_clear_val(z);
-		z = dsl_pow(x, y); printf("x ^ y   = " ); dsl_puts_val(z); dsl_clear_val(z);
-		z = dsl_shl(x, y); printf("x << y  = " ); dsl_puts_val(z); dsl_clear_val(z);
-		z = dsl_shr(x, y); printf("x >> y  = " ); dsl_puts_val(z); dsl_clear_val(z);
-		z = dsl_and(x, y); printf("x and y = " ); dsl_puts_val(z); dsl_clear_val(z);
-		z = dsl_ior(x, y); printf("x or y  = " ); dsl_puts_val(z); dsl_clear_val(z);
-		z = dsl_xor(x, y); printf("x xor y = " ); dsl_puts_val(z); dsl_clear_val(z);
-
-		dsl_unary_repl(neg, x, x);
-		dsl_unary_repl(neg, y, x);
-		printf("x = "); dsl_puts_val(x);
-		printf("y = "); dsl_puts_val(y);
-
-		z = dsl_shr(x, y); printf("x >> y = " ); dsl_puts_val(z); dsl_clear_val(z);
-
-		putchar('\n');
-
-		{
-			mpz_t tmp;
-			spz_to_mpz(tmp, x.spz);
-			x = mpz_to_var(tmp);
-
-			spz_to_mpz(tmp, y.spz);
-			y = mpz_to_var(tmp);
-		}
-
-		printf("x = "); dsl_puts_val(x);
-		printf("y = "); dsl_puts_val(y);
-
-		z = dsl_shr(x, y); printf("x >> y = " ); dsl_puts_val(z); dsl_clear_val(z);
-	}
-
 	return 0;
 }

@@ -18,13 +18,17 @@ typedef enum : u8 {
 	TOKEN_VAR = TOKEN_PRIMARY,
 	TOKEN_LITERAL,
 	// intermediate result tokens
-	TOKEN_SPZ,
+	TOKEN_INT, // integer
+	TOKEN_SPZ = TOKEN_INT,
 	TOKEN_MPZ,
 	TOKEN_STR, // this one shouldn't come up, I think.
 } token_type_t;
 
-#define tok_is_primary(token) (token.type >= TOKEN_PRIMARY)
-#define tok_is_op(token)      (token.type <= TOKEN_OP)
+// NOTE: once `tok_is_primary` stops being correct, it doesn't matter anymore
+#define tok_is_int(token)     ((token).type >= TOKEN_INT)
+#define tok_is_primary(token) ((token).type >= TOKEN_PRIMARY)
+#define tok_is_op(token)      ((token).type <= TOKEN_OP)
+#define tok_op_r_assoc(token) ((token).op.order == ORDER_UNARY || (token).op.order == ORDER_EXP)
 
 typedef enum : u8 {
 	/*
@@ -54,7 +58,7 @@ typedef enum : u8 {
 	ORDER_DIV = 4, // /
 	ORDER_MOD = 4, // %
 	ORDER_ADD = 5, // binary +
-	ORDER_SUB = 5, // binary -
+	ORDER_SUB = ORDER_ADD, // binary -
 	ORDER_SHL = 6, // <<
 	ORDER_SHR = 6, // >>
 	ORDER_AND = 7, // and
@@ -97,6 +101,83 @@ typedef struct {
 	u32 cap;
 } token_list_builder;
 
+static void log_single_token(token_t *t, u32 i, u32 logical, int width) {
+	// NOTE: 11 == strlen("  order=x  ");
+
+	const char *type_name;
+	switch (t->type) {
+		case TOKEN_OP_UNARY:  type_name = "OP_UNARY";  break;
+		case TOKEN_OP_BINARY: type_name = "OP_BINARY"; break;
+		case TOKEN_SOF:       type_name = "SOF";       break;
+		case TOKEN_LPAREN:    type_name = "LPAREN";    break;
+		case TOKEN_RPAREN:    type_name = "RPAREN";    break;
+		case TOKEN_VAR:       type_name = "VAR";       break;
+		case TOKEN_LITERAL:   type_name = "LITERAL";   break;
+		case TOKEN_SPZ:       type_name = "SPZ";       break;
+		case TOKEN_MPZ:       type_name = "MPZ";       break;
+		case TOKEN_STR:       type_name = "STR";       break;
+		default:              unreachable();
+	}
+
+	if (logical == i)
+		printf("\t[%*u]", 2*width + 1, i);
+	else
+		printf("\t[%*u:%*u]", width, i, width, logical);
+
+	printf(" type=%-10s next=%3u", type_name, t->next);
+
+	switch (t->type) {
+		case TOKEN_SOF:
+			printf("%11s(sentinel)", "");
+			break;
+
+		case TOKEN_VAR:
+			printf("%11s%-5s = ", "", "name");
+			printf("\"${%.*s}\"", (int) t->atom.len, t->atom.ptr);
+			break;
+
+		case TOKEN_LPAREN:
+		case TOKEN_RPAREN:
+		case TOKEN_LITERAL:
+			printf("%11s%-5s = ", "", "value");
+			printf("\"%.*s\"", (int) t->atom.len, t->atom.ptr);
+			break;
+
+		case TOKEN_OP_UNARY:
+		case TOKEN_OP_BINARY:
+			printf("  order=%u  ", t->op.order);
+			printf("%11s%-5s = " + 4, "op");
+			printf("\"%.*s\"", (int) t->op.len, t->op.ptr);
+			break;
+
+		case TOKEN_SPZ:
+			printf("%11s%-5s = ", "", "value");
+			put_spz(t->val.spz);
+			break;
+
+		case TOKEN_MPZ: {
+			#pragma GCC diagnostic push
+			#pragma GCC diagnostic ignored "-Waddress-of-packed-member"
+			char *str = mpz_get_str(nullptr, 10, t->val.mpz);
+			#pragma GCC diagnostic pop
+			printf("%11s%-5s = ", "", "value");
+			printf("%s", str);
+			free(str);
+			break;
+		}
+
+		case TOKEN_STR:
+			printf("%11s%-5s = ", "", "value");
+			printf("%.*s", (int) t->val.str.len, t->val.str.ptr);
+			break;
+
+		default:
+			unreachable();
+	}
+
+	putchar('\n');
+}
+
 [[maybe_unused]]
 static void log_tokens(token_list tokens) {
 	const int width = (int) ({
@@ -108,89 +189,12 @@ static void log_tokens(token_list tokens) {
 
 	printf("tokens: array=%#zx, count=%u. i=[actual:logical]\n", (u64) (uintptr_t) tokens.array, tokens.count);
 
-	// width of the combined "[logical/array]" field when they differ,
-	// so that every line's index block takes the same space.
-	// format is "logical/array" -> width + 1 (slash) + width
-	const int combined_width = 2*width + 1;
-
-	u32 i = 0;
-	u32 logical = 0;
+	u32 i = 0, logical = 0;
 	do {
-		// NOTE: 11 == strlen("  order=x  ");
 		token_t *t = tokens.array + i;
 
-		const char *type_name;
-		switch (t->type) {
-			case TOKEN_OP_UNARY:  type_name = "OP_UNARY";  break;
-			case TOKEN_OP_BINARY: type_name = "OP_BINARY"; break;
-			case TOKEN_SOF:       type_name = "SOF";       break;
-			case TOKEN_LPAREN:    type_name = "LPAREN";    break;
-			case TOKEN_RPAREN:    type_name = "RPAREN";    break;
-			case TOKEN_VAR:       type_name = "VAR";       break;
-			case TOKEN_LITERAL:   type_name = "LITERAL";   break;
-			case TOKEN_SPZ:       type_name = "SPZ";       break;
-			case TOKEN_MPZ:       type_name = "MPZ";       break;
-			case TOKEN_STR:       type_name = "STR";       break;
-			default:              unreachable();
-		}
+		log_single_token(t, i, logical, width);
 
-		if (logical == i)
-			printf("\t[%*u]", combined_width, i);
-		else
-			printf("\t[%*u:%*u]", width, i, width, logical);
-
-		printf(" type=%-10s next=%3u", type_name, t->next);
-
-		switch (t->type) {
-			case TOKEN_SOF:
-				printf("%11s(sentinel)", "");
-				break;
-
-			case TOKEN_VAR:
-				printf("%11s%-5s = ", "", "name");
-				printf("\"${%.*s}\"", (int) t->atom.len, t->atom.ptr);
-				break;
-
-			case TOKEN_LPAREN:
-			case TOKEN_RPAREN:
-			case TOKEN_LITERAL:
-				printf("%11s%-5s = ", "", "value");
-				printf("\"%.*s\"", (int) t->atom.len, t->atom.ptr);
-				break;
-
-			case TOKEN_OP_UNARY:
-			case TOKEN_OP_BINARY:
-				printf("  order=%u  ", t->op.order);
-				printf("%11s%-5s = " + 4, "op");
-				printf("\"%.*s\"", (int) t->op.len, t->op.ptr);
-				break;
-
-			case TOKEN_SPZ:
-				printf("%11s%-5s = ", "", "value");
-				put_spz(t->val.spz);
-				break;
-
-			case TOKEN_MPZ: {
-				#pragma GCC diagnostic push
-				#pragma GCC diagnostic ignored "-Waddress-of-packed-member"
-				char *str = mpz_get_str(nullptr, 10, t->val.mpz);
-				#pragma GCC diagnostic pop
-				printf("%11s%-5s = ", "", "value");
-				printf("%s", str);
-				free(str);
-				break;
-			}
-
-			case TOKEN_STR:
-				printf("%11s%-5s = ", "", "value");
-				printf("%.*s", (int) t->val.str.len, t->val.str.ptr);
-				break;
-
-			default:
-				unreachable();
-		}
-
-		putchar('\n');
 		logical++;
 		i = t->next;
 	} while (i != 0);
@@ -201,8 +205,10 @@ static void log_tokens_expr(token_list tokens) {
 	for (u32 i = 1; i != 0; i = tokens.array[i].next) {
 		token_t *t = tokens.array + i;
 
-		if (!( t[-1].type == TOKEN_OP_UNARY || ( tok_is_primary(t[0]) && tok_is_primary(t[-1]) ) ))
-			putchar(' ');
+		// NOTE: these `tok_is_primary` calls will only ever both trigger before resolution
+		if (t[-1].type != TOKEN_OP_UNARY && t[-1].type != TOKEN_SOF
+			&& ( !tok_is_primary(t[0]) || !tok_is_primary(t[-1]) )
+		) putchar(' ');
 
 		switch (t->type) {
 			case TOKEN_SOF:
@@ -512,7 +518,7 @@ static token_list dsl_lex(vstring expr) {
 				if unlikely (i + 2 >= expr.len)
 					goto case_unknown;
 
-				if unlikely (*(u16 *)(expr.ptr + i) != MC16('nd'))
+				if unlikely (*(u16 *)(expr.ptr + i + 1) != MC16('nd'))
 					goto case_unknown;
 
 				push_token(&tokens, (token_t) {
@@ -524,6 +530,7 @@ static token_list dsl_lex(vstring expr) {
 					.next = 0,
 					.type = TOKEN_OP_BINARY,
 				});
+
 				i += 2;
 				break;
 
@@ -732,8 +739,8 @@ static token_list dsl_lex(vstring expr) {
 						//       token starting with '+' is the '+' itself.
 						if (*prev_token.op.ptr == '+') {
 							// x + -y => x - y
-							token.type = TOKEN_OP_BINARY;
-							prev_token = token;
+							prev_token.op.ptr = token.op.ptr;
+							// .len and .order stay the same, and ._pad doesn't matter.
 							continue;
 						}
 					}

@@ -4,6 +4,11 @@
 	# Windows only: w64devkit (for GCC), Powershell Core
 	# Linux only: GMP shared object, gcc, objcopy
 
+
+ifndef MARGS
+	MARGS := -march=x86-64-v2
+endif
+
 UNAME_S := $(shell uname -s)
 
 GCC_ERRFLAGS := -Wdouble-promotion -Wauto-profile -Winvalid-pch -Wkeyword-macro -Wnull-dereference \
@@ -28,7 +33,7 @@ LD_LINUX ?= /lib64/ld-linux-x86-64.so.2
 
 GCC_FLAGS	:=  -nostdlib -fno-asynchronous-unwind-tables -fno-ident -fms-extensions \
 				-flive-range-shrinkage -fipa-pta -fshort-enums -fweb -fwrapv -masm=intel \
-				-Iinclude
+				-Iinclude $(MARGS)
 LD_FLAGS    :=  -Ofast -Llib -L"$(shell dirname "$$(gcc -print-libgcc-file-name)")"
 
 # decide later on the following:
@@ -47,9 +52,9 @@ endif
 GCC_FLAGS += -O$O
 
 ifeq ($(DEBUG),on)
-	DEBUG := basic
+	override DEBUG := basic
 else ifeq ($(DEBUG),true)
-	DEBUG := basic
+	override DEBUG := basic
 endif
 
 ifeq ($(DEBUG),all)
@@ -59,31 +64,13 @@ ifeq ($(DEBUG),all)
 		LD_LIBS   += -lasan -lubsan  # -lasan has to come first
 	endif
 
-	DEBUG := extra
+	override DEBUG := extra
 else
 	# require __attribute__((stack_protect))
 	GCC_FLAGS += -fstack-protector-explicit
 
 	# libasan gives linker warnings
 	LD_FLAGS  += --fatal-warnings
-endif
-
-ifeq ($(DEBUG),extra)
-	GCC_FLAGS  += -g
-	NASM_FLAGS += -g
-
-	DEBUG := basic
-else
-	LD_FLAGS += -s
-endif
-
-ifeq ($(DEBUG),basic)
-	# verbose logging
-	GCC_FLAGS += -DDEBUG=true
-endif
-
-ifndef DEBUG
-	DEBUG := off
 endif
 
 ifeq ($(UNAME_S),Windows_NT)
@@ -96,6 +83,24 @@ else
 	LD_FLAGS	+= -Ofast -Llib -dynamic-linker "$(LD_LINUX)"
 	LD_LIBS		+= -lc -Bstatic -lgcc -Bdynamic -lgmp
 	NASM_FLAGS  := -felf64 -DLINUX
+endif
+
+ifeq ($(DEBUG),extra)
+	GCC_FLAGS  += -g
+	NASM_FLAGS += -g
+
+	override DEBUG := basic
+else
+	LD_FLAGS += -s
+endif
+
+ifeq ($(DEBUG),basic)
+	# verbose logging
+	GCC_FLAGS += -DDEBUG=true
+endif
+
+ifndef DEBUG
+	DEBUG := off
 endif
 
 ifeq ($(UNAME_S),Windows_NT)
