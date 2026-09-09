@@ -1,64 +1,9 @@
 #pragma once
 #define DSL_OPS_H
 
-#include "dsl-vars.h" // <gmp.h>, "va-if.h"
+#include "dsl-vars.h" // <gmp.h>, "dsl-except.h", "va-if.h"
 
 // look in dsl-lexer.h in the `order_t` declaration for the comment with the full operator list.
-
-// TODO: consider changing the `fatal()` stuff to `dsl_panic()`. I haven't done it already because
-//      I don't know where all this stuff is going to be used.
-
-// TODO: reconsider adding rotate (<<< and >>>).
-/*
-They don't need to use fixed-width stuff. If the integer is interpreted as a 2-adic integer,
-then the rotation is applied, and then the resulting 2-adic integer is reinterpreted back as
-a regular integer, then it is fully defined.
-Under that model, (x <<< n) => (x << n) | (x < 0) & ((1 << n) - 1), and (x >>> n) => (x >> n).
-The logic behind the left shift is simple, since bitwise operations use infinite two's compliment,
-so a positive number has infinite zeros to the left and a negative number has infinite ones to the
-left, so left shifting by n bits will spawn 1s for a negative number of 0s for a positive one.
-
-For right rotation, there is a simple case and a more complicated case. If all of the bits being
-rotated off the right side are equivalent to the sign bit, then the rotation is fully defined, since
-when those bits are moved to bit infinity, nothing changes, so it is the same as x >> n in that case.
-The other case is a bit more complicated.
-
-
-Case A (positive)
-let x = ...01111111 (= 127)
-
-x >>> 1 is the limit of the following:
-|i=1 =>         10111111
-|i=2 =>        100111111
-|i=3 =>       1000111111
-|                    ...
-|i=9 => 1000000000111111
-|                    ...
-
-for every bit n for n >= 6, if you go enough iterations out, the value stabilizes as a 0.
-so the value approaches ...00111111, which is 63.
-
-Case B (negative):
-let x = ...10000000 (= -128)
-
-x >>> 1 is the limit of the following:
-|i=1 =>         01000000
-|i=2 =>        011000000
-|i=3 =>       0111000000
-|                    ...
-|i=9 => 0111111111000000
-|                    ...
-
-for every bit n for n >= 6, if you go enough iterations out, the value stabilizes as a 1.
-so the value approaches ...11000000, which is -64.
-
-in either case, the bits being shifted off are essentially deleted, since they do not matter
-in the limit, which means this is identical to x >> n
-
-summary:
- - (x <<< n) => (x << n) | (x < 0) & ((1 << n) - 1)
- - (x >>> n) => (x >> n)
-*/
 
 // I promise this works. There are no arrays of the variable structures, `mpz_t mpz` is the first field in
 // the variable struct, and `malloc` aligns to 16 bytes anyway, so this warning is just noise here.
@@ -107,11 +52,11 @@ FORCE_INLINE static bool spz__cat_overflows(spz_t z1, spz_t z2) {
 }
 
 #if DEBUG
-	#define assert_var_int(x) do {                         \
-		if ((x).type != VAR_STR)                           \
-			break;                                         \
-		fatal(1, "arguments should not be type VAR_STR."); \
-	} while (false)
+	#define assert_var_int(x) ({                                     \
+		if ((x).type == VAR_STR)                                     \
+			fatal(1, "[BUG] arguments should not be type VAR_STR."); \
+		(void) 0;                                                    \
+	})
 #else
 	#define assert_var_int(x) ((void) 0)
 #endif
@@ -149,7 +94,7 @@ static spz_t mpz_to_spz(mpz_t in) {
 
 #if DEBUG
 	if (!mpz_fits_spz_p(in))
-		fatal(1, "input value doesn't fit in spz_t.");
+		fatal(1, "[BUG] input value doesn't fit in spz_t.");
 #endif
 
 	if (mpz_fits_slong_p(in))
@@ -293,8 +238,10 @@ static var_val_t dsl_atoi(vstring in) {
 	vstring tmp;
 	tmp.ptr = malloc(in.len + 1);
 
-	if unlikely (tmp.ptr == nullptr)
-		fatal(1, "out of memory.");
+	if unlikely (tmp.ptr == nullptr) {
+		eprintf("out of memory.");
+		dsl_panic(EXCEPT_ERR_OOM);
+	}
 
 	// remove underscores
 	{
@@ -333,7 +280,6 @@ static var_val_t dsl_atoi(vstring in) {
 	return tmp.len == 39 ? mpz_to_var_constrict(out) : mpz_to_var(out);
 }
 
-[[maybe_unused]]
 static var_val_t dsl_pow(var_val_t x, var_val_t y) {
 	assert_var_int(x);
 	assert_var_int(y);
@@ -342,8 +288,10 @@ static var_val_t dsl_pow(var_val_t x, var_val_t y) {
 		// 0^-n => 1/0^n => error. n^-k => 0
 
 		if (y.spz < 0) {
-			if unlikely (x.spz == 0)
-				fatal(1, "division by zero.");
+			if unlikely (x.spz == 0) {
+				eprintf("division by zero.");
+				dsl_panic(EXCEPT_ERR_PARSER);
+			}
 
 			return spz_to_var(0);
 		}
@@ -394,8 +342,10 @@ static var_val_t dsl_pow(var_val_t x, var_val_t y) {
 	var_val_t res;
 
 	if (mpz_sgn(y.mpz) < 0) {
-		if unlikely (mpz_sgn(x.mpz) == 0)
-			fatal(1, "division by zero.");
+		if unlikely (mpz_sgn(x.mpz) == 0) {
+			eprintf("division by zero.");
+			dsl_panic(EXCEPT_ERR_PARSER);
+		}
 
 		res = spz_to_var(0);
 		goto done;
@@ -634,8 +584,10 @@ static var_val_t dsl_div(var_val_t x, var_val_t y) {
 
 	if (x.type == VAR_SPZ) {
 		if (y.type == VAR_SPZ) {
-			if unlikely (y.spz == 0)
-				fatal(1, "division by zero.");
+			if unlikely (y.spz == 0) {
+				eprintf("division by zero.");
+				dsl_panic(EXCEPT_ERR_PARSER);
+			}
 
 			// SPZ / SPZ
 			return spz_to_var(x.spz / y.spz);
@@ -678,8 +630,10 @@ static var_val_t dsl_mod(var_val_t x, var_val_t y) {
 
 	if (x.type == VAR_SPZ) {
 		if (y.type == VAR_SPZ) {
-			if unlikely (y.spz == 0)
-				fatal(1, "division by zero.");
+			if unlikely (y.spz == 0) {
+				eprintf("division by zero.");
+				dsl_panic(EXCEPT_ERR_PARSER);
+			}
 
 			// SPZ % SPZ
 			return spz_to_var(x.spz % y.spz);
@@ -826,9 +780,11 @@ static var_val_t dsl_shl(var_val_t x, var_val_t y) {
 			return dsl_shl(x, spz_to_var( mpz_to_spz(y.mpz) ));
 
 		if unlikely (mpz_sgn(y.mpz) < 0)
-			return spz_to_var(0);
+			// x << -super large => x >> super large => 0 or -1
+			return spz_to_var((x.type == VAR_SPZ ? x.spz < 0 : mpz_sgn(x.mpz) < 0) ? -1 : 0);
 
-		fatal(1, "out of memory.");
+		eprintf("out of memory.");
+		dsl_panic(EXCEPT_ERR_OOM);
 	}
 
 	if unlikely (y.spz < 0) {
@@ -839,6 +795,8 @@ static var_val_t dsl_shl(var_val_t x, var_val_t y) {
 
 		return dsl_shr(x, y);
 	}
+
+	// y is positive SPZ
 
 	if (x.type == VAR_SPZ) {
 		const bool negative = x.spz < 0;
@@ -858,13 +816,15 @@ static var_val_t dsl_shl(var_val_t x, var_val_t y) {
 		return out;
 	}
 
-	// MPZ
+	// x is MPZ
 
 	if unlikely (mpz_sgn(x.mpz) == 0)
 		return spz_to_var(0);
 
-	if unlikely (y.spz >= MP_MAX_BITS || mpz_sizeinbase(x.mpz, 2) + y.spz > MP_MAX_BITS)
-		fatal(1, "out of memory.");
+	if unlikely (y.spz >= MP_MAX_BITS || mpz_sizeinbase(x.mpz, 2) + y.spz > MP_MAX_BITS) {
+		eprintf("out of memory.");
+		dsl_panic(EXCEPT_ERR_OOM);
+	}
 
 	mpz_t out;
 	mpz_init(out);
@@ -906,10 +866,12 @@ static var_val_t dsl_shr(var_val_t x, var_val_t y) {
 		// can't lose information. also it will never be 0, because 0 is small.
 
 		if (mpz_sgn(y.mpz) > 0)
-			return spz_to_var(0); // `x >> massive number` => 0
+			// `x >> massive number` => 0 or -1
+			return spz_to_var((x.type == VAR_SPZ ? x.spz < 0 : mpz_sgn(x.mpz) < 0) ? -1 : 0);
 
 		// `x << massive number` is not representable
-		fatal(1, "out of memory.");
+		eprintf("out of memory.");
+		dsl_panic(EXCEPT_ERR_OOM);
 	}
 
 	// ?PZ >> SPZ
@@ -926,7 +888,7 @@ static var_val_t dsl_shr(var_val_t x, var_val_t y) {
 
 	if (x.type == VAR_MPZ) {
 		if (y.spz >= mpz_sizeinbase(x.mpz, 2))
-			return mpz_sgn(x.mpz) < 0 ? spz_to_var(-1) : spz_to_var(0);
+			return spz_to_var(mpz_sgn(x.mpz) < 0 ? -1 : 0);
 
 		mpz_t out;
 		mpz_init(out);
@@ -955,12 +917,172 @@ static var_val_t dsl_shr(var_val_t x, var_val_t y) {
 		return mpz_to_var_constrict(out);
 	}
 
-	// SPZ
+	// x is SPZ
 
 	if (y.spz >= 8*sizeof(spz_t))
 		return spz_to_var(x.spz < 0 ? -1 : 0);
 
 	return spz_to_var(x.spz >> (spn_t) y.spz);
+}
+
+static var_val_t dsl_ior(var_val_t x, var_val_t y); // out of order reference
+
+static var_val_t dsl_rol(var_val_t x, var_val_t y) {
+	/*
+	ROL and ROR interpret the left argument integer as a 2-adic integer, then the rotation is applied,
+	and then the resulting 2-adic integer is reinterpreted back as a regular integer. Under that model,
+	(x <<< n) => (x << n) | (x < 0) & ((1 << n) - 1), and (x >>> n) => (x >> n). The logic behind the
+	left shift is simple, since bitwise operations use infinite two's compliment, so a positive number
+	has infinite zeros to the left and a negative number has infinite ones to the left, so left shifting
+	by n bits will spawn 1s for a negative number of 0s for a positive one.
+
+	For right rotation, there is a simple case and a more complicated case. If all of the bits being
+	rotated off the right side are equivalent to the sign bit, then the rotation is fully defined, since
+	when those bits are moved to bit infinity, nothing changes, so it is the same as x >> n in that case.
+	The other case is a bit more complicated.
+
+	Case A (positive)
+	let x = ...01111111 (= 127)
+
+	x >>> 1 is the limit of the following:
+	|i=1 =>         10111111
+	|i=2 =>        100111111
+	|i=3 =>       1000111111
+	|                    ...
+	|i=9 => 1000000000111111
+	|                    ...
+
+	for every bit n for n >= 6, if you go enough iterations out, the value stabilizes as a 0.
+	so the value approaches ...00111111, which is 63.
+
+	Case B (negative):
+	let x = ...10000000 (= -128)
+
+	x >>> 1 is the limit of the following:
+	|i=1 =>         01000000
+	|i=2 =>        011000000
+	|i=3 =>       0111000000
+	|                    ...
+	|i=9 => 0111111111000000
+	|                    ...
+
+	for every bit n for n >= 6, if you go enough iterations out, the value stabilizes as a 1.
+	so the value approaches ...11000000, which is -64.
+
+	in either case, the bits being shifted off are essentially deleted, since they do not matter
+	in the limit, which means this is identical to x >> n
+	*/
+	// (x <<< n) => (x << n) | (x < 0) & ((1 << n) - 1)
+
+	assert_var_int(x);
+	assert_var_int(y);
+
+	if (y.type == VAR_MPZ) {
+		if unlikelyp (mpz_fits_spz_p(y.mpz), 0.9999d)
+			return dsl_rol(x, spz_to_var( mpz_to_spz(y.mpz) ));
+
+		// negative shift ROL is the same as positive ROR, which is the same as SHR. x >> large => 0 or -1
+		if unlikely (mpz_sgn(y.mpz) < 0)
+			return spz_to_var((x.type == VAR_SPZ ? x.spz < 0 : mpz_sgn(x.mpz) < 0) ? -1 : 0);
+
+		eprintf("out of memory.");
+		dsl_panic(EXCEPT_ERR_OOM);
+	}
+
+	if unlikely (y.spz < 0) {
+		if unlikely (y.spz == SPZ_MIN)
+			y.spz++;
+
+		y.spz = -y.spz;
+
+		return dsl_shr(x, y);
+	}
+
+	// y is positive SPZ
+
+	var_val_t out = dsl_shl(x, y);
+
+	if (x.type == VAR_SPZ) {
+		if (x.spz >= 0)
+			return out;
+
+		if (out.type == VAR_SPZ) {
+			// since x < 0, |x| >= 1, and x << y fits in spz, so 1 << y.spz definitely fits in spz
+			out.spz |= ((spz_t) 1 << y.spz) - 1;
+			return out;
+		}
+
+		// out is MPZ
+	}
+	else {
+		// MPZ <<< SPZ
+
+		if (mpz_sgn(x.mpz) >= 0)
+			return out;
+
+		// NOTE: MPZ << +SPZ => MPZ
+	}
+
+	// out is MPZ
+
+	if (y.spz < 8*sizeof(spz_t) - 1) {
+		mpz_t tmp;
+		spz_to_mpz(tmp, ((spz_t) 1 << y.spz) - 1);
+
+		mpz_ior(out.mpz, out.mpz, tmp);
+		mpz_clear(tmp);
+		return out;
+	}
+
+	const var_val_t tmp = dsl_pow(
+		spz_to_var(2),
+		spz_to_var(y.spz)
+	);
+
+#if DEBUG
+	if (tmp.type != VAR_MPZ)
+		fatal(1, "[BUG] 2^(y >= 127) is not SPZ.");
+#endif
+
+	mpz_ior(out.mpz, out.mpz, tmp.mpz);
+	dsl_clear_val(tmp);
+	return out;
+}
+
+[[maybe_unused]]
+static var_val_t dsl_ror(var_val_t x, var_val_t y) {
+	// see dsl_rol for the explanation of the logic behind ROL and ROR two of these
+	// (x >>> n) => (x >> n)
+
+	assert_var_int(x);
+	assert_var_int(y);
+
+	if (y.type == VAR_MPZ) {
+		if unlikelyp (mpz_fits_spz_p(y.mpz), 0.9999d)
+			// rol => shr
+			return dsl_shr(x, spz_to_var( mpz_to_spz(y.mpz) ));
+
+		// x >>> y => x >> large => 0 or -1
+		if unlikely (mpz_sgn(y.mpz) > 0)
+			return spz_to_var((x.type == VAR_SPZ ? x.spz < 0 : mpz_sgn(x.mpz) < 0) ? -1 : 0);
+
+		// x >>> -large => x <<< +large => OOM
+		eprintf("out of memory.");
+		dsl_panic(EXCEPT_ERR_OOM);
+	}
+
+	if unlikely (y.spz < 0) {
+		if unlikely (y.spz == SPZ_MIN)
+			y.spz++;
+
+		y.spz = -y.spz;
+
+		return dsl_rol(x, y);
+	}
+
+	// y SPZ >= 0
+
+	return dsl_shr(x, y);
 }
 
 [[maybe_unused]]
@@ -1001,7 +1123,6 @@ static var_val_t dsl_and(var_val_t x, var_val_t y) {
 	return mpz_to_var_constrict(out);
 }
 
-[[maybe_unused]]
 static var_val_t dsl_ior(var_val_t x, var_val_t y) {
 	assert_var_int(x);
 	assert_var_int(y);

@@ -35,9 +35,10 @@ typedef enum : u8 {
 #define EXCEPT_TAG_NONE  UINT64_MAX      // for things that don't use tags
 #define EXCEPT_TAG_ANY  (UINT64_MAX - 1) // only for queries
 
-#define EXCEPT_ERR_OOM   (-256ll) // any memory-bandwidth related issue
-#define EXCEPT_ERR_DEPTH (-257ll) // exception max depth exceeded
-#define EXCEPT_ERR_LEXER (-258ll) // any non-OOM error during %seteval
+#define EXCEPT_ERR_OOM    (-256ll) // any memory-bandwidth related issue
+#define EXCEPT_ERR_DEPTH  (-257ll) // exception max depth exceeded
+#define EXCEPT_ERR_LEXER  (-258ll) // any non-OOM error during `%seteval` lexing
+#define EXCEPT_ERR_PARSER (-259ll) // any non-OOM error during `%seteval` parsing
 // EXCEPT_ERR_UNCAUGHT_* is -1 through -255
 // unreserved error codes start at -258
 
@@ -47,23 +48,61 @@ typedef struct __attribute__((packed)) {
 	except_type_t type;
 } except_t; // exception
 
+#define LIVE_ALLOC_SLOTS_  4 // the number of slots available
+
+#define LIVE_ALLOC_PARSER_TOKENS  0
+#define LIVE_ALLOC_PARSER_LPARENS 1
+#define LIVE_ALLOC_PARSER_VALS    2
+#define LIVE_ALLOC_PARSER_OPS     3
+
 typedef struct {
 	except_t *array;
 	u64 count;         // number of exceptions in the stack
 	u64 cap;           // number of exceptions the stack can hold before resize
 	u64 dispatch_line; // this needs to be set manually
+
+	// NOTE: basically the point of this is to save pointers to internal memory buffers
+	//       somewhere they can be seen globally (i.e. here), so that if the interpreter
+	//       crashes from a place where it isn't fully aware of all the private memory
+	//       buffers, they can still be freed. all the slots
+
+	// if more things that can panic make private heap allocations or are recursive, this will
+	// have to be extended or made to be a dynamic stack
+	void *live_allocs[LIVE_ALLOC_SLOTS_];
 } except_stack_t;
 
 static except_stack_t dsl_except;
 
-#define dsl_free_except() do {       \
-	if (dsl_except.array == nullptr) \
-		break;                       \
-	free(dsl_except.array);          \
-	dsl_except.array = nullptr;      \
-	dsl_except.count = 0;            \
-	dsl_except.cap   = 0;            \
-} while (false)
+
+#define dsl_free_except() ({                               \
+	/* free the exception stack */                         \
+	if (dsl_except.array != nullptr) {                     \
+		free(dsl_except.array);                            \
+		dsl_except.array = nullptr;                        \
+		dsl_except.count = 0;                              \
+		dsl_except.cap   = 0;                              \
+	}                                                      \
+	/* free any leftover MPZ tokens */                     \
+	do {                                                   \
+		token_t *const t_ = dsl_except                     \
+			.live_allocs[LIVE_ALLOC_PARSER_TOKENS];        \
+		if (t_ == nullptr)                                 \
+			break;                                         \
+		_Pragma("GCC diagnostic push")                     \
+		_Pragma("GCC diagnostic ignored \"-Waddress-of-packed-member\"") \
+		for (u32 i_ = t_->next; i_ != 0; i_ = t_[i_].next) \
+			if (t_[i_].type == TOKEN_MPZ)                  \
+				mpz_clear(t_[i_].val.mpz);                 \
+		_Pragma("GCC diagnostic pop")                      \
+	} while (false);                                       \
+	/* free any live private allocations */                \
+	for (u8 i_ = 0; i_ < LIVE_ALLOC_SLOTS_; i_++)          \
+		if (dsl_except.live_allocs[i_] != nullptr) {       \
+			free(dsl_except.live_allocs[i_]);              \
+			dsl_except.live_allocs[i_] = nullptr;          \
+		}                                                  \
+	(void) 0;                                              \
+})
 
 #define dsl__try_root() ({                           \
 	__label__ done;                                  \

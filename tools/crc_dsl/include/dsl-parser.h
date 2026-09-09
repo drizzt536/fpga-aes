@@ -3,7 +3,7 @@
 
 // parser for `%seteval`
 
-#include "dsl-lexer.h" // "dsl-vars.h"
+#include "dsl-lexer.h" // "dsl-except.h", "dsl-vars.h"
 #include "dsl-ops.h"
 
 typedef struct {
@@ -200,7 +200,6 @@ static void dsl_simple_pop_and_eval(token_ref_list *ops, token_ref_list *vals) {
 	if (op->type == TOKEN_OP_UNARY) {
 		const u64 vals_last = vals->count - 1;
 
-		// NOTE: I'm pretty sure this is leaking memory currently.
 		var_val_t in = tok_to_var(vals->array[vals_last][0]);
 		var_val_t res;
 
@@ -224,6 +223,8 @@ static void dsl_simple_pop_and_eval(token_ref_list *ops, token_ref_list *vals) {
 
 		return;
 	}
+
+	/// binary operator
 
 	// printf("binary operator: %.*s\n", (int) op->op.len, op->op.ptr);
 
@@ -266,13 +267,13 @@ static void dsl_simple_pop_and_eval(token_ref_list *ops, token_ref_list *vals) {
 
 			break;
 		case 3:
-			if      (*(u16 *) op->op.ptr == MC16('an') && op->op.ptr[2] == 'd')
-				res = dsl_and(l, r);
-			else if (*(u16 *) op->op.ptr == MC16('xo') && op->op.ptr[2] == 'r')
-				res = dsl_xor(l, r);
+			if      (*(u16 *) op->op.ptr == MC16('an') && op->op.ptr[2] == 'd') res = dsl_and(l, r);
+			else if (*(u16 *) op->op.ptr == MC16('xo') && op->op.ptr[2] == 'r') res = dsl_xor(l, r);
+			else if (*(u16 *) op->op.ptr == MC16('>>') && op->op.ptr[2] == '>') res = dsl_ror(l, r);
+			else if (*(u16 *) op->op.ptr == MC16('<<') && op->op.ptr[2] == '<') res = dsl_rol(l, r);
 			else
 			#if DEBUG
-				fatal(1, "[BUG] 3-char binary operator is not 'and' or 'xor'.");
+				fatal(1, "[BUG] 3-char binary operator is not 'and', 'xor', '<<<', or '>>>'.");
 			#else
 				unreachable();
 			#endif
@@ -318,12 +319,13 @@ static token_t *dsl_parse_simple(token_t *array, u32 left, u32 right, u64 length
 #endif
 
 	if unlikely (heap_alloc) {
-		// TODO: consider making these allocations static or something.
 		vals.array = (token_t **) malloc(length);
+		dsl_except.live_allocs[LIVE_ALLOC_PARSER_VALS] = vals.array;
 		if unlikely (vals.array == nullptr)
 			fatal(1, "out of memory.");
 
 		ops.array = (token_t **) malloc(length);
+		dsl_except.live_allocs[LIVE_ALLOC_PARSER_OPS] = ops.array;
 		if unlikely (ops.array == nullptr)
 			fatal(1, "out of memory.");
 	}
@@ -393,6 +395,8 @@ static token_t *dsl_parse_simple(token_t *array, u32 left, u32 right, u64 length
 	if unlikely (heap_alloc) {
 		free(vals.array);
 		free(ops.array);
+		dsl_except.live_allocs[LIVE_ALLOC_PARSER_VALS] = nullptr;
+		dsl_except.live_allocs[LIVE_ALLOC_PARSER_OPS]  = nullptr;
 	}
 
 	return res;
@@ -406,6 +410,7 @@ static void dsl_parse(token_list tokens) {
 	if unlikely (heap_alloc) {
 		// (tokens.count >> 1) lparens, (tokens.count >> 1) << 2 ~~ tokens.count << 1 bytes
 		lparens = (u32 *) malloc(tokens.count << 1);
+		dsl_except.live_allocs[LIVE_ALLOC_PARSER_LPARENS] = lparens;
 
 		if unlikely (lparens == nullptr)
 			fatal(1, "out of memory.");
@@ -455,8 +460,10 @@ static void dsl_parse(token_list tokens) {
 	printf("tmp expr: "); log_tokens_expr(tokens);
 #endif
 
-	if unlikely (heap_alloc)
+	if unlikely (heap_alloc) {
 		free(lparens);
+		dsl_except.live_allocs[LIVE_ALLOC_PARSER_LPARENS] = nullptr;
+	}
 
 	{
 		const u32 left = 1;
@@ -480,9 +487,12 @@ static void dsl_parse(token_list tokens) {
 static var_val_t dsl_eval(vstring expr) {
 	const token_list tokens = dsl_lex(expr);
 
+	dsl_except.live_allocs[LIVE_ALLOC_PARSER_TOKENS] = tokens.array;
+
 #if DEBUG
 	printf("input expr: %.*s\n", (int) expr.len, expr.ptr);
 	printf("lexed expr: "); log_tokens_expr(tokens);
+	log_tokens(tokens);
 #endif
 
 	dsl_parse(tokens);
@@ -490,10 +500,11 @@ static var_val_t dsl_eval(vstring expr) {
 	const var_val_t res = tok_to_var(tokens.array[1]);
 
 #if DEBUG
-	printf("result: "); dsl_puts_val(result);
+	printf("result: "); dsl_puts_val(res);
 #endif
 
 	free(tokens.array);
+	dsl_except.live_allocs[LIVE_ALLOC_PARSER_TOKENS] = nullptr;
 
 	return res;
 }

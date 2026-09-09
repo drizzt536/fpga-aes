@@ -41,15 +41,15 @@ typedef enum : u8 {
 		3. .
 		4. *, /, %
 		5. binary +, -
-		6. <<, >>
+		6. <<, >>, <<<, >>>
 		7. and
 		8. or, xor
 	*/
 
-	ORDER_OTHER = 0, // NONE, VAR, LITERAL, LPAREN, RPAREN, SPZ, MPZ, STR
-	ORDER_UNARY = 2, // unary +, -, ~, &, !. right-to-left
-	ORDER_SHIFT = 6, // <<, >>
-	ORDER_OR    = 8, // or, xor
+	ORDER_OTHER  = 0, // NONE, VAR, LITERAL, LPAREN, RPAREN, SPZ, MPZ, STR
+	ORDER_UNARY  = 2, // unary +, -, ~, &, !. right-to-left
+	ORDER_SHIFT  = 6, // <<, >>, <<<, >>>
+	ORDER_OR     = 8, // or, xor
 
 	// binary operators
 	ORDER_EXP = 1, // ^, right-to-left
@@ -61,6 +61,8 @@ typedef enum : u8 {
 	ORDER_SUB = ORDER_ADD, // binary -
 	ORDER_SHL = 6, // <<
 	ORDER_SHR = 6, // >>
+	ORDER_ROL = 6, // <<<
+	ORDER_ROR = 6, // >>>
 	ORDER_AND = 7, // and
 	ORDER_XOR = 8, // xor
 	ORDER_IOR = 8, // or (inclusive)
@@ -263,13 +265,30 @@ static void push_token(token_list_builder *p2tokens, token_t token) {
 		// this is 96 GiB, which is absurd. There should not be 2^32 tokens.
 		goto oom;
 
+	/*printf(
+		"push_token({.array = 0x%016zu, .count = %u, .cap = %u}, ",
+		(u64) (uintptr_t) p2tokens->array, p2tokens->count, p2tokens->cap
+	);
+
+	if (tok_is_op(token))
+		printf("op=\"%.*s\"", (int) token.op.len, token.op.ptr);
+	else if (token.type == TOKEN_SOF)
+		printf("sof");
+	else
+		printf("atom=\"%.*s\"", (int) token.atom.len, token.atom.ptr);
+
+	putchar(')');
+	putchar('\n');*/
+
 	if unlikely (p2tokens->count == p2tokens->cap) {
-		token_t *const new_array = realloc(p2tokens->array, (p2tokens->cap * 3 >> 1) * sizeof(token_t));
+		const u32 new_cap = p2tokens->cap * 3 >> 1;
+		token_t *const new_array = realloc(p2tokens->array, new_cap * sizeof(token_t));
 
 		if unlikely (new_array == nullptr)
 			goto oom;
 
 		p2tokens->array = new_array;
+		p2tokens->cap   = new_cap;
 	}
 
 	p2tokens->array[p2tokens->count - 1].next = p2tokens->count;
@@ -351,7 +370,7 @@ static token_list dsl_lex(vstring expr) {
 	}; // circular reference
 
 	for (u64 i = 0; i < expr.len; i++) {
-		char c = expr.ptr[i];
+		const char c = expr.ptr[i];
 
 		switch (c) {
 			case '\t':
@@ -493,27 +512,30 @@ static token_list dsl_lex(vstring expr) {
 						.type = TOKEN_OP_UNARY,
 					});
 				break;
-			case '<': // <<, >>
-			case '>':
+			case '<': // <<, >>, <<<, >>>
+			case '>': {
 				if unlikely (i + 1 == expr.len)
 					goto case_unknown;
 
 				if unlikely (expr.ptr[i + 1] != c)
 					goto case_unknown;
 
+				const bool rotate = i + 2 < expr.len && expr.ptr[i + 2] == c;
+
 				// Token(_expr=expr, type=TOKEN_OP_BINARY, ofs=i - 1, len=2)
 				push_token(&tokens, (token_t) {
 					.op = {
 						.ptr = expr.ptr + i,
-						.len = 2,
+						.len = (u8) (2 + rotate),
 						.order = ORDER_SHIFT,
 					},
 					.next = 0,
 					.type = TOKEN_OP_BINARY,
 				});
 
-				i++;
+				i += 1llu + rotate;
 				break;
+			}
 			case 'a':
 				if unlikely (i + 2 >= expr.len)
 					goto case_unknown;
