@@ -99,12 +99,8 @@ static u8       dsl_total_lines; // using `u8` is for the wrapping behavior
 static term_size_t term_size(void) {
 	// returns all zeros on failure
 
-	// this API is genuinely retarded. Why are we using constant casing for fucking types?
-	// whoever at microsoft came up with this shitass naming scheme should be hanged. fuck you
 	CONSOLE_SCREEN_BUFFER_INFO csbi;
 
-	// Yo microsoft, have you heard about abbreviations? Perhaps STDOUT_HANDLE? STDIN_HANDLE?
-	// Imaging not making a bullshit API
 	u32 handles[] = {STD_OUTPUT_HANDLE, STD_INPUT_HANDLE, STD_ERROR_HANDLE};
 
 	for (u8 i = 0; i < 3; i++) {
@@ -313,12 +309,12 @@ static void reset_scratch(void) {
 
 	dsl_scratch.usage = 0;
 
-	if likelyp (dsl_total_lines & 63, 1.0d / 64)
+	if likelyp (dsl_total_lines & 63, 63.0d / 64)
 		// only check every so often
 		return;
 
 	// exponential moving average
-	if likelyp (dsl_total_lines == 0, 1.0d / 128) {
+	if (dsl_total_lines == 0) {
 		// 8-bit integer overflow. also note, the increment already happened.
 		dsl_total_lines = 128;
 		dsl_total_bytes >>= 1;
@@ -404,7 +400,7 @@ static void push_line(vstring line) {
 	return;
 oom:
 	*(u64 *) dsl_out_buf.ptr = dsl_out_buf.usage - sizeof(u64);
-	dsl_panic(EXCEPT_ERR_OOM);
+	dsl_oom();
 }
 
 static bool is_valid_varname(const char *str, u64 len) {
@@ -453,7 +449,7 @@ static void _preproc(
 }
 
 
-[[nodiscard]]
+[[nodiscard, maybe_unused]]
 static vstring_list preproc(vstring_list in_prgm, MapEntryCList start_vars, bool debug) {
 	// start_vars should be an array of owned C strings, and this function takes ownership of them.
 	// the pointer is allowed to be null so long as `.count` is 0, i.e. `(MapEntryCList) {}`.
@@ -629,6 +625,8 @@ static vstring_list preproc(vstring_list in_prgm, MapEntryCList start_vars, bool
 				.len = strlen(expr),
 			});
 
+			printf("result: ");
+			dsl_puts_val(result);
 			dsl_clear_val(result);
 		}
 		break;

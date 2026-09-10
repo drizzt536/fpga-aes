@@ -10,23 +10,96 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Waddress-of-packed-member"
 
-//////////////////////////////// helpers ////////////////////////////////
+#if DEBUG
+	#define assert_var_int(x) ({                                     \
+		if ((x).type == VAR_STR)                                     \
+			fatal(1, "[BUG] arguments should not be type VAR_STR."); \
+		(void) 0;                                                    \
+	})
+#else
+	#define assert_var_int(x) ((void) 0)
+#endif
 
-static bool mpz_fits_spz_p(const mpz_t x) {
-	// TODO: check if `const auto` works when GCC updates. It currently doesn't. I think its a compiler bug.
-	//       maybe I could just do `#define auto __auto_type`, which does work. For whatever reason, GCC
-	//       thinks that `auto` is an storage-class specifier here, despite the fact that it isn't.
-	auto const size   = x->_mp_size;
-	const bool neg    = size < 0;
-	auto const nlimbs = neg ? -size : size;
-	static_assert(8*sizeof(spz_t) == 2*GMP_NUMB_BITS); // 2 limbs
+////////////////////////////// conversions //////////////////////////////
 
-	if (nlimbs > 2) return false;
-	if (nlimbs < 2) return true;
+// spz_to_str
+// mpz_to_str
+// var_to_str
+// spz_to_var
+// mpz_to_var
+// str_to_var
+// mpz_to_var_contrict
+// spz_to_mpz
+// mpz_to_spz
+// trunc_mpz_to_spz
+// dsl_atoi
 
-	const spn_t mag = (spn_t) x->_mp_d[1] << GMP_NUMB_BITS | x->_mp_d[0];
+// for the next three, the caller should make sure the out parameter
+// is not set to nullptr. if it is, it means the allocation failed
+static u64 spz_to_str(spz_t x, char **out) {
+	if (x == 0) {
+		*out = strdup("0");
+		return 1;
+	}
 
-	return mag <= (spn_t) SPZ_MAX + neg;
+	spn_t ux;
+	const bool neg = x < 0;
+	if (neg)
+		// ~x + 1 instead of -x to prevent overflow on `-signed`
+		ux = (spn_t) ~x + 1;
+	else
+		ux = (spn_t) x;
+
+	char buf[1 + spz_sizeinbase10(SPZ_MAX) + 1]; // sign + ux + null
+
+	static_assert(8*sizeof(spz_t) <= 256, "increase `i` to u32");
+	u8 i = (u8) (sizeof(buf) - 1);
+	buf[i] = '\0';
+
+	do {
+		buf[--i] = (char) ('0' + ux % 10);
+		ux /= 10;
+	} until (ux == 0);
+
+	if (neg)
+		buf[--i] = '-';
+
+	*out = strdup(buf + i);
+	return sizeof(buf) - i - 1;
+}
+
+static u64 mpz_to_str(mpz_t x, char **out) {
+	u64 len = mpz_sizeinbase(x, 10) + (mpz_sgn(x) < 0);
+
+	char *ptr = malloc(len + 1);
+	*out = nullptr;
+
+	if (ptr == nullptr)
+		return 0;
+
+	mpz_get_str(ptr, 10, x);
+
+	if (ptr[len - 1] == '\0')
+		len--;
+
+	return len;
+}
+
+[[maybe_unused]]
+static vstring var_to_str(var_val_t in) {
+	if (in.type == VAR_STR)
+		return (vstring) {
+			.ptr = strdup(in.str.ptr),
+			.len = in.str.len,
+		};
+
+	vstring str;
+
+	str.len = in.type == VAR_SPZ ?
+		spz_to_str(in.spz, &str.ptr) :
+		mpz_to_str(in.mpz, &str.ptr);
+
+	return str;
 }
 
 #define spz_to_var(z) ((var_val_t) { .spz =  (z)    , .type = VAR_SPZ })
@@ -45,21 +118,6 @@ static bool mpz_fits_spz_p(const mpz_t x) {
 		out_var_ = mpz_to_var(z);             \
 	out_var_;                                 \
 })
-
-FORCE_INLINE static bool spz__cat_overflows(spz_t z1, spz_t z2) {
-	// returns whether or not the result of an `SPZ . SPZ` concat will fit in an SPZ
-	return spz_sizeinbase10(z1) + spz_sizeinbase10(z2) >= 39;
-}
-
-#if DEBUG
-	#define assert_var_int(x) ({                                     \
-		if ((x).type == VAR_STR)                                     \
-			fatal(1, "[BUG] arguments should not be type VAR_STR."); \
-		(void) 0;                                                    \
-	})
-#else
-	#define assert_var_int(x) ((void) 0)
-#endif
 
 static void spz_to_mpz(mpz_t out, spz_t in) {
 	mpz_init(out);
@@ -129,6 +187,81 @@ static spz_t trunc_mpz_to_spz(mpz_t in) {
 	return out;
 }
 
+[[maybe_unused]]
+static var_val_t dsl_atoi(vstring in) {
+	// in.ptr is not assumed to be a C string. It is converted to either SPZ or MPZ
+	// the input character array is not touched.
+
+	// NOTE: this should not run until it is guaranteed that the variable's value is valid.
+	// constraints:
+	//   - no starting or ending whitespace       --  parsing will only work for .len >= 39
+	//   - no prefixes (only decimal)             --  parsing will not work
+	//   - first and last characters are not '_'  --  parsing will work anyway
+	//   - no consecutive '_'                     --  parsing will work anyway
+	//   - string is not empty                    --  value is parsed as 0
+	//   - no random characters                   --  parsing will only work .len >= 39
+
+#if DEBUG
+	if unlikely (in.len == 0)
+		fatal(1, "[BUG] argument is empty.");
+#endif
+
+	// skip useless stuff at the start
+	while unlikely ({char c = *in.ptr; c == '0' || c == '_';}) {
+		in.ptr++;
+		in.len--;
+	}
+
+	if (in.len == 0)
+		// all of the digits got skipped
+		return spz_to_var(0);
+
+	// NOTE: allocate the same size buffer since the string can never get longer, only shorter.
+	vstring tmp;
+	tmp.ptr = malloc(in.len + 1);
+
+	if unlikely (tmp.ptr == nullptr)
+		dsl_oom();
+
+	// remove underscores
+	{
+		u64 w = 0;
+		for (u64 r = 0; r < in.len; r++) {
+			char c = in.ptr[r];
+
+			if (c != '_')
+				tmp.ptr[w++] = c;
+		}
+
+		tmp.len = w;
+	}
+	tmp.ptr[tmp.len] = '\0';
+
+	static_assert(8*sizeof(spz_t) == 128, "39 == \\lceil log_{10} 2^{127} \\rceil");
+
+	if (tmp.len < 39) {
+		spz_t out = 0;
+
+		for (u64 i = 0; i < tmp.len; i++) {
+			out *= 10;
+			out += tmp.ptr[i] - '0';
+		}
+
+		free(tmp.ptr);
+		return spz_to_var(out);
+	}
+
+	mpz_t out;
+	mpz_init_set_str(out, tmp.ptr, /*base*/ 10); // this should not fail unless it runs out of memory
+
+	free(tmp.ptr);
+
+	// NOTE: a 39-digit number sometimes fits in spz_t, but 40+ never does.
+	return tmp.len == 39 ? mpz_to_var_constrict(out) : mpz_to_var(out);
+}
+
+///////////////////////////// miscellaneous /////////////////////////////
+
 static void dsl_put_val(var_val_t x) {
 #if DEBUG
 	switch (x.type) {
@@ -191,8 +324,13 @@ FORCE_INLINE static void dsl_clear_val(var_val_t x) {
 		mpz_clear(x.mpz);
 }
 
-/////////////////////////////// operators ///////////////////////////////
+FORCE_INLINE static bool spz__cat_overflows(spz_t z1, spz_t z2) {
+	// returns whether or not the result of an `SPZ . SPZ` concat will fit in an SPZ
+	// NOTE: this is stricter than necessary, especially if z2 is negative
+	return spz_sizeinbase10(z1) + spz_sizeinbase10(z2) >= 39;
+}
 
+/////////////////////////////// operators ///////////////////////////////
 
 /*
 abs(x)   => &x
@@ -209,76 +347,6 @@ sign(x)  => x / &(x or !x)
 */
 
 // NOTE: div and mod are truncating, but shr is floored (twos complement)
-
-[[maybe_unused]]
-static var_val_t dsl_atoi(vstring in) {
-	// in.ptr is not assumed to be a C string. It is converted to either SPZ or MPZ
-	// the input character array is not touched.
-
-	// NOTE: this should not run until it is guaranteed that the variable's value is valid.
-	// constraints:
-	//   - no starting or ending whitespace       --  parsing will only work for .len >= 39
-	//   - no prefixes (only decimal)             --  parsing will not work
-	//   - first and last characters are not '_'  --  parsing will work anyway
-	//   - no consecutive '_'                     --  parsing will work anyway
-	//   - string is not empty                    --  value is parsed as 0
-	//   - no random characters                   --  parsing will only work .len >= 39
-
-	// skip useless stuff at the start
-	while unlikely ({char c = *in.ptr; c == '0' || c == '_';}) {
-		in.ptr++;
-		in.len--;
-	}
-
-	if (in.len == 0)
-		// all of the digits got skipped
-		return spz_to_var(0);
-
-	// NOTE: allocate the same size buffer since the string can never get longer, only shorter.
-	vstring tmp;
-	tmp.ptr = malloc(in.len + 1);
-
-	if unlikely (tmp.ptr == nullptr) {
-		eprintf("out of memory.");
-		dsl_panic(EXCEPT_ERR_OOM);
-	}
-
-	// remove underscores
-	{
-		u64 w = 0;
-		for (u64 r = 0; r < in.len; r++) {
-			char c = in.ptr[r];
-
-			if (c != '_')
-				tmp.ptr[w++] = c;
-		}
-
-		tmp.len = w;
-	}
-	tmp.ptr[tmp.len] = '\0';
-
-	static_assert(8*sizeof(spz_t) == 128, "39 == \\lceil log_{10} 2^{127} \\rceil");
-
-	if (tmp.len < 39) {
-		spz_t out = 0;
-
-		for (u64 i = 0; i < tmp.len; i++) {
-			out *= 10;
-			out += tmp.ptr[i] - '0';
-		}
-
-		free(tmp.ptr);
-		return spz_to_var(out);
-	}
-
-	mpz_t out;
-	mpz_init_set_str(out, tmp.ptr, /*base*/ 10); // this should not fail unless it runs out of memory
-
-	free(tmp.ptr);
-
-	// NOTE: a 39-digit number sometimes fits in spz_t, but 40+ never does.
-	return tmp.len == 39 ? mpz_to_var_constrict(out) : mpz_to_var(out);
-}
 
 static var_val_t dsl_pow(var_val_t x, var_val_t y) {
 	assert_var_int(x);
@@ -303,12 +371,14 @@ static var_val_t dsl_pow(var_val_t x, var_val_t y) {
 			return spz_to_var(y.spz & 1 ? -1 : 1);
 
 		if ((u32) (spn_t) y.spz <= SPZ_MAG_BITS &&
-			(u32) (spn_t) y.spz * __builtin_stdc_bit_ceil(spz_abs(x.spz)) <= SPZ_MAG_BITS
+			(u32) (spn_t) y.spz * __builtin_stdc_bit_ceil(spz_abs(x.spz)) < SPZ_MAG_BITS
 		) {
+			// TODO: see if `<=` is okay in place of `<`. I think it might be due to the
+			//       slack from the bit ceiling, but it doesn't follow from the following proof.
 			/*
 			assume y > 0.
-			f(x, y) := x**y < 2^127
-			f(x, y) = log2(x**y) < log2(2^127)
+			f(x, y) := x^y < 2^127
+			f(x, y) = log2(x^y) < log2(2^127)
 			=> y log2(x) < 127 log2(2)
 			=> (stricter bound) y ceil(log2(x)) < 127
 			*/
@@ -783,8 +853,7 @@ static var_val_t dsl_shl(var_val_t x, var_val_t y) {
 			// x << -super large => x >> super large => 0 or -1
 			return spz_to_var((x.type == VAR_SPZ ? x.spz < 0 : mpz_sgn(x.mpz) < 0) ? -1 : 0);
 
-		eprintf("out of memory.");
-		dsl_panic(EXCEPT_ERR_OOM);
+		dsl_oom();
 	}
 
 	if unlikely (y.spz < 0) {
@@ -821,10 +890,8 @@ static var_val_t dsl_shl(var_val_t x, var_val_t y) {
 	if unlikely (mpz_sgn(x.mpz) == 0)
 		return spz_to_var(0);
 
-	if unlikely (y.spz >= MP_MAX_BITS || mpz_sizeinbase(x.mpz, 2) + y.spz > MP_MAX_BITS) {
-		eprintf("out of memory.");
-		dsl_panic(EXCEPT_ERR_OOM);
-	}
+	if unlikely (y.spz >= MP_MAX_BITS || mpz_sizeinbase(x.mpz, 2) + y.spz > MP_MAX_BITS)
+		dsl_oom();
 
 	mpz_t out;
 	mpz_init(out);
@@ -870,8 +937,7 @@ static var_val_t dsl_shr(var_val_t x, var_val_t y) {
 			return spz_to_var((x.type == VAR_SPZ ? x.spz < 0 : mpz_sgn(x.mpz) < 0) ? -1 : 0);
 
 		// `x << massive number` is not representable
-		eprintf("out of memory.");
-		dsl_panic(EXCEPT_ERR_OOM);
+		dsl_oom();
 	}
 
 	// ?PZ >> SPZ
@@ -985,8 +1051,7 @@ static var_val_t dsl_rol(var_val_t x, var_val_t y) {
 		if unlikely (mpz_sgn(y.mpz) < 0)
 			return spz_to_var((x.type == VAR_SPZ ? x.spz < 0 : mpz_sgn(x.mpz) < 0) ? -1 : 0);
 
-		eprintf("out of memory.");
-		dsl_panic(EXCEPT_ERR_OOM);
+		dsl_oom();
 	}
 
 	if unlikely (y.spz < 0) {
@@ -1067,8 +1132,7 @@ static var_val_t dsl_ror(var_val_t x, var_val_t y) {
 			return spz_to_var((x.type == VAR_SPZ ? x.spz < 0 : mpz_sgn(x.mpz) < 0) ? -1 : 0);
 
 		// x >>> -large => x <<< +large => OOM
-		eprintf("out of memory.");
-		dsl_panic(EXCEPT_ERR_OOM);
+		dsl_oom();
 	}
 
 	if unlikely (y.spz < 0) {
@@ -1148,7 +1212,7 @@ static var_val_t dsl_ior(var_val_t x, var_val_t y) {
 		// MPZ | +SPZ could theoretically return a value outside of the SPZ range.
 		mpz_t out;
 		spz_to_mpz(out, y.spz);
-		mpz_and(out, out, x.mpz);
+		mpz_ior(out, out, x.mpz);
 		return mpz_to_var_constrict(out);
 	}
 

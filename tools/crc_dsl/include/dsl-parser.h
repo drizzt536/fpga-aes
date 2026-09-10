@@ -499,10 +499,6 @@ static var_val_t dsl_eval(vstring expr) {
 
 	const var_val_t res = tok_to_var(tokens.array[1]);
 
-#if DEBUG
-	printf("result: "); dsl_puts_val(res);
-#endif
-
 	free(tokens.array);
 	dsl_except.live_allocs[LIVE_ALLOC_PARSER_TOKENS] = nullptr;
 

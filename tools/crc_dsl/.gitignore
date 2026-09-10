@@ -6,3 +6,4 @@ callgrind.out.*
 
 # linux binary
 main
+calc

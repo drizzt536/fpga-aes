@@ -39,6 +39,7 @@ typedef enum : u8 {
 #define EXCEPT_ERR_DEPTH  (-257ll) // exception max depth exceeded
 #define EXCEPT_ERR_LEXER  (-258ll) // any non-OOM error during `%seteval` lexing
 #define EXCEPT_ERR_PARSER (-259ll) // any non-OOM error during `%seteval` parsing
+#define EXCEPT_ERR_OK     (   1ll) // primary panic value for a non-error early return
 // EXCEPT_ERR_UNCAUGHT_* is -1 through -255
 // unreserved error codes start at -258
 
@@ -121,6 +122,12 @@ static except_stack_t dsl_except;
 	result = setjmp((jmp_buf *) dsl_except.array);   \
 done:                                                \
 	result;                                          \
+})
+
+#define dsl_oom() ({           \
+	eprintf("out of memory."); \
+	dsl_panic(EXCEPT_ERR_OOM); \
+	(void) 0;                  \
 })
 
 static void dsl_free_except_from(u64 start) {
@@ -265,8 +272,7 @@ static i64 dsl__try2(except_type_t type, u64 tag) {
 		except_t *const new_array = realloc(dsl_except.array, new_cap * sizeof(except_t));
 
 		if (new_array == nullptr)
-			// crash on OOM
-			dsl_panic(EXCEPT_ERR_OOM);
+			dsl_oom();
 
 		dsl_except.array = new_array;
 		dsl_except.cap   = new_cap;
@@ -284,6 +290,8 @@ static i64 dsl__try2(except_type_t type, u64 tag) {
 #define dsl__try(type, tag...) VA_IF(dsl_try2(type, tag), dsl_try1(type), tag)
 
 #define dsl_try_root3(VAR, BEFORE, CASES) ({ \
+	__label__ try_root_start;                \
+[[maybe_unused]] try_root_start:             \
 	const i64 VAR = dsl__try_root();         \
 	BEFORE;                                  \
 	switch (VAR) { CASES; }                  \

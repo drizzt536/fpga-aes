@@ -37,7 +37,7 @@ typedef enum : u8 {
 		0a. concatenation by juxtaposition (only for literals and variables)
 		0b. ()
 		1. ^ (right-to-left)
-		2. unary +, -, ~, &, ! (right-to-left)
+		2. unary +, -, ~, !, & (right-to-left)
 		3. .
 		4. *, /, %
 		5. binary +, -
@@ -277,8 +277,7 @@ static void push_token(token_list_builder *p2tokens, token_t token) {
 	else
 		printf("atom=\"%.*s\"", (int) token.atom.len, token.atom.ptr);
 
-	putchar(')');
-	putchar('\n');*/
+	putchar(')');*/
 
 	if unlikely (p2tokens->count == p2tokens->cap) {
 		const u32 new_cap = p2tokens->cap * 3 >> 1;
@@ -293,8 +292,11 @@ static void push_token(token_list_builder *p2tokens, token_t token) {
 
 	p2tokens->array[p2tokens->count - 1].next = p2tokens->count;
 	p2tokens->array[p2tokens->count] = token;
+	// printf(". token placed in %u. count : %u => ", p2tokens->count, p2tokens->count);
 	p2tokens->count++;
+	// printf("%u\n", p2tokens->count);
 	return;
+
 oom:
 	free(p2tokens->array);
 	lexer_oom();
@@ -332,10 +334,13 @@ static bool is_int_var(var_t *var) {
 	return true;
 }
 
-#define pop_token() ({                   \
-	tokens.array[tokens.count].next = 0; \
-	tokens.count--;                      \
-	(void) 0;                            \
+#define pop_token() ({                       \
+	/*printf("pop_token(); count: %u => ",   \
+		tokens.count);*/                     \
+	tokens.count--;                          \
+	tokens.array[tokens.count - 1].next = 0; \
+	/*printf("%u\n", tokens.count);*/        \
+	(void) 0;                                \
 })
 
 #define prev_token_n(TOKENS, N) ((TOKENS).array[(TOKENS).count - (N)])
@@ -350,11 +355,15 @@ static token_list dsl_lex(vstring expr) {
 	// guess a new token starts every other character.
 	// if the input has a lot of variables with long names, this could wildly over-allocate.
 	// in case this is way too big, fall back to a one-page allocation.
-	token_list_builder tokens = {
-		.array = malloc((expr.len >> 1) * sizeof(token_t)),
-		.count = 1,
-		.cap   = (u32) (expr.len >> 1),
-	};
+	token_list_builder tokens;
+
+	tokens.cap = (u32) (expr.len >> 1);
+	// malloc(0) is undefined, and 1 * 3 >> 1 => 1. 2 and 3 are disallowed because I decided.
+	if (tokens.cap < 4)
+		tokens.cap = 4;
+
+	tokens.array = malloc(tokens.cap * sizeof(token_t));
+	tokens.count = 1;
 
 	if unlikely (tokens.array == nullptr) {
 		tokens.cap   = PAGE_SIZE / sizeof(token_t);
@@ -456,7 +465,17 @@ static token_list dsl_lex(vstring expr) {
 			}
 
 			case '~':
-				if likely (prev_token.type != TOKEN_OP_UNARY || *prev_token.op.ptr != '~')
+				if unlikely (prev_token.type == TOKEN_OP_UNARY && *prev_token.op.ptr == '~')
+					// NOTE: all unary operators are exactly one character long,
+					//       so don't bother checking the length of the operator string.
+					pop_token();
+				else if (tok_is_primary(prev_token) || prev_token.type == TOKEN_RPAREN) {
+					// NOTE: this check has to happen here because `~` is the only token that is always interpreted
+					//       as unary AND can be changed to nothing if there are multiple copies.
+					eprintf("%s followed immediately by %s is invalid.", "LITERAL, VAR, or ')'", "UNARY OPERATOR");
+					dsl_panic(EXCEPT_ERR_LEXER);
+				}
+				else
 					push_token(&tokens, (token_t) {
 						.op = {
 							.ptr = expr.ptr + i,
@@ -466,10 +485,6 @@ static token_list dsl_lex(vstring expr) {
 						.next = 0,
 						.type = TOKEN_OP_UNARY,
 					});
-				else
-					// NOTE: all unary operators are exactly one character long,
-					//       so don't bother checking the length of the operator string.
-					pop_token();
 				break;
 			case '!': {
 				const token_t token = {

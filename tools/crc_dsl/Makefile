@@ -106,13 +106,31 @@ endif
 ifeq ($(UNAME_S),Windows_NT)
 main.exe: main.o crt-stubs.o
 	ld $^ $(LD_FLAGS) $(LD_LIBS) -o $@
-else
+
+calc.exe: calc.o crt-stubs.o
+	ld $^ $(LD_FLAGS) $(LD_LIBS) -o $@
+else # UNAME == linux
 main: main.o crt-stubs.o
 	ld $^ $(LD_FLAGS) $(LD_LIBS) -o $@
+ifneq ($(DEBUG),off)
 	objcopy --remove-section=.eh_frame --remove-section=.eh_frame_hdr main main
 endif
 
+calc: calc.o crt-stubs.o
+	ld $^ $(LD_FLAGS) $(LD_LIBS) -o $@
+ifneq ($(DEBUG),off)
+	objcopy --remove-section=.eh_frame --remove-section=.eh_frame_hdr calc calc
+endif # DEBUG
+endif # UNAME
+
+ifeq ($(UNAME_S),Windows_NT)
+else
+endif
+
 main.o: main.c $(wildcard include/*.h) Makefile
+	gcc -c $< $(GCC_FLAGS) $(GCC_ERRFLAGS) -o $@
+
+calc.o: calc.c $(wildcard include/*.h) Makefile
 	gcc -c $< $(GCC_FLAGS) $(GCC_ERRFLAGS) -o $@
 
 crt-stubs.o: crt-stubs.nasm Makefile
@@ -127,4 +145,4 @@ clean:
 	rm -f *.o cachegrind.out.* callgrind.out.* 2> /dev/null
 
 distclean: clean
-	rm -f main main.exe 2> /dev/null
+	rm -f main main.exe calc calc.exe 2> /dev/null

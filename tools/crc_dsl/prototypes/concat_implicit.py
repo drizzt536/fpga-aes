@@ -6,10 +6,6 @@ from expr_lexer import concat
 # void concat_implicit(LinkedList ll) => ??? dsl_cat_all(token_list list, u64 start, u64 length)
 # haven't decided on the C return type of dsl_cat_all. I think void should work
 
-# NOTE: since it is a linked list and not a contiguous array, I don't think it is possible to do a true
-#       recursive bisection, since that would require jumping to the middle element, but since the
-#       middle element doesn't have a pre-known offset from the start, that would be O(n) per split.
-
 class Node:
 	__slots__ = ("value", "next")
 

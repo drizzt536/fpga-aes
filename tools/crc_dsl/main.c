@@ -11,9 +11,7 @@
 	#define DEBUG false
 #endif
 
-#include <stdlib.h>
-#include <stdio.h>
-#include "dsl-main.h" // <stdlib.h>, <stdint.h>, <string.h>, "map.h", "va-if.h", "setjmp.h"
+#include "dsl-main.h" // <stdlib.h>, <stdint.h>, <string.h>, <stdio.h>, "map.h", "va-if.h", "setjmp.h"
 
 #ifdef _WIN32
 	#define fseek _fseeki64_nolock
@@ -37,7 +35,7 @@ FORCE_INLINE static u64 cstr_count_nonempty_lines(const char *buf) {
 
 	while (true) {
 		buf++;
-		buf = memchr(buf, '\n', n - (u64) (buf - orig_buf));
+		buf = memchr(buf, '\n', n - /*i*/ (u64) (buf - orig_buf));
 
 		if (buf == nullptr)
 			break;
@@ -210,6 +208,12 @@ u8 main(u32 argc, char **argv)
 	stdin  = __acrt_iob_func(0);
 	stdout = __acrt_iob_func(1);
 	stderr = __acrt_iob_func(2);
+#endif
+
+#if DEBUG
+	puts("debug: on");
+#else
+	puts("debug: off");
 #endif
 
 	// skip EXE path

@@ -1729,7 +1729,7 @@ MAP_INLINE bool Map__set_raw_existing(
 	this->buckets[bucket].key = KEY;                          \
 	this->buckets[bucket].val = VAL;                          \
 	this->m_size++;                                           \
-	return false;                                             \
+	return false;  /* NOTE: this as `return` is intended */   \
 })
 
 [[gnu::nonnull(1,2)]]

@@ -97,20 +97,37 @@ static Map dsl_vars;
 
 /// SPZ functions
 
-#define spz_abs2(X, NEG) ({                   \
-	const spz_t x_abs2 = (X);                 \
-	(NEG) ? -(spn_t) x_abs2 : (spn_t) x_abs2; \
+static bool mpz_fits_spz_p(const mpz_t x) {
+	// TODO: check if `const auto` works when GCC updates. It currently doesn't. I think its a compiler bug.
+	//       maybe I could just do `#define auto __auto_type`, which does work. For whatever reason, GCC
+	//       thinks that `auto` is an storage-class specifier here, despite the fact that it 100% isn't.
+	auto const size   = x->_mp_size;
+	const bool neg    = size < 0;
+	auto const nlimbs = neg ? -size : size;
+	static_assert(8*sizeof(spz_t) == 2*GMP_NUMB_BITS); // 2 limbs
+
+	if (nlimbs > 2) return false;
+	if (nlimbs < 2) return true;
+
+	const spn_t mag = (spn_t) x->_mp_d[1] << GMP_NUMB_BITS | x->_mp_d[0];
+
+	return mag <= (spn_t) SPZ_MAX + neg;
+}
+
+#define spz_abs2(X, NEG) ({                     \
+	const spz_t x_abs2_ = (X);                  \
+	(NEG) ? -(spn_t) x_abs2_ : (spn_t) x_abs2_; \
 })
 
-#define spz_abs1(X) ({            \
-	const spz_t x_abs1 = (X);     \
-	spz_abs2(x_abs1, x_abs1 < 0); \
+#define spz_abs1(X) ({              \
+	const spz_t x_abs1_ = (X);      \
+	spz_abs2(x_abs1_, x_abs1_ < 0); \
 })
 
 #define spz_abs(X, NEG...) VA_IF(spz_abs2(X, NEG), spz_abs1(X), NEG)
 
 // where sign(0) = 1. to compare with 0, compare directly.
-#define spz_sgn(X) ((X) >= 0 : 1 : -1)
+#define spz_sgn(X) ((X) >= 0 ? 1 : -1)
 
 #define SPZ_MAG_BITS (8*sizeof(spz_t) - 1)
 
@@ -209,19 +226,19 @@ static u32 spz_sizeinbase10(spz_t z) {
 	return n < (spz_t) 1000000000000000000llu * 10000000000000000000llu ? 37 : 38;
 }
 
-static void put_spz(spz_t val) {
-	if (val == 0) {
+static void put_spz(spz_t x) {
+	if (x == 0) {
 		putchar('0');
 		return;
 	}
 
-	spn_t uval;
-	if (val < 0) {
+	spn_t ux;
+	if (x < 0) {
 		// ~x + 1 instead of -x to prevent overflow on `-signed`
 		putchar('-');
-		uval = (spn_t) ~val + 1;
+		ux = (spn_t) ~x + 1;
 	} else
-		uval = (spn_t) val;
+		ux = (spn_t) x;
 
 	char buf[spz_sizeinbase10(SPZ_MAX) + 1];
 
@@ -230,9 +247,9 @@ static void put_spz(spz_t val) {
 	buf[i] = '\0';
 
 	do {
-		buf[--i] = (char) ('0' + uval % 10);
-		uval /= 10;
-	} until (uval == 0);
+		buf[--i] = (char) ('0' + ux % 10);
+		ux /= 10;
+	} until (ux == 0);
 
 	printf("%s", buf + i);
 }
@@ -306,6 +323,33 @@ static void dsl_set_var(var_key_t *pkey, var_val_t *pval) {
 	else
 		dsl_vars = Map_set_by(dsl_vars, pkey, pval, vstring_cmp, hash, vstring_hash, MAP_UNOWNED);
 }
+
+[[maybe_unused, gnu::nonnull]]
+static void dsl_del_var(var_key_t key) {
+	const map_hash_t hash = jhash(key.ptr, key.len);
+
+	var_t *const p2entry = dsl_get_var(key, hash);
+
+	if (p2entry == nullptr)
+		// variable doesn't exist. don't do anything
+		return;
+
+	// NOTE: this part is required because `Map_delete_by` zeros the entry to avoid
+	//       use after frees, so to use it after "freeing" it, this has to save a
+	//       temporary shallow copy of the entry.
+	var_t tmp = *p2entry;
+
+	Map_delete_by(
+		dsl_vars,
+		&key,
+		vstring_cmp,
+		hash,
+		MAP_UNOWNED // don't free anything, just remove from the map and zero the entry
+	);
+
+	dsl_free_var(&tmp);
+}
+
 
 [[maybe_unused, gnu::nonnull]]
 static void dsl_dump_var(var_t *p2entry) {
