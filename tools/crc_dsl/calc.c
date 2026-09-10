@@ -25,13 +25,13 @@ static const char *const help_text =
 	"\n    dump                       print all defined variables and their types"
 	"\n"
 	"\nINPUT"
-	"\n    Each line is either a standalone expression or an assignment:"
+	"\n    Each line is a series of either standalone expressions assignments:"
 	"\n        1 + 2 + 3"
-	"\n        $x = 4 . 5"
-	"\n        $abc ^= $abc;"
-	"\n    Any binary operator can be put before the `=`, e.g. `+=`, `<<<=`."
+	"\n        $x = 4 * 5"
+	"\n        $abc ^= $abc; $x = 2; ${x}32$abc - 1"
 	"\n"
-	"\n    End a line with ';' to suppress printing the result."
+	"\n    Any binary operator can be put before the `=`, e.g. `+=`, `<<<=`."
+	"\n    any statement with a semicolon after it will have the result suppressed."
 	"\n    Assignments cannot be nested (e.g. $x = $y = 1 is not allowed)."
 	"\n    Invalid input prints an error but is otherwise ignored."
 	"\n"
@@ -43,6 +43,7 @@ static const char *const help_text =
 	"\nVARIABLES"
 	"\n    Reference a variable as $name or ${name}."
 	"\n    Adjacent values are implicitly concatenated (see CONCATENATION below)."
+	"\n    $ans is auto updated following any echoing non-assignment expression"
 	"\n"
 	"\nOPERATORS  (highest to lowest precedence)"
 	"\n    ( )        grouping"
@@ -316,7 +317,7 @@ u8 main(u32 argc, char **argv)
 		}
 
 		if (line.len == _strlen("--version") && *(u64 *) line.ptr == MC64('--ve','rsio') && line.ptr[8] == 'n') {
-			puts("v1.0.0");
+			puts("v1.0.1");
 			free(line.ptr);
 			return 0;
 		}
@@ -538,7 +539,33 @@ try_root_start:
 				if (echo) {
 					var_val_t result = dsl_eval(expr);
 					dsl_puts_val(result);
-					dsl_clear_val(result);
+
+					var_key_t *ans = malloc(sizeof(var_key_t));
+
+					if (ans == nullptr) {
+						dsl_clear_val(result);
+						dsl_oom();
+					}
+
+					ans->ptr = strdup("ans");
+					if (ans == nullptr) {
+						dsl_clear_val(result);
+						free(ans);
+						dsl_oom();
+					}
+
+					var_val_t *val = malloc(sizeof(var_val_t));
+					if (val == nullptr) {
+						dsl_clear_val(result);
+						free(ans->ptr);
+						free(ans);
+						dsl_oom();
+					}
+
+					ans->len = 3;
+					*val = result;
+
+					dsl_set_var(ans, val);
 				}
 				else {
 					// it isn't printing anything, so it doesn't need to evalaute or stringify anything.
