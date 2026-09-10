@@ -7,6 +7,10 @@
 	[[maybe_unused]] static void *stdin, *stdout, *stderr;
 #endif
 
+// TODO: everywhere that uses mpz_*, it should maybe check for if the allocation failed.
+//       I don't know how GMP works for OOM, so maybe it handles all of that by itself, but
+//       also maybe it doesn't.
+
 #ifndef DEBUG
 	#define DEBUG false
 #endif

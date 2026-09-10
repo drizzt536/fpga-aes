@@ -11,14 +11,18 @@
 	#define DEBUG false
 #endif
 
+// TODO: consider adding `dump $x` type of thing to only dump one variable.
+
 #include "dsl-main.h" // <stdlib.h>, <stdint.h>, <string.h>, <stdio.h>, "map.h", "va-if.h", "setjmp.h"
+
+static const char *const version_text = "v1.0.2";
 
 static const char *const help_text = 
 	"Calculator - Help"
 	"\n"
 	"\nCOMMANDS"
 	"\n    help                       print this help text"
-	"\n    quit / exit                exit the program"
+	"\n    exit / quit / q            exit the program"
 	"\n    del $var / del ${var}      delete a variable"
 	"\n    reset                      delete all variables"
 	"\n    clear                      clear the terminal"
@@ -317,7 +321,7 @@ u8 main(u32 argc, char **argv)
 		}
 
 		if (line.len == _strlen("--version") && *(u64 *) line.ptr == MC64('--ve','rsio') && line.ptr[8] == 'n') {
-			puts("v1.0.1");
+			puts(version_text);
 			free(line.ptr);
 			return 0;
 		}
@@ -388,7 +392,12 @@ try_root_start:
 					continue;
 			}
 
-			if (tmp_line.len == 4) {
+
+			if (tmp_line.len == 1) {
+				if (*tmp_line.ptr == 'q')
+					dsl_panic(EXCEPT_ERR_OK);
+			}
+			else if (tmp_line.len == 4) {
 				// four-byte commands
 				if (*(u32 *) tmp_line.ptr == MC32('quit') || *(u32 *) tmp_line.ptr == MC32('exit'))
 					dsl_panic(EXCEPT_ERR_OK);
@@ -406,6 +415,15 @@ try_root_start:
 				}
 				else if (*(u32 *) tmp_line.ptr == MC32('help')) {
 					puts(help_text);
+					goto advance;
+				}
+			}
+			else if (tmp_line.len == 7) {
+				if (*(u32 *) tmp_line.ptr == MC32('vers')
+					&& *(u16 *) (tmp_line.ptr + 4) == MC16('io')
+					&& tmp_line.ptr[6] == 'n'
+				) {
+					puts(version_text);
 					goto advance;
 				}
 			}

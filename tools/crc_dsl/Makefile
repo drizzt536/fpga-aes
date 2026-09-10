@@ -61,7 +61,9 @@ ifeq ($(DEBUG),all)
 	ifneq ($(UNAME_S),Windows_NT)
 		# this stuff only works on Linux
 		GCC_FLAGS += -fsanitize=address,undefined -fstack-protector-all
-		LD_LIBS   += -lasan -lubsan  # -lasan has to come first
+
+		# -lasan has to come first
+		LD_LIBS   += -lasan -lubsan
 	endif
 
 	override DEBUG := extra
