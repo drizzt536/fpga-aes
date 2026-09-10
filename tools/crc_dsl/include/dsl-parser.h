@@ -487,8 +487,6 @@ static void dsl_parse(token_list tokens) {
 static var_val_t dsl_eval(vstring expr) {
 	const token_list tokens = dsl_lex(expr);
 
-	dsl_except.live_allocs[LIVE_ALLOC_PARSER_TOKENS] = tokens.array;
-
 /*#if DEBUG
 	printf("input expr: %.*s\n", (int) expr.len, expr.ptr);
 	printf("lexed expr: "); log_tokens_expr(tokens);

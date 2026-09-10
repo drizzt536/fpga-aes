@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 /*
-	map.h v0.9.6
+	map.h v0.9.7
 	Copyright (c) 2026 Daniel Janusch
 
 	Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -316,14 +316,15 @@
 })
 
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-	#define MC8(x)  ((u8)  _MC_IMPL(x))
-	#define MC16(x) ((u16) _MC_IMPL(__builtin_bswap16(x)))
-	#define MC32(x) ((u32) _MC_IMPL(__builtin_bswap32(x)))
-	#define MC64(x) ((u64) _MC_IMPL(__builtin_bswap64(x)))
+	#define MC8(x)    ((u8)  _MC_IMPL(x))
+	#define MC16(x)   ((u16) _MC_IMPL(__builtin_bswap16(x)))
+	#define MC32(x)   ((u32) _MC_IMPL(__builtin_bswap32(x)))
+	#define MC64(x,y) ((u64) _MC_IMPL( __builtin_bswap64((u64) (x) << 32 | (y)) ))
 #elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
 	#define MC8(x)  ((u8)  _MC_IMPL(x))
 	#define MC16(x) ((u16) _MC_IMPL(x))
 	#define MC32(x) ((u32) _MC_IMPL(x))
+	#define MC64(x,y) ((u64) _MC_IMPL( (u64) (x) << 32 | (y) ))
 	#define MC64(x) ((u64) _MC_IMPL(x))
 #else
 	#error "target has unknown byte order. define __BYTE_ORDER__ manually."

@@ -288,6 +288,7 @@ static void push_token(token_list_builder *p2tokens, token_t token) {
 
 		p2tokens->array = new_array;
 		p2tokens->cap   = new_cap;
+		dsl_except.live_allocs[LIVE_ALLOC_PARSER_TOKENS] = new_array;
 	}
 
 	p2tokens->array[p2tokens->count - 1].next = p2tokens->count;
@@ -347,7 +348,7 @@ static bool is_int_var(var_t *var) {
 #define prev_token  prev_token_n(tokens, 1)
 #define prev2_token prev_token_n(tokens, 2)
 
-[[maybe_unused]]
+[[nodiscard, maybe_unused]]
 static token_list dsl_lex(vstring expr) {
 	u64 depth = 0;
 	(void) depth;
@@ -372,6 +373,8 @@ static token_list dsl_lex(vstring expr) {
 		if unlikely (tokens.array == nullptr)
 			lexer_oom();
 	}
+
+	dsl_except.live_allocs[LIVE_ALLOC_PARSER_TOKENS] = tokens.array;
 
 	*tokens.array = (token_t) {
 		.type = TOKEN_SOF,
@@ -856,6 +859,8 @@ static token_list dsl_lex(vstring expr) {
 	// this will never fail (shrink)
 	if likely (tokens.count < tokens.cap)
 		tokens.array = realloc(tokens.array, tokens.count * sizeof(token_t));
+
+	dsl_except.live_allocs[LIVE_ALLOC_PARSER_TOKENS] = tokens.array;
 
 	return (token_list) {
 		.array = tokens.array,

@@ -149,11 +149,11 @@ typedef enum {
 } assign_op_t;
 
 [[gnu::nonnull]]
-static vstring get_expr_varname(char *equals, assign_op_t *out_op) {
+static vstring get_expr_varname(vstring in_line, char *equals, assign_op_t *out_op) {
 	// on failed check, .ptr = nullptr, and out_op is undefined
 	// *out_op = ASSIGN_OP_NONE;
 
-	char *p = line.ptr;
+	char *p = in_line.ptr;
 
 	// skip \s*
 	while (p < equals && line_isspace(*p))
@@ -306,16 +306,21 @@ u8 main(u32 argc, char **argv)
 
 		// this will basicaly only ever run if you pass one argument.
 		if (
-			(line.len == _strlen("--help") && strcmp(line.ptr, "--help") == 0) ||
-			(line.len == _strlen("-h")     && strcmp(line.ptr, "-h")     == 0) ||
-			(line.len == _strlen("-?")     && strcmp(line.ptr, "-?")     == 0)
+			(line.len == _strlen("--help") && *(u32 *) line.ptr == MC32('--he') && *(u16 *) (line.ptr + 4) == MC16('lp')) ||
+			(line.len == _strlen("-h")     && *(u16 *) line.ptr == MC16('-h')) ||
+			(line.len == _strlen("-?")     && *(u16 *) line.ptr == MC16('-?'))
 		) {
 			puts(help_text);
 			free(line.ptr); // so ASan shuts up.
 			return 0;
 		}
-	}
 
+		if (line.len == _strlen("--version") && *(u64 *) line.ptr == MC64('--ve','rsio') && line.ptr[8] == 'n') {
+			puts("v1.0.0");
+			free(line.ptr);
+			return 0;
+		}
+	}
 
 	// all three sections in the variable value section have to be the same size
 	static_assert(sizeof(mpz_t) == 16 && sizeof(i128) == 16 && sizeof(vstring) == 16);
@@ -324,23 +329,69 @@ u8 main(u32 argc, char **argv)
 	dsl_vars = Map_create();
 
 	volatile bool retry = interactive;
+	bool line_done = true;
+	vstring line_rest = line;
 
 try_root_start:
 	dsl_try_root(
 	case 0:
-		while (!interactive || read_line()) {
-			lstrip_line(line);
-			rstrip_line(line);
-
-			if (line.len == 0)
+		while (!interactive || !line_done ||
+			({
+				const bool ok = read_line();
+				line_rest = line;
+				rstrip_line(line_rest);
+				ok;
+			})
+		) {
+			if (line.len == 0) {
+				line_done = true;
 				// skip empty lines
 				continue;
+			}
 
-			if (line.len == 4) {
+			line_done = false;
+			vstring tmp_line = line_rest;
+
+			bool echo;
+			{
+				char *const semi = memchr(line_rest.ptr, ';', line_rest.len);
+				echo = semi == nullptr;
+
+				if (echo)
+					line_done = true;
+				else {
+					const u64 len  = (u64) (semi - line_rest.ptr + 1);
+					line_rest.ptr += len;
+					line_rest.len -= len;
+					tmp_line.len   = len;
+				}
+			}
+
+			// NOTE: some of this stripping is unnecessary in some branches, but I don't feel like optimizing it.
+			lstrip_line(tmp_line);
+			rstrip_line(tmp_line);
+
+			if (tmp_line.len == 0) {
+				line_done = true;
+				continue;
+			}
+
+			if (!echo) {
+				tmp_line.len--; // drop the semicolon
+
+				rstrip_line(tmp_line); // skip whitespace before the semicolon
+
+				if (tmp_line.len == 0)
+					// non-echoing blank line
+					// line might not be done
+					continue;
+			}
+
+			if (tmp_line.len == 4) {
 				// four-byte commands
-				if (*(u32 *) line.ptr == MC32('quit') || *(u32 *) line.ptr == MC32('exit'))
+				if (*(u32 *) tmp_line.ptr == MC32('quit') || *(u32 *) tmp_line.ptr == MC32('exit'))
 					dsl_panic(EXCEPT_ERR_OK);
-				else if (*(u32 *) line.ptr == MC32('dump')) {
+				else if (*(u32 *) tmp_line.ptr == MC32('dump')) {
 					if (Map_count(dsl_vars) == 0)
 						puts("no variables present.");
 					else
@@ -348,21 +399,17 @@ try_root_start:
 							dsl_dump_var((var_t *) p2entry);
 						);
 
-					if (interactive)
-						continue;
-					else
-						break;
+					// blank line
+					putchar('\n');
+					goto advance;
 				}
-				else if (*(u32 *) line.ptr == MC32('help')) {
+				else if (*(u32 *) tmp_line.ptr == MC32('help')) {
 					puts(help_text);
-					if (interactive)
-						continue;
-					else
-						break;
+					goto advance;
 				}
 			}
-			else if (line.len >= 5 && memcmp(line.ptr, "del $", 5) == 0) {
-				vstring varname = line;
+			else if (tmp_line.len >= 5 && *(u32 *) tmp_line.ptr == MC32('del ') && tmp_line.ptr[4] == '$') {
+				vstring varname = tmp_line;
 				varname.ptr += _strlen("del $");
 				varname.len -= _strlen("del $");
 
@@ -372,14 +419,11 @@ try_root_start:
 				}
 
 				dsl_del_var(varname);
-				if (interactive)
-					continue;
-				else
-					break;
+				goto advance;
 			}
-			else if (line.len == 5) {
+			else if (tmp_line.len == 5) {
 				// there is only one 5-byte command
-				if (*(u32 *) line.ptr == MC32('rese') && line.ptr[4] == 't') {
+				if (*(u32 *) tmp_line.ptr == MC32('rese') && tmp_line.ptr[4] == 't') {
 					Map_foreach(dsl_vars,
 						dsl_free_var((var_t *) p2entry);
 					);
@@ -387,135 +431,125 @@ try_root_start:
 					Map_destroy_shallow_ref(&dsl_vars);
 					map_init_key();
 					dsl_vars = Map_create();
-					if (interactive)
-						continue;
-					else
-						break;
+					goto advance;
 				}
-				else if (*(u32 *) line.ptr == MC32('clea') && line.ptr[4] == 'r') {
+				else if (*(u32 *) tmp_line.ptr == MC32('clea') && tmp_line.ptr[4] == 'r') {
 					// clear visible screen, clear scrollback, and reset cursor
 					printf("\e[2J\e[3J\e[H");
-					if (interactive)
-						continue;
-					else
-						break;
+					goto advance;
 				}
 			}
 
-			const bool echo = line.ptr[line.len - 1] != ';';
+			char *const equals = memchr(tmp_line.ptr, '=', tmp_line.len);
 
-			if (!echo) {
-				line.len--;
+			const bool set = equals != nullptr;
 
-				rstrip_line(line); // skip whitespace before the semicolon
-
-				if (line.len == 0)
-					// non-echoing blank line
-					continue;
-			}
-
-			char *const equals = memchr(line.ptr, '=', line.len);
-
-			const bool set  = equals != nullptr;
-
-			vstring expr = line;
+			vstring expr = tmp_line;
 
 			if (set) {
-				const u64 i = (u64) (equals - line.ptr);
+				const u64 i = (u64) (equals - tmp_line.ptr);
 				expr.ptr += i + 1;
 				expr.len -= i + 1;
 			}
 
-			{
+			if (set) {
+				assign_op_t op;
+				vstring varname = get_expr_varname(tmp_line, equals, &op);
+
+				if (varname.ptr == nullptr) {
+					eprintf("invalid variable name.");
+					dsl_panic(EXCEPT_ERR_VARNAME);
+				}
+
+				{
+					// the key pointer needs to be a freeable pointer for `dsl_set_var` to work.
+					char *const tmp = malloc(varname.len + 1);
+					if (tmp == nullptr)
+						dsl_oom();
+
+					memcpy(tmp, varname.ptr, varname.len);
+					tmp[varname.len] = '\0';
+
+					varname.ptr = tmp;
+				}
+
+				var_key_t *key = malloc(sizeof(var_key_t));
+				if (key == nullptr) {
+					free(varname.ptr);
+					dsl_oom();
+				}
+
+				var_val_t *val = malloc(sizeof(var_val_t));
+				if (val == nullptr) {
+					free(varname.ptr);
+					free(key);
+					dsl_oom();
+				}
+
 				var_val_t result = dsl_eval(expr);
 
-				if (set) {
-					assign_op_t op;
-					vstring varname = get_expr_varname(equals, &op);
+				if (op != ASSIGN_OP_SET) {
+					var_t *const p2entry = dsl_get_var(varname);
 
-					if (varname.ptr == nullptr) {
+					if (p2entry == nullptr) {
+						eprintf("variable `$%.*s` doesn't exist.", (int) varname.len, varname.ptr);
+						free(varname.ptr);
+						free(key);
+						free(val);
 						dsl_clear_val(result);
-						eprintf("invalid variable name.");
 						dsl_panic(EXCEPT_ERR_VARNAME);
 					}
 
-					{
-						// the key pointer needs to be a freeable pointer for `dsl_set_var` to work.
-						char *const tmp = malloc(varname.len + 1);
-						if (tmp == nullptr) {
-							dsl_clear_val(result);
-							dsl_oom();
-						}
+					var_val_t left = p2entry->val[0];
 
-						memcpy(tmp, varname.ptr, varname.len);
-						tmp[varname.len] = '\0';
-
-						varname.ptr = tmp;
+					switch (op) {
+						case ASSIGN_OP_POW: dsl_binary_repl(pow, result, left, result); break;
+						case ASSIGN_OP_CAT: dsl_binary_repl(cat, result, left, result); break;
+						case ASSIGN_OP_MUL: dsl_binary_repl(mul, result, left, result); break;
+						case ASSIGN_OP_DIV: dsl_binary_repl(div, result, left, result); break;
+						case ASSIGN_OP_MOD: dsl_binary_repl(mod, result, left, result); break;
+						case ASSIGN_OP_ADD: dsl_binary_repl(add, result, left, result); break;
+						case ASSIGN_OP_SUB: dsl_binary_repl(sub, result, left, result); break;
+						case ASSIGN_OP_SHL: dsl_binary_repl(shl, result, left, result); break;
+						case ASSIGN_OP_SHR: dsl_binary_repl(shr, result, left, result); break;
+						case ASSIGN_OP_ROL: dsl_binary_repl(rol, result, left, result); break;
+						case ASSIGN_OP_ROR: dsl_binary_repl(ror, result, left, result); break;
+						case ASSIGN_OP_AND: dsl_binary_repl(and, result, left, result); break;
+						case ASSIGN_OP_IOR: dsl_binary_repl(ior, result, left, result); break;
+						case ASSIGN_OP_XOR: dsl_binary_repl(xor, result, left, result); break;
+						case ASSIGN_OP_NONE:
+						case ASSIGN_OP_SET:
+						default:
+							unreachable();
 					}
+				}
 
-					var_key_t *key = malloc(sizeof(var_key_t));
-					if (key == nullptr) {
-						dsl_clear_val(result);
-						dsl_oom();
-					}
+				*key = varname;
+				*val = result;
 
-					var_val_t *val = malloc(sizeof(var_val_t));
-					if (val == nullptr) {
-						dsl_clear_val(result);
-						dsl_oom();
-					}
+				if (echo)
+					dsl_puts_val(result);
 
-					if (op != ASSIGN_OP_SET) {
-						var_t *p2entry = dsl_get_var(varname);
-
-						if (p2entry == nullptr) {
-							eprintf("variable `$%.*s` doesn't exist.", (int) varname.len, varname.ptr);
-							dsl_clear_val(result);
-							dsl_panic(EXCEPT_ERR_VARNAME);
-						}
-
-						var_val_t left = p2entry->val[0];
-
-						switch (op) {
-							case ASSIGN_OP_POW: dsl_binary_repl(pow, result, left, result); break;
-							case ASSIGN_OP_CAT: dsl_binary_repl(cat, result, left, result); break;
-							case ASSIGN_OP_MUL: dsl_binary_repl(mul, result, left, result); break;
-							case ASSIGN_OP_DIV: dsl_binary_repl(div, result, left, result); break;
-							case ASSIGN_OP_MOD: dsl_binary_repl(mod, result, left, result); break;
-							case ASSIGN_OP_ADD: dsl_binary_repl(add, result, left, result); break;
-							case ASSIGN_OP_SUB: dsl_binary_repl(sub, result, left, result); break;
-							case ASSIGN_OP_SHL: dsl_binary_repl(shl, result, left, result); break;
-							case ASSIGN_OP_SHR: dsl_binary_repl(shr, result, left, result); break;
-							case ASSIGN_OP_ROL: dsl_binary_repl(rol, result, left, result); break;
-							case ASSIGN_OP_ROR: dsl_binary_repl(ror, result, left, result); break;
-							case ASSIGN_OP_AND: dsl_binary_repl(and, result, left, result); break;
-							case ASSIGN_OP_IOR: dsl_binary_repl(ior, result, left, result); break;
-							case ASSIGN_OP_XOR: dsl_binary_repl(xor, result, left, result); break;
-							case ASSIGN_OP_NONE:
-							case ASSIGN_OP_SET:
-							default:
-								unreachable();
-						}
-					}
-
-					*key = varname;
-					*val = result;
-
-					if (echo)
-						dsl_puts_val(result);
-
-					dsl_set_var(key, val);
-					// no clear since there is still a reference.
-				} // if set
-				else {
-					if (echo)
-						dsl_puts_val(result);
-
+				dsl_set_var(key, val);
+				// no clear since there is still a reference.
+			}
+			else {
+				// regular non-setting expression
+				if (echo) {
+					var_val_t result = dsl_eval(expr);
+					dsl_puts_val(result);
 					dsl_clear_val(result);
-				} 
-			} // bare block
+				}
+				else {
+					// it isn't printing anything, so it doesn't need to evalaute or stringify anything.
+					// still lex it so it can give errors for malformed input.
+					free(dsl_lex(expr).array);
+					dsl_except.live_allocs[LIVE_ALLOC_PARSER_TOKENS] = nullptr;
+				}
+			}
 
-			if (!interactive)
+		advance:
+			if (!interactive && line_done)
 				break;
 		} // while
 
@@ -541,6 +575,8 @@ try_root_start:
 		break;
 	}
 	);
+
+	line_done = true; // on failure, skip the rest of the expressions on the same line.
 
 	if (retry)
 		goto try_root_start;
