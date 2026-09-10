@@ -14,65 +14,67 @@
 #include "dsl-main.h" // <stdlib.h>, <stdint.h>, <string.h>, <stdio.h>, "map.h", "va-if.h", "setjmp.h"
 
 static const char *const help_text = 
-    "Calculator - Help"
-    "\n"
-    "\nCOMMANDS"
-    "\n    help                       print this help text"
-    "\n    quit / exit                exit the program"
-    "\n    del $var / del ${var}      delete a variable"
-    "\n    reset                      delete all variables"
-    "\n    dump                       print all defined variables and their types"
-    "\n"
-    "\nINPUT"
-    "\n    Each line is either a standalone expression or an assignment:"
-    "\n        1 + 2 + 3"
-    "\n        $x = 1 + 2"
-    "\n        $abc = $abc ^ $abc;"
-    "\n"
-    "\n    End a line with ';' to suppress printing the result."
-    "\n    Assignments cannot be nested (e.g. $x = $y = 1 is not allowed)."
-    "\n    Invalid input prints an error but is otherwise ignored."
-    "\n"
-    "\n    All input, intermediate, and output values are integers."
-    "\n"
-    "\n    if command-line arguments are given, they are concatenated together"
-    "\n    with a space in-between and parsed as one command"
-    "\n"
-    "\nVARIABLES"
-    "\n    Reference a variable as $name or ${name}."
-    "\n    Adjacent values are implicitly concatenated (see CONCATENATION below)."
-    "\n"
-    "\nOPERATORS  (highest to lowest precedence)"
-    "\n    ( )        grouping"
-    "\n    unary      +x  -x  ~x  !x  &x"
-    "\n                   +x   no-op"
-    "\n                   -x   two's-complement negation"
-    "\n                   ~x   one's-complement negation"
-    "\n                   !x   logical negation (0 => 1, other => 0)"
-    "\n                   &x   absolute value"
-    "\n    ^          exponentiation"
-    "\n    .          concat or combine"
-    "\n    * / %      multiplication, truncating division, truncating modulo"
-    "\n    + -        addition, subtraction"
-    "\n    << >>      bitwise left/right shift"
-    "\n    <<< >>>    bitwise left/right rotation"
-    "\n    and        bitwise and"
-    "\n    or  xor    bitwise or, bitwise xor"
-    "\n"
-    "\n    Negative shift/rotate amounts reverse direction:"
-    "\n        x <<  -y ==  x >>  y     x >> -y  ==  x << y"
-    "\n        x <<< -y ==  x >>> y     x >>> -y ==  x <<< y  (infinite two's complement)"
-    "\n"
-    "\n    x . y:"
-    "\n        if y > 0:  concatenates x and y digit-wise in base 10"
-    "\n        else:      (x . -y) + 2*y"
-    "\n"
-    "\nCONCATENATION"
-    "\n    Adjacent primaries (literals and variables with nothing between them) are"
-    "\n    concatenated as if joined by '.', except concatenation by juxtaposition"
-    "\n    binds tighter than everything else. all literals are parsed as positive,"
-    "\n    so: $x-2$y means $x - (2 . $y), not ($x . -2 . $y)."
-    "\n    $x $y $z is an error, while $x$y$z works.";
+	"Calculator - Help"
+	"\n"
+	"\nCOMMANDS"
+	"\n    help                       print this help text"
+	"\n    quit / exit                exit the program"
+	"\n    del $var / del ${var}      delete a variable"
+	"\n    reset                      delete all variables"
+	"\n    clear                      clear the terminal"
+	"\n    dump                       print all defined variables and their types"
+	"\n"
+	"\nINPUT"
+	"\n    Each line is either a standalone expression or an assignment:"
+	"\n        1 + 2 + 3"
+	"\n        $x = 4 . 5"
+	"\n        $abc ^= $abc;"
+	"\n    Any binary operator can be put before the `=`, e.g. `+=`, `<<<=`."
+	"\n"
+	"\n    End a line with ';' to suppress printing the result."
+	"\n    Assignments cannot be nested (e.g. $x = $y = 1 is not allowed)."
+	"\n    Invalid input prints an error but is otherwise ignored."
+	"\n"
+	"\n    All input, intermediate, and output values are integers."
+	"\n"
+	"\n    If command-line arguments are given, they are concatenated together"
+	"\n    with a space in-between and parsed as one command."
+	"\n"
+	"\nVARIABLES"
+	"\n    Reference a variable as $name or ${name}."
+	"\n    Adjacent values are implicitly concatenated (see CONCATENATION below)."
+	"\n"
+	"\nOPERATORS  (highest to lowest precedence)"
+	"\n    ( )        grouping"
+	"\n    unary      +x  -x  ~x  !x  &x"
+	"\n                   +x   no-op"
+	"\n                   -x   two's-complement negation"
+	"\n                   ~x   one's-complement negation"
+	"\n                   !x   logical negation (0 => 1, other => 0)"
+	"\n                   &x   absolute value"
+	"\n    ^          exponentiation"
+	"\n    .          concat or combine"
+	"\n    * / %      multiplication, truncating division, truncating modulo"
+	"\n    + -        addition, subtraction"
+	"\n    << >>      bitwise left/right shift"
+	"\n    <<< >>>    bitwise left/right rotation"
+	"\n    and        bitwise and"
+	"\n    or  xor    bitwise or, bitwise xor"
+	"\n"
+	"\n    Negative shift/rotate amounts reverse direction:"
+	"\n        x <<  -y ==  x >>  y     x >> -y  ==  x << y"
+	"\n        x <<< -y ==  x >>> y     x >>> -y ==  x <<< y  (infinite two's complement)"
+	"\n"
+	"\n    x . y:"
+	"\n        if y > 0:  concatenates x and y digit-wise in base 10"
+	"\n        else:      (x . -y) + 2*y"
+	"\n"
+	"\nCONCATENATION"
+	"\n    Adjacent primaries (literals and variables with nothing between them) are"
+	"\n    concatenated as if joined by '.', except concatenation by juxtaposition"
+	"\n    binds tighter than everything else. all literals are parsed as positive,"
+	"\n    so: $x-2$y means $x - (2 . $y), not ($x . -2 . $y)."
+	"\n    $x $y $z is an error, while $x$y$z works.";
 
 static vstring line;
 
@@ -127,8 +129,29 @@ static bool read_line(void) {
 #endif
 }
 
-static vstring get_expr_varname(char *equals) {
-	// on failed check, .ptr = nullptr
+typedef enum {
+	ASSIGN_OP_NONE = 0,
+    ASSIGN_OP_SET, //    =
+    ASSIGN_OP_POW, //   ^=
+    ASSIGN_OP_CAT, //   .=
+    ASSIGN_OP_MUL, //   *=
+    ASSIGN_OP_DIV, //   /=
+    ASSIGN_OP_MOD, //   %=
+    ASSIGN_OP_ADD, //   +=
+    ASSIGN_OP_SUB, //   -=
+    ASSIGN_OP_SHL, //  <<=
+    ASSIGN_OP_SHR, //  >>=
+    ASSIGN_OP_ROL, // <<<=
+    ASSIGN_OP_ROR, // >>>=
+    ASSIGN_OP_AND, // and=
+    ASSIGN_OP_IOR, //  or=
+    ASSIGN_OP_XOR, // xor=
+} assign_op_t;
+
+[[gnu::nonnull]]
+static vstring get_expr_varname(char *equals, assign_op_t *out_op) {
+	// on failed check, .ptr = nullptr, and out_op is undefined
+	// *out_op = ASSIGN_OP_NONE;
 
 	char *p = line.ptr;
 
@@ -155,7 +178,7 @@ static vstring get_expr_varname(char *equals) {
 	char *const name_end = p;
 
 	if (name_end == name_start)
-		// "$ =" or "${} = "
+		// "$ <op>=" or "${} <op>= "
 		return (vstring) {};
 
 	// skip '}'
@@ -170,8 +193,39 @@ static vstring get_expr_varname(char *equals) {
 	while (p < equals && line_isspace(*p))
 		p++;
 
-	if (p != equals)
+	assign_op_t op = ASSIGN_OP_NONE;
+
+	const u64 prefix_len = (u64) (equals - p);
+
+	if (prefix_len == 0)
+		op = ASSIGN_OP_SET;
+	else if (prefix_len == 1)
+		switch (*p) {
+			case '^': op = ASSIGN_OP_POW; break;
+			case '.': op = ASSIGN_OP_CAT; break;
+			case '*': op = ASSIGN_OP_MUL; break;
+			case '/': op = ASSIGN_OP_DIV; break;
+			case '%': op = ASSIGN_OP_MOD; break;
+			case '+': op = ASSIGN_OP_ADD; break;
+			case '-': op = ASSIGN_OP_SUB; break;
+			default:
+				break;
+		}
+	else if (prefix_len == 2) {
+		if      (* (u16 *) p == MC16('<<')) op = ASSIGN_OP_SHL;
+		else if (* (u16 *) p == MC16('>>')) op = ASSIGN_OP_SHR;
+		else if (* (u16 *) p == MC16('or')) op = ASSIGN_OP_IOR;
+	} else if (prefix_len == 3) {
+		if      (* (u16 *) p == MC16('<<') && p[2] == '<') op = ASSIGN_OP_ROL;
+		else if (* (u16 *) p == MC16('>>') && p[2] == '>') op = ASSIGN_OP_ROR;
+		else if (* (u16 *) p == MC16('an') && p[2] == 'd') op = ASSIGN_OP_AND;
+		else if (* (u16 *) p == MC16('xo') && p[2] == 'r') op = ASSIGN_OP_XOR;
+	}
+
+	if (op == ASSIGN_OP_NONE)
 		return (vstring) {};
+
+	*out_op = op;
 
 	return (vstring) {
 		.ptr = name_start,
@@ -284,20 +338,27 @@ try_root_start:
 
 			if (line.len == 4) {
 				// four-byte commands
-				if (memcmp(line.ptr, "quit", 4) == 0 || memcmp(line.ptr, "exit", 4) == 0)
+				if (*(u32 *) line.ptr == MC32('quit') || *(u32 *) line.ptr == MC32('exit'))
 					dsl_panic(EXCEPT_ERR_OK);
-				else if (memcmp(line.ptr, "dump", 4) == 0) {
+				else if (*(u32 *) line.ptr == MC32('dump')) {
 					if (Map_count(dsl_vars) == 0)
 						puts("no variables present.");
 					else
 						Map_foreach(dsl_vars,
 							dsl_dump_var((var_t *) p2entry);
 						);
-					continue;
+
+					if (interactive)
+						continue;
+					else
+						break;
 				}
-				else if (memcmp(line.ptr, "help", 4) == 0) {
+				else if (*(u32 *) line.ptr == MC32('help')) {
 					puts(help_text);
-					continue;
+					if (interactive)
+						continue;
+					else
+						break;
 				}
 			}
 			else if (line.len >= 5 && memcmp(line.ptr, "del $", 5) == 0) {
@@ -310,18 +371,15 @@ try_root_start:
 					varname.len -= _strlen("{}");
 				}
 
-				printf("deleting $%.*s. map length = %zu\n",
-					(int) varname.len, varname.ptr, Map_count(dsl_vars)
-				);
-				fflush(stdout);
 				dsl_del_var(varname);
-				printf("map length = %zu\n", Map_count(dsl_vars));
-				fflush(stdout);
-				continue;
+				if (interactive)
+					continue;
+				else
+					break;
 			}
 			else if (line.len == 5) {
 				// there is only one 5-byte command
-				if (memcmp(line.ptr, "reset", 5) == 0) {
+				if (*(u32 *) line.ptr == MC32('rese') && line.ptr[4] == 't') {
 					Map_foreach(dsl_vars,
 						dsl_free_var((var_t *) p2entry);
 					);
@@ -329,7 +387,18 @@ try_root_start:
 					Map_destroy_shallow_ref(&dsl_vars);
 					map_init_key();
 					dsl_vars = Map_create();
-					continue;
+					if (interactive)
+						continue;
+					else
+						break;
+				}
+				else if (*(u32 *) line.ptr == MC32('clea') && line.ptr[4] == 'r') {
+					// clear visible screen, clear scrollback, and reset cursor
+					printf("\e[2J\e[3J\e[H");
+					if (interactive)
+						continue;
+					else
+						break;
 				}
 			}
 
@@ -361,7 +430,8 @@ try_root_start:
 				var_val_t result = dsl_eval(expr);
 
 				if (set) {
-					vstring varname = get_expr_varname(equals);
+					assign_op_t op;
+					vstring varname = get_expr_varname(equals, &op);
 
 					if (varname.ptr == nullptr) {
 						dsl_clear_val(result);
@@ -393,6 +463,39 @@ try_root_start:
 					if (val == nullptr) {
 						dsl_clear_val(result);
 						dsl_oom();
+					}
+
+					if (op != ASSIGN_OP_SET) {
+						var_t *p2entry = dsl_get_var(varname);
+
+						if (p2entry == nullptr) {
+							eprintf("variable `$%.*s` doesn't exist.", (int) varname.len, varname.ptr);
+							dsl_clear_val(result);
+							dsl_panic(EXCEPT_ERR_VARNAME);
+						}
+
+						var_val_t left = p2entry->val[0];
+
+						switch (op) {
+							case ASSIGN_OP_POW: dsl_binary_repl(pow, result, left, result); break;
+							case ASSIGN_OP_CAT: dsl_binary_repl(cat, result, left, result); break;
+							case ASSIGN_OP_MUL: dsl_binary_repl(mul, result, left, result); break;
+							case ASSIGN_OP_DIV: dsl_binary_repl(div, result, left, result); break;
+							case ASSIGN_OP_MOD: dsl_binary_repl(mod, result, left, result); break;
+							case ASSIGN_OP_ADD: dsl_binary_repl(add, result, left, result); break;
+							case ASSIGN_OP_SUB: dsl_binary_repl(sub, result, left, result); break;
+							case ASSIGN_OP_SHL: dsl_binary_repl(shl, result, left, result); break;
+							case ASSIGN_OP_SHR: dsl_binary_repl(shr, result, left, result); break;
+							case ASSIGN_OP_ROL: dsl_binary_repl(rol, result, left, result); break;
+							case ASSIGN_OP_ROR: dsl_binary_repl(ror, result, left, result); break;
+							case ASSIGN_OP_AND: dsl_binary_repl(and, result, left, result); break;
+							case ASSIGN_OP_IOR: dsl_binary_repl(ior, result, left, result); break;
+							case ASSIGN_OP_XOR: dsl_binary_repl(xor, result, left, result); break;
+							case ASSIGN_OP_NONE:
+							case ASSIGN_OP_SET:
+							default:
+								unreachable();
+						}
 					}
 
 					*key = varname;

@@ -28,7 +28,7 @@ typedef enum : u8 {
 #define tok_is_int(token)     ((token).type >= TOKEN_INT)
 #define tok_is_primary(token) ((token).type >= TOKEN_PRIMARY)
 #define tok_is_op(token)      ((token).type <= TOKEN_OP)
-#define tok_op_r_assoc(token) ((token).op.order == ORDER_UNARY || (token).op.order == ORDER_EXP)
+#define tok_op_r_assoc(token) ((token).op.order == ORDER_UNARY || (token).op.order == ORDER_POW)
 
 typedef enum : u8 {
 	/*
@@ -52,7 +52,7 @@ typedef enum : u8 {
 	ORDER_OR     = 8, // or, xor
 
 	// binary operators
-	ORDER_EXP = 1, // ^, right-to-left
+	ORDER_POW = 1, // ^, right-to-left
 	ORDER_CAT = 3, // .
 	ORDER_MUL = 4, // *
 	ORDER_DIV = 4, // /
@@ -441,7 +441,7 @@ static token_list dsl_lex(vstring expr) {
 			{
 				order_t order;
 			case '^':
-				order = ORDER_EXP;
+				order = ORDER_POW;
 				goto case_binary1;
 			case '.':
 				order = ORDER_CAT;

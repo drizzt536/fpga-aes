@@ -425,9 +425,9 @@ static void dsl_parse(token_list tokens) {
 	}
 
 	for (u32 paren_count = dsl_resolve_expr(&tokens, lparens); paren_count --> 0 ;) {
-	#if DEBUG
+	/*#if DEBUG
 		printf("tmp expr: "); log_tokens_expr(tokens);
-	#endif
+	#endif*/
 		const u32 lparen  = lparens[paren_count];
 		const u32 left    = tok_advance(lparen); // lparen + 1
 		u32 rparen, right = tok_advance(left);   // lparen + 2
@@ -456,9 +456,9 @@ static void dsl_parse(token_list tokens) {
 		tokens.array[lparen].next = tok_advance(rparen); // the token after the right parentheses
 	}
 
-#if DEBUG
+/*#if DEBUG
 	printf("tmp expr: "); log_tokens_expr(tokens);
-#endif
+#endif*/
 
 	if unlikely (heap_alloc) {
 		free(lparens);
@@ -489,11 +489,11 @@ static var_val_t dsl_eval(vstring expr) {
 
 	dsl_except.live_allocs[LIVE_ALLOC_PARSER_TOKENS] = tokens.array;
 
-#if DEBUG
+/*#if DEBUG
 	printf("input expr: %.*s\n", (int) expr.len, expr.ptr);
 	printf("lexed expr: "); log_tokens_expr(tokens);
 	log_tokens(tokens);
-#endif
+#endif*/
 
 	dsl_parse(tokens);
 
