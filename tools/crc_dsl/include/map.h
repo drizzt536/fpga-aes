@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 /*
-	map.h v0.9.7
+	map.h v0.9.8
 	Copyright (c) 2026 Daniel Janusch
 
 	Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -25,8 +25,10 @@
 	//////////////////////////////////////////////////////////////////////////////////////
 
 	resizable and cache-friendly GNU C23 single-header hashmap API.
-	primarily for C-string => C-string, but supports arbitrary types.
+	primarily for C-string => C-string, but also supports arbitrary types with "_by"-suffixed functions.
 	relies on int-types.h and va-if.h (both can be copy/pasted here though)
+	only works on 64-bit systems.
+	opinionated design.
 
 	to compile separately:
 		gcc -c -x c -DMAP_H_BUILD map.h -o map.o
@@ -49,21 +51,34 @@
 		              not recommended for use, but still technically part of the public API.
 	2. the following types exist for public use:
 		- u8/i8, u16/i16, u32/i32, u64/i64, u128/i128
-		- vstring: wide string pointer (string view, typically non-owning)
-		- vstring_list: wide pointer to vstring. not used internally
+		- vstring: wide string pointer (string view, typically non-owning) (char *ptr; u64 len;)
+		- vstring_list: wide pointer to vstring. (vstring *array; u64 count;)
+		- vstring_builder: the same as `vstring`, but with a `u64 cap;` at the end.
+		- vstring_list_builder: the same as `vstring_list` but with a `u64 cap;` at the end.
 		- map_hash_t: either u64 or u128, depending on the hash mode
 		- map_cmp_t: a function that takes two `const void` pointers and returns `i32`
 		- map_hashfn_t: a function that takes a `const void` pointer and returns `map_hash_t`
-		- MapEntry
-		- Map / ConstMap
+		- map_json_str_fn_t: bool stringify(vstring_builder *b, void *key_or_val, u8 type);
+		  the return value should be `true` if the key/val should be enquoted and have
+		  special characters escaped. The `type` argument will be either `MAP_JSON_KEY` or
+		  `MAP_JSON_VAL`, depending on if the second argument is `entry.key` or `entry.val`.
+		  The string builder `.ptr` is expected to be a heap pointer on return. This may be
+		  called when `.ptr` is null. All fields of the builder are expected to be filled by
+		  this function.
+		- MapEntry: a struct with a pointer to a key and value, and an index of the next
+		  entry in the chain (or 0 if there is no next).
+		- Map / ConstMap: the main type of the library.
 		- MapEntryVView / MapEntryCView: key/val pair of either vstring or char *
 		- MapEntryVList / MapEntryCList: wide pointer to the corresponding view type.
 		- MapIter: map iterator object. use this if Map_foreach generates too much code
 		- AF_Map / AF_ViewMap: auto-freeing variants of `Map`.
 	3. The following helper macros exist for public use:
-		- VA_IF: for arity-based dispatch: #define f(x, y...) VA_IF(f2(x, y), f1(x), y)
-		- MAP_VMAJOR, MAP_VMINOR, MAP_VMICRO, MAP_VERSION: all `llu` integers
-		- MAP_JSON_MODE_PACK, MAP_JSON_MODE_LINE, MAP_JSON_MODE_FULL
+		- VA_IF: for arity-based dispatch: e.g. #define f(x, y...) VA_IF(f2(x, y), f1(x), y)
+		- MAP_VMAJOR, MAP_VMINOR, MAP_VMICRO, MAP_VERSION: all `zu` integers
+		- MAP_JSON_MODE_PACK, MAP_JSON_MODE_LINE, MAP_JSON_MODE_FULL: for the `mode` argument in
+		  `Map_tojson`, `Map_tojson_by`, `Map_dump`, and `Map_dump_by`.
+		- MAP_DUMP_JSON / MAP_DUMP_PLAIN: for the format argument in `Map_dump` and `Map_dump_by`
+		- MAP_JSON_KEY / MAP_JSON_VAL: for the third argument in the `map_json_str_fn_t` type.
 		- STR/STR_E: stringify, and expanded stringify
 		- EXPAND: returns all the arguments identically
 		- FORCE_INLINE: C23 attribute to force function inlining
@@ -98,6 +113,19 @@
 		- map_key([val]): with an argument given, it sets the map key and returns nothing. with
 		  no argument given, it returns the map key.
 		- map_init_key(): randomize the map key. requires RDRAND (-mrdrnd)
+		- put_vstring(v): print a V-string to stdout without assuming the pointer is null-terminated
+		  or that the length fits in `int`.
+		- puts_vstring(v): the same as put_vstring but with a newline at the end.
+		- MC8(x): takes in an 1-character multichar and returns u8
+		- MC16(x): takes in an 2-character multichar and returns u16
+		- MC32(x): takes in an 4-character multichar and returns u32
+		- MC64(x,y): takes in two 4-character multichars and returns u64. MC64('abcd','1234') is
+		  treated conceptually as if it were MC64('abcd1234') (if that were valid)
+		- likely(cond): used as `if likely (cond)`. 90% chance `cond` is true
+		- unlikely(cond): used as `if unlikely (cond)`. 90% chance `cond` is false
+		- likelyp(cond, p): used as `if likelyp (cond, p)`. p is the probability `cond` is true
+		  it is a double from 0 to 1, so 0.8 means 80%.
+		- unlikelyp(cond, p): used as `if unlikelyp (cond, p)` p is the probability `cond` is false.
 	4. the following functions exist for public use:
 		- Map_create([m_cap[, o_cap]]): creates and returns a new map object. `m_cap` defaults to
 		  `MAP_SIZE_SMALLEST`, and `o_cap` default to `MAP_H_MIN_OCAP`. Ignoring the return value
@@ -192,9 +220,14 @@
 		- Map_iter(this): returns an iterator for the map containing the first entry. If the map is
 		  empty, it gives a null pointer for the entry pointer.
 		- Map_next(this, iterator): advances to the next entry, or gives a null pointer.
-		- Map_tojson(this, mode): returns a dynamically-allocated JSON C-string. `mode` can be
-		  '\0' for minified JSON, ' ' for spaces in-between stuff, and '\t' for pretty-printing.
-		  This function assumes the map only contains C-string keys and values.
+		- Map_tojson(this[, mode]): returns a dynamically-allocated JSON vstring. the `.ptr` field
+		  is also a C-string. `mode` can be `MAP_JSON_MODE_PACK` for minified JSON,
+		  `MAP_JSON_MODE_LINE` for spaces in-between stuff, and `MAP_JSON_MODE_FULL` for multiline
+		  pretty-printing. MAP_JSON_MODE_FULL is the default. This function assumes the map only
+		  contains C-string keys and values.
+		- Map_tojson_by(this, stringify[, mode]): the same as `Map_tojson` except the keys and vals
+		  can be any types, and it has to take a `stringify` argument to convert them to strings.
+		  see the types section for the assumptions about the `stringify` function.
 		- Map_tovstring_owned(this): in-place convert a C-string => C-string to a V-string =>
 		  V-string map. Each V-string is put in its own separately-allocated struct container.
 		  it always returns null for consistency with the unowned variant.
@@ -210,17 +243,27 @@
 		- map_hash(str): C-string hash function.
 		- vstring_cmp(a, b): similar to `strcmp` but for `vstring *` instead of `char *`
 		- vstring_hash(vstr): V-string (`vstring *`) hash function.
-	5. Before including, define `MAP_H_IMPL` to pull in the actual implementation. To compile this
-	   separately as an object or DLL and link later, define `MAP_H_SEPARATE`; this will remove
-	   `static` from all function declarations and definitions. `MAP_H_BUILD` defines both
-	   `MAP_H_IMPL` and `MAP_H_SEPARATE`. define `MAP_H_NO_FUN` if you hate fun so it will not
-	   include the extra fun stuff like `map_dedup_shuffle`. define `MAP_H_DEFAULT_OWNED` or
-	   `MAP_H_DEFAULT_UNOWNED` to specify the default ownership model (owned is the default
-	   default). define `MAP_H_HASH128` or `MAP_H_HASH64` to select `jhash128` or `jhash64`.
-	   `jhash64` is the default. define `MAP_H_MIN_OCAP` to set the minimum overflow arena size
-	   (default is 4). Define `MAP_H_CHAR_ENTRIES` to define `MapEntry` with keys and values of
-	   `char *`, or define `MAP_H_VOID_ENTRIES` to explicitly keep them as `void *. instead of
-	   `void *`. It is `void *` by default to accommodate non C-string keys and values.
+	5. The following library configuration macro arguments exist:
+		- MAP_H_IMPL: include function implementations
+		- MAP_H_SEPARATE: remove static from all function declarations and definitions. I don't
+		  recommend compiling separately because internal functions that are force inlined with
+		  MAP_INLINE will sometimes not inline when compiled separately.
+		- MAP_H_BUILD: equivalent to definining both MAP_H_IMPL and MAP_H_SEPARATE.
+		- MAP_H_NO_FUN: disable extra fun stuff like `map_dedup_shuffle`
+		- MAP_H_DEFAULT_OWNED: make MAP_OWNED the default ownership model.
+		- MAP_H_DEFAULT_UNOWNED: make MAP_UNOWNED the default ownership model. this is the default.
+		- MAP_H_MC_CONST: switch the MC* implementation to one that returns a constant expression
+		  (works in switch/case arguments), but requires external handling of `-Wmultichar`.
+		- MAP_H_HASH128: use jhash128 for hashing.
+		- MAP_H_HASH64: use jhash64 for hashing. this is the default.
+		- MAP_H_MIN_OCAP: set the minimum overflow size. the default is 4.
+		- MAP_H_CHAR_ENTRIES: define `MapEntry` with `char *` fields. use this if you only plan on
+		  using C-strings for keys and values and want other types to be an error.
+		- MAP_H_VOID_ENTRIES: define `MapEntry` with `void *` fields. this is the default.
+		- MAP_H_FULL_VSTRING_CMP: switch the `vstring_cmp` implementation to be suitable for
+		  comparison-based sorting algorithms. The default behavior is to return 0 for equal and
+		  nonzero for not equal without defining the sign of the result. Both implementations work
+		  fine within the library, so it only matters if `vstring_cmp` is used externally.
 	6. the `setall` functions are really only for when creating a map from nothing *and*
 	   it is easier to create a list and call one function instead of doing some kind of iterator
 	   and calling `Map_set` for each entry object.
@@ -274,19 +317,21 @@
 	17. see each specific function for comments on its specific API (only for some functions)
 
 	this library will work with all GCC warning flags, except for the following:
-		-Wcast-qual    (disallow explicitly casting away `const`)
+		-Wcast-qual    (explicitly casting away `const` is used in several places)
 		-Wuseless-cast (casting away const in macros is sometimes useless)
-		-Wc++-compat
-		-Wpedantic
+		-Wc++-compat   (`this`)
+		-Wpedantic     (GNU extensions)
 		-Wtraditional
 		-Wtraditional-conversion
 		-Wsystem-headers (probably this one depends)
 
 		most of these are stupid anyway
 
-	Cache lines are assumed to be 64 bytes long.
+	Cache lines are assumed to be 64 bytes long. If they aren't, everything should still work,
+	just the maps and stuff will be aligned to 64 byte lines and prefetch offsets could fetch
+	the same cache line multiple times or skip cache lines.
 
-	With `MAP_H_HASH128`, if using -nostdlib and linking manually, it requires -lgcc.
+	With `MAP_H_HASH128`, if using -nostdlib and linking manually, -lgcc is required.
 */
 
 #ifndef MAP_H_PROTO
@@ -294,6 +339,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 #include <stdio.h> // for Map_dump
 
 #include "int-types.h" // u8, u32, u64, u128
@@ -308,26 +354,85 @@
 // okay because it only exists because the feature is non-intuitive and error prone,
 // but I am using it correctly, so that isn't an issue.
 
-#define _MC_IMPL(x) ({                                \
-	_Pragma("GCC diagnostic push")                    \
-	_Pragma("GCC diagnostic ignored \"-Wmultichar\"") \
-	x;                                                \
-	_Pragma("GCC diagnostic pop")                     \
-})
+#ifdef MAP_H_MC_CONST
+	// this works in case statements, but requires `-Wno-multichar` or some kind of
+	// area suppression of `-Wmultichar` via pragmas
 
-#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-	#define MC8(x)    ((u8)  _MC_IMPL(x))
-	#define MC16(x)   ((u16) _MC_IMPL(__builtin_bswap16(x)))
-	#define MC32(x)   ((u32) _MC_IMPL(__builtin_bswap32(x)))
-	#define MC64(x,y) ((u64) _MC_IMPL( __builtin_bswap64((u64) (x) << 32 | (y)) ))
-#elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-	#define MC8(x)  ((u8)  _MC_IMPL(x))
-	#define MC16(x) ((u16) _MC_IMPL(x))
-	#define MC32(x) ((u32) _MC_IMPL(x))
-	#define MC64(x,y) ((u64) _MC_IMPL( (u64) (x) << 32 | (y) ))
-	#define MC64(x) ((u64) _MC_IMPL(x))
-#else
-	#error "target has unknown byte order. define __BYTE_ORDER__ manually."
+	#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+		#define _MC_BSWAP16(x) ((u16) ((u16) (x) << 8 | (u16) (x) >> 8))
+
+		#define _MC_BSWAP32(x) ((u32) (       \
+			((u32) (x) & 0x000000ffu) << 24 | \
+			((u32) (x) & 0x0000ff00u) <<  8 | \
+			((u32) (x) & 0x00ff0000u) >>  8 | \
+			((u32) (x) & 0xff000000u) >> 24   \
+		))
+
+		#define _MC_BSWAP64(x) ((u64) (                 \
+			((u64) (x) & 0x00000000000000ffllu) << 56 | \
+			((u64) (x) & 0x000000000000ff00llu) << 40 | \
+			((u64) (x) & 0x0000000000ff0000llu) << 24 | \
+			((u64) (x) & 0x00000000ff000000llu) <<  8 | \
+			((u64) (x) & 0x000000ff00000000llu) >>  8 | \
+			((u64) (x) & 0x0000ff0000000000llu) >> 24 | \
+			((u64) (x) & 0x00ff000000000000llu) >> 40 | \
+			((u64) (x) & 0xff00000000000000llu) >> 56   \
+		))
+
+		#define MC8(x)    ((u8) x)
+		#define MC16(x)   _MC_BSWAP16(x)
+		#define MC32(x)   _MC_BSWAP32(x)
+		#define MC64(x,y) _MC_BSWAP64((u64) (x) << 32 | (u64) (y))
+	#elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+		#define MC8(x)    ((u8)  x)
+		#define MC16(x)   ((u16) x)
+		#define MC32(x)   ((u32) x)
+		#define MC64(x,y) ((u64) (x) << 32 | (u64) (y) )
+	#else
+		#error "target has unknown byte order. define __BYTE_ORDER__ manually."
+	#endif
+#else // no MAP_H_MC_CONST
+	// this does not work in case statements since statement expressions can't be constants
+	// for whatever reason, but works without -Wmultichar
+
+	#define _MC_IMPL(x) ({                                \
+		_Pragma("GCC diagnostic push")                    \
+		_Pragma("GCC diagnostic ignored \"-Wmultichar\"") \
+		x;                                                \
+		_Pragma("GCC diagnostic pop")                     \
+	})
+
+	#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+		#define MC8(x)    ((u8)  _MC_IMPL(x))
+		#define MC16(x)   ((u16) _MC_IMPL(__builtin_bswap16(x)))
+		#define MC32(x)   ((u32) _MC_IMPL(__builtin_bswap32(x)))
+		#define MC64(x,y) ((u64) _MC_IMPL(__builtin_bswap64((u64) (x) << 32 | (y)) ))
+	#elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+		#define MC8(x)    ((u8)  _MC_IMPL(x))
+		#define MC16(x)   ((u16) _MC_IMPL(x))
+		#define MC32(x)   ((u32) _MC_IMPL(x))
+		#define MC64(x,y) ((u64) _MC_IMPL( (u64) (x) << 32 | (y) ))
+	#else
+		#error "target has unknown byte order. define __BYTE_ORDER__ manually."
+	#endif
+#endif
+
+// I am undefining previous definitions of these because if something else defines them, they
+// are probably not wrapped in parentheses, meaning `if likely (...)` will not work.
+#ifdef likely
+	#undef likely
+#endif
+
+#ifdef unlikely
+	#undef unlikely
+#endif
+
+#ifdef likelyp
+	#undef likelyp
+#endif
+
+#ifdef unlikelyp
+	#undef unlikelyp
 #endif
 
 #define   likely(x)     (__builtin_expect(!!(x), 1))
@@ -341,9 +446,14 @@
 #define MAP_VMICRO  ((u64) 3)
 #define MAP_VERSION ((MAP_VMAJOR << 16) | (MAP_VMINOR << 8) | MAP_VMICRO)
 
+#define MAP_DUMP_JSON  ((u8) 0)
+#define MAP_DUMP_PLAIN ((u8) 1)
+
 #define MAP_JSON_MODE_PACK u8'\0' // single-line without padding
 #define MAP_JSON_MODE_LINE u8' '  // single-line with padding
 #define MAP_JSON_MODE_FULL u8'\t' // multiline
+#define MAP_JSON_KEY ((u8) 0)
+#define MAP_JSON_VAL ((u8) 1)
 
 #ifndef FORCE_INLINE
 	#define FORCE_INLINE [[gnu::always_inline, gnu::gnu_inline]] inline
@@ -421,21 +531,31 @@
 	#endif
 #endif
 
-typedef struct {
-	union {
-		char *ptr; // memory ownership is tied to the object
-		u64 ofs;   // memory ownership is independent of the object
-		//            (i.e. index into dynamically allocated buffer)
-	};
-
+// I would like to just do `vstring;` and `vstring_list;` in the builder types, but that
+// requires `-fms-extensions`, which is not enabled by default on Linux, unfortunately.
+#define MAP__VSTRING_IMPL                                               \
+	union {                                                             \
+		char *ptr; /* memory ownership is tied to the object */         \
+		u64 ofs;   /* memory ownership is independent of the object */  \
+		/*            (i.e. index into dynamically allocated buffer) */ \
+	};                                                                  \
 	u64 len;
-} vstring;
 
-typedef struct {
-	vstring *array;
+#define MAP__VSTRING_LIST_IMPL \
+	vstring *array;            \
 	u64 count;
-} vstring_list;
 
+typedef struct <% MAP__VSTRING_IMPL      %> vstring;
+typedef struct <% MAP__VSTRING_LIST_IMPL %> vstring_list;
+
+typedef struct <% MAP__VSTRING_IMPL       u64 cap; %> vstring_builder;
+typedef struct <% MAP__VSTRING_LIST_IMPL  u64 cap; %> vstring_list_builder;
+
+#undef MAP__VSTRING_IMPL
+#undef MAP__VSTRING_LIST_IMPL
+
+// return value is true if it is a string and false if it is anything else.
+typedef bool (*map_json_str_fn_t)(vstring_builder *b, const void *key_or_val, u8 type);
 typedef i32 (*map_cmp_t)(const void *, const void *);
 typedef map_hash_t (*map_hashfn_t)(const void *);
 
@@ -526,6 +646,24 @@ typedef struct {
 	#define AF_char [[gnu::cleanup(cleanup_array)]] char
 	[[gnu::nonnull]] MAP_INLINE void cleanup_array(const void *p);
 #endif
+
+#define put_vstring(V) ({                \
+	vstring v = (V);                     \
+	while (v.len > 0) {                  \
+		const int n = v.len >= INT_MAX ? \
+			INT_MAX : (int) v.len;       \
+		printf("%.*s", n, v.ptr);        \
+		v.ptr += (u64) n;                \
+		v.len -= (u64) n;                \
+	}                                    \
+	(void) 0;                            \
+})
+
+#define puts_vstring(V) ({ \
+	put_vstring(V);        \
+	putchar('\n');         \
+	(void) 0;              \
+})
 
 // I considered making `t->count` or `t->size` an attribute instead of requiring a macro for it,
 // but for the cases this will be used for, the speedup from accessing one field instead of three
@@ -696,28 +834,44 @@ typedef struct {
 	map_;                                 \
 })
 
-#define Map_dump3(this, mode, format) ({            \
-	const typeof(this) t_ = this;                   \
-	if (format == 0) {                              \
-		char *const json = Map_tojson(t_, mode);    \
-		puts(json);                                 \
-		free(json);                                 \
-	}                                               \
-	else /* basically just pass anything else */    \
-		Map_foreach(t_, printf("\"%s\" = \"%s\"\n", \
-			entry.key, entry.val                    \
-		)); /* `mode` does nothing here */          \
-	t_;                                             \
+#define Map_tojson1(this) Map_tojson2(this, MAP_JSON_MODE_FULL)
+#define Map_tojson(this, mode...) VA_IF(Map_tojson2(this, mode), Map_tojson1(this), mode)
+
+#define Map_tojson_by2(this, stringify) Map_tojson_by3(this, stringify, MAP_JSON_MODE_FULL)
+#define Map_tojson_by(this, stringify, mode...) \
+	VA_IF(Map_tojson_by3(this, stringify, mode), Map_tojson_by2(this, stringify), mode)
+
+#define Map_dump3(this, mode, format) ({             \
+	const typeof(this) t_ = this;                    \
+	if likely (format == MAP_DUMP_JSON) {            \
+		const vstring json = Map_tojson(t_, mode);   \
+		put_vstring(json);                           \
+		free(json.ptr);                              \
+	}                                                \
+	else /* `mode` does nothing here */              \
+		Map_foreach(t_, printf("\"%s\" => \"%s\"\n", \
+			entry.key, entry.val                     \
+		));                                          \
+	t_;                                              \
 })
 
-#define Map_dump2(this, mode) Map_dump3(this, mode, 0)
+#define Map_dump2(this, mode) Map_dump3(this, mode, MAP_DUMP_JSON)
 #define Map_dump1(this) Map_dump2(this, MAP_JSON_MODE_FULL)
 
 #define Map_dump2_3(this, mode, format...) \
 	VA_IF(Map_dump3(this, mode, format), Map_dump2(this, mode), format)
 #define Map_dump(this, mode...) VA_IF(Map_dump2_3(this, mode), Map_dump1(this), mode)
 
-#define Map_has(...)    (Map_get_entry(__VA_ARGS__) != nullptr)
+#define Map_dump_by3(this, stringify, mode) Map_dump_by4(this, stringify, mode, MAP_DUMP_JSON)
+#define Map_dump_by2(this, stringify) Map_dump_by3(this, stringify, MAP_JSON_MODE_FULL)
+
+#define Map_dump_by3_4(this, stringify, mode, format...) \
+	VA_IF(Map_dump_by4(this, stringify, mode, format), Map_dump_by3(this, stringify, mode), format)
+
+#define Map_dump_by(this, stringify, mode...) \
+	VA_IF(Map_dump_by3_4(this, stringify, mode), Map_dump_by2(this, stringify), mode)
+
+#define Map_has(...)    (Map_get_entry   (__VA_ARGS__) != nullptr)
 #define Map_has_by(...) (Map_get_entry_by(__VA_ARGS__) != nullptr)
 
 [[gnu::error("comptime error")]]
@@ -1042,7 +1196,9 @@ MAP_INLINE void map_key1(map_hash_t key);
 [[maybe_unused, gnu::nonnull]] MAP_STATIC void Map_clear2(Map this, bool owned);
 [[nodiscard, maybe_unused, gnu::nonnull]] MAP_STATIC Map Map_copy2(ConstMap this, bool owned);
 [[nodiscard, maybe_unused, gnu::nonnull(1)]] MAP_STATIC Map Map_merge4(Map this, Map other, bool owned1, bool owned2);
-[[nodiscard, maybe_unused, gnu::nonnull, gnu::malloc]] MAP_STATIC char *Map_tojson(ConstMap this, u8 mode);
+[[nodiscard, maybe_unused, gnu::nonnull]] MAP_STATIC vstring Map_tojson2(ConstMap this, u8 mode);
+[[nodiscard, gnu::nonnull]] MAP_STATIC vstring Map_tojson_by3(ConstMap this, map_json_str_fn_t stringify, const u8 mode);
+[[maybe_unused, gnu::nonnull]] MAP_STATIC void Map_dump_by4(ConstMap this, map_json_str_fn_t stringify, const u8 mode, const u8 format);
 [[maybe_unused, gnu::nonnull]] MAP_STATIC void *Map_tovstring_owned(Map this);
 [[nodiscard, maybe_unused, gnu::nonnull]] MAP_STATIC void *Map_tovstring_unowned(Map this);
 #ifndef MAP_H_NO_FUN
@@ -1310,9 +1466,23 @@ MAP_INLINE map_hash_t map_hash(const void *in) {
 
 [[gnu::nonnull, gnu::pure]]
 MAP_STATIC i32 vstring_cmp(const void *a, const void *b) {
+#ifdef MAP_H_FULL_VSTRING_CMP
+	// full comparison, suitable for comparison-based sorting
+	vstring *va = (const vstring *) a;
+	vstring *vb = (const vstring *) b;
+
+	// if memcmp gave equal, sort by length
+	return memcmp(
+		va->ptr, vb->ptr,
+		va->len < vb->len ? va->len : vb->len
+	) ?: (i32) (i64) (va->len - vb->len);
+#else
+	// returns zero if equal and nonzero otherwise. this will not work for comparison-based sorting.
 	vstring *va = (vstring *) a;
 	vstring *vb = (vstring *) b;
+
 	return va->len == vb->len ? strncmp(va->ptr, vb->ptr, va->len) : 1;
+#endif
 }
 
 [[gnu::nonnull, gnu::pure]]
@@ -2192,66 +2362,94 @@ MAP_STATIC Map Map_merge4(Map this, Map other, bool owned1, bool owned2) {
 	return this;
 }
 
+// this assumes none of the arguments have side-effects
+#define map__json_stpcpy_at(dst, src, hex)                           \
+	switch (*(src)) {                                                \
+		case '\\': *(u16 *) (dst) = MC16('\\\\'); (dst) += 2; break; \
+		case '"':  *(u16 *) (dst) = MC16('\\"');  (dst) += 2; break; \
+		case '\b': *(u16 *) (dst) = MC16('\\b');  (dst) += 2; break; \
+		case '\f': *(u16 *) (dst) = MC16('\\f');  (dst) += 2; break; \
+		case '\n': *(u16 *) (dst) = MC16('\\n');  (dst) += 2; break; \
+		case '\r': *(u16 *) (dst) = MC16('\\r');  (dst) += 2; break; \
+		case '\t': *(u16 *) (dst) = MC16('\\t');  (dst) += 2; break; \
+		default:                                                     \
+			if unlikely (*(src) < u8' ') {                           \
+				/* most characters should be normal */               \
+				*(u32 *) (dst) = MC32('\\u00');                      \
+				(dst) += 4;                                          \
+				*(dst)++ = (hex)[*(src) >> 4];                       \
+				*(dst)++ = (hex)[*(src) & 0xF];                      \
+			} else                                                   \
+				*(dst)++ = (char) *(src);                            \
+	}
+
+static constexpr u8 map__json_width_table[256] = {
+//	0  1  2  3  4  5  6  7  8  9  10 11 12 13 14 15
+	6, 6, 6, 6, 6, 6, 6, 6, 2, 2, 2, 6, 2, 2, 6, 6, //  16
+	6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, //  32
+	1, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, //  48
+	1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, //  64
+	1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, //  80
+	1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 1, 1, 1, //  96
+	1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 112
+	1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 128
+	1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 144
+	1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 160
+	1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 176
+	1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 192
+	1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 208
+	1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 224
+	1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 240
+	1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 256
+};
+
 [[gnu::nonnull, gnu::pure]]
 MAP_INLINE u64 map__json_strlen(const char *s) {
-	static constexpr u8 map__json_width_tbl[256] = {
-	//	0  1  2  3  4  5  6  7  8  9  10 11 12 13 14 15
-		6, 6, 6, 6, 6, 6, 6, 6, 2, 2, 2, 6, 2, 2, 6, 6, //  16
-		6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, //  32
-		1, 1, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, //  48
-		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, //  64
-		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, //  80
-		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 1, 1, 1, //  96
-		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 112
-		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 128
-		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 144
-		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 160
-		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 176
-		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 192
-		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 208
-		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 224
-		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 240
-		1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // 256
-	};
-
 	// total bytes needed to encode `s` as a JSON string body
 	u64 len = 0;
 
 	for (const u8 *p = (const u8 *) s; *p; p++)
-		len += map__json_width_tbl[*p];
+		len += map__json_width_table[*p];
 
 	return len;
 }
 
+[[gnu::pure]]
+MAP_INLINE u64 map__json_strlen_n(vstring_builder b) {
+	u64 len = 0;
+
+	for (u64 i = 0; i < b.len; i++)
+		len += map__json_width_table[(u8) b.ptr[i]];
+
+	return len;
+}
+
+
+// not used here
 [[gnu::nonnull]]
 MAP_INLINE char *map__json_stpcpy(char *dst, const char *src) {
 	static constexpr char hex[] = "0123456789abcdef";
 
 	for (const u8 *p = (const u8 *) src; *p; p++)
-		switch (*p) {
-			case '\\': *(u16 *) dst = MC16('\\\\'); dst += 2; break;
-			case '"':  *(u16 *) dst = MC16('\\"');  dst += 2; break;
-			case '\b': *(u16 *) dst = MC16('\\b');  dst += 2; break;
-			case '\f': *(u16 *) dst = MC16('\\f');  dst += 2; break;
-			case '\n': *(u16 *) dst = MC16('\\n');  dst += 2; break;
-			case '\r': *(u16 *) dst = MC16('\\r');  dst += 2; break;
-			case '\t': *(u16 *) dst = MC16('\\t');  dst += 2; break;
-			default:
-				if unlikely (*p < u8' ') {
-					// most characters should be normal
-					*(u32 *) dst = MC32('\\u00');
-					dst += 4;
-					*dst++ = hex[*p >> 4];
-					*dst++ = hex[*p & 0xF];
-				} else
-					*dst++ = (char) *p;
-		}
+		map__json_stpcpy_at(dst, p, hex);
 
 	return dst;
 }
 
-[[nodiscard, maybe_unused, gnu::nonnull, gnu::malloc]]
-MAP_STATIC char *Map_tojson(ConstMap this, const u8 mode) {
+
+[[gnu::nonnull]]
+MAP_INLINE char *map__json_stpcpy_n(char *dst, const char *src, u64 n) {
+	static constexpr char hex[] = "0123456789abcdef";
+
+	for (u64 i = 0; i < n; i++)
+		map__json_stpcpy_at(dst, (const u8 *) (src + i), hex);
+
+	return dst;
+}
+
+[[nodiscard, maybe_unused, gnu::nonnull]]
+MAP_STATIC vstring Map_tojson2(ConstMap this, const u8 mode) {
+	// assumes the map is C-string => C-string
 	// PACK -> {"a":"b","c":"d"}
 	// LINE -> {"a": "b", "c": "d"}
 	// FULL -> {\n\t"a": "b",\n\t"c": "d"\n}
@@ -2259,15 +2457,21 @@ MAP_STATIC char *Map_tojson(ConstMap this, const u8 mode) {
 	if unlikely (mode != MAP_JSON_MODE_PACK
 		&& mode != MAP_JSON_MODE_LINE
 		&& mode != MAP_JSON_MODE_FULL
-	) return nullptr;
+	) return (vstring) {};
 
 	u64 size = Map_count(this);
 
 	if (size == 0) {
 		char *const json = malloc(4);
-		if (json != nullptr)
-			memcpy(json, (char[]) {'{', '}', 0, 0}, 4);
-		return json;
+		if (json == nullptr)
+			return (vstring) {};
+
+		*(u32 *) json = MC32('{}\0\0');
+
+		return (vstring) {
+			.ptr = json,
+			.len = 2
+		};
 	}
 
 	// stuff that is per kv pair
@@ -2285,43 +2489,240 @@ MAP_STATIC char *Map_tojson(ConstMap this, const u8 mode) {
 	// mode=PACK wastes one byte, and mode=LINE wastes two bytes
 	size += 2; // '{\n' for mode=FULL. the extra 1-2 byte savings in the other cases is not worth the logic.
 
-	char *const json = malloc(size + 1); // +1 for the null terminator
-	if unlikely (json == nullptr)
-		return nullptr;
+	vstring json;
+	json.ptr = malloc(size + 1); // +1 for the null terminator
+	if unlikely (json.ptr == nullptr)
+		return (vstring) {};
 
-	char *cur = json + (mode != MAP_JSON_MODE_LINE);
+	json.len = mode != MAP_JSON_MODE_LINE;
 	if (mode == MAP_JSON_MODE_FULL)
-		*cur++ = '\n';
+		json.ptr[json.len++] = '\n';
 
 	Map_foreach(this,
 		if (mode != MAP_JSON_MODE_PACK)
-			*cur++ = mode == MAP_JSON_MODE_LINE ? ' ' : '\t';
+			json.ptr[json.len++] = mode == MAP_JSON_MODE_LINE ? ' ' : '\t';
 
-		*cur++ = '"';
-		cur     = map__json_stpcpy(cur, entry.key);
-		*cur++ = '"';
-		*cur++ = ':';
+		json.ptr[json.len++] = '"';
+		json.len             = (u64) (map__json_stpcpy(json.ptr + json.len, entry.key) - json.ptr);
+		json.ptr[json.len++] = '"';
+		json.ptr[json.len++] = ':';
 
 		if (mode != MAP_JSON_MODE_PACK)
-			*cur++ = ' ';
+			json.ptr[json.len++] = ' ';
 
-		*cur++ = '"';
-		cur    = map__json_stpcpy(cur, entry.val);
-		*cur++ = '"';
-		*cur++ = ',';
+		json.ptr[json.len++] = '"';
+		json.len             = (u64) (map__json_stpcpy(json.ptr + json.len, entry.val) - json.ptr);
+		json.ptr[json.len++] = '"';
+		json.ptr[json.len++] = ',';
 
 		if (mode == MAP_JSON_MODE_FULL)
-			*cur++ = '\n';
+			json.ptr[json.len++] = '\n';
 	);
 
 	// fix up the trailing separator left by the last entry into the closing brace
 	if (mode == MAP_JSON_MODE_FULL)
-		cur[-2] = '\n'; // ",\n" -> "\n}"
+		json.ptr[json.len - 2] = '\n'; // ",\n" -> "\n}"
 
-	*json   = '{'; // do this now because it would get overwritten with mode=LINE.
-	cur[-1] = '}'; // remove the trailing comma
-	*cur    = '\0';
+	json.ptr[0]            = '{'; // do this now because it would get overwritten with mode=LINE.
+	json.ptr[json.len - 1] = '}'; // remove the trailing comma
+	json.ptr[json.len]     = '\0';
+
 	return json;
+}
+
+[[nodiscard, gnu::nonnull]]
+MAP_STATIC vstring Map_tojson_by3(ConstMap this, map_json_str_fn_t stringify, const u8 mode) {
+	// PACK -> {"a":"b","c":"d"}
+	// LINE -> {"a": "b", "c": "d"}
+	// FULL -> {\n\t"a": "b",\n\t"c": "d"\n}
+
+	if unlikely (mode != MAP_JSON_MODE_PACK
+		&& mode != MAP_JSON_MODE_LINE
+		&& mode != MAP_JSON_MODE_FULL
+	) return (vstring) {};
+
+	if (Map_count(this) == 0) {
+		char *const json = malloc(4);
+
+		if (json == nullptr)
+			return (vstring) {};
+
+		*(u32 *) json = MC32('{}\0\0');
+
+		return (vstring) {
+			.ptr = json,
+			.len = 2
+		};
+	}
+
+	vstring_builder json;
+	json.ptr = malloc(4096);
+
+	if unlikely (json.ptr == nullptr)
+		return (vstring) {};
+
+	json.len = mode != MAP_JSON_MODE_LINE;
+	json.cap = 4096;
+
+	vstring_builder
+		key_scratch = {},
+		val_scratch = {};
+
+	if (mode == MAP_JSON_MODE_FULL)
+		json.ptr[json.len++] = '\n';
+
+	Map_foreach(this,
+		if (!stringify(&key_scratch, entry.key, MAP_JSON_KEY)) {
+			// if it is not a string, the data is malformed
+			free(key_scratch.ptr);
+			free(val_scratch.ptr);
+			free(json.ptr);
+			return (vstring) {};
+		}
+		const bool val_is_str = stringify(&val_scratch, entry.val, MAP_JSON_VAL);
+
+		// this is forces slightly more than required sometimes.
+
+		const u64 bound_size = json.len + 2 +
+			map__json_strlen_n(key_scratch) + 4 + (
+				val_is_str ? map__json_strlen_n(val_scratch) :
+				val_scratch.len
+			) + 4;
+		if (bound_size >= json.cap) {
+			const u64 new_cap = bound_size * 3 >> 1;
+			char *const new_ptr = realloc(json.ptr, new_cap);
+
+			if unlikely (new_ptr == nullptr) {
+				free(json.ptr);
+				free(key_scratch.ptr);
+				free(val_scratch.ptr);
+				return (vstring) {};
+			}
+
+			json.ptr = new_ptr;
+			json.cap = new_cap;
+		}
+
+		if (mode != MAP_JSON_MODE_PACK)
+			json.ptr[json.len++] = mode == MAP_JSON_MODE_LINE ? ' ' : '\t';
+
+		/// key
+		if (true /*key_is_str*/) {
+			// NOTE: this always-true branch is just to match the val
+			json.ptr[json.len++] = '"';
+			json.len = (u64) (
+				map__json_stpcpy_n(json.ptr + json.len, key_scratch.ptr, key_scratch.len)
+				- json.ptr
+			);
+			json.ptr[json.len++] = '"';
+		}/*
+		else { // this should never happen
+			memcpy(json.ptr + json.len, key_scratch.ptr, key_scratch.len);
+			json.len += key_scratch.len;
+		}*/
+
+		json.ptr[json.len++] = ':';
+
+		/// value
+		if (mode != MAP_JSON_MODE_PACK)
+			json.ptr[json.len++] = ' ';
+
+		if (val_is_str) {
+			json.ptr[json.len++] = '"';
+			json.len = (u64) (
+				map__json_stpcpy_n(json.ptr + json.len, val_scratch.ptr, val_scratch.len)
+				-  json.ptr
+			);
+			json.ptr[json.len++] = '"';
+		}
+		else {
+			memcpy(json.ptr + json.len, val_scratch.ptr, val_scratch.len);
+			json.len += val_scratch.len;
+		}
+
+		json.ptr[json.len++] = ',';
+
+		if (mode == MAP_JSON_MODE_FULL)
+			json.ptr[json.len++] = '\n';
+	);
+
+	// fix up the trailing separator left by the last entry into the closing brace
+	if (mode == MAP_JSON_MODE_FULL)
+		json.ptr[json.len - 2] = '\n'; // ",\n" -> "\n}"
+
+	json.ptr[0]            = '{';  // do this now because it would get overwritten with mode=LINE.
+	json.ptr[json.len - 1] = '}';  // remove the trailing comma
+	json.ptr[json.len]     = '\0'; // remove the trailing comma
+
+	json.ptr = realloc(json.ptr, json.len + 1); // shrink, this should never fail. +1 to include null
+
+	free(key_scratch.ptr);
+	free(val_scratch.ptr);
+
+	return (vstring) {
+		.ptr = json.ptr,
+		.len = json.len
+	};
+}
+
+[[maybe_unused, gnu::nonnull]]
+MAP_STATIC void Map_dump_by4(ConstMap this, map_json_str_fn_t stringify, const u8 mode, const u8 format) {
+	if likely (format == MAP_DUMP_JSON) {
+		const vstring json = Map_tojson_by(this, stringify, mode);
+		put_vstring(json);
+		free(json.ptr);
+		return;
+	}
+
+	// `mode` does nothing if format != 0
+	vstring_builder
+		key_scratch = {},
+		val_scratch = {};
+
+	static constexpr char hex[] = "0123456789abcdef";
+
+	Map_foreach(this,
+		const bool key_is_str = stringify(&key_scratch, entry.key, MAP_JSON_KEY);
+		const bool val_is_str = stringify(&val_scratch, entry.val, MAP_JSON_VAL);
+
+		char tmp[6];
+		if (key_is_str) {
+			putchar('"');
+			for (u64 i = 0; i < key_scratch.len; i++) {
+				char *dst = tmp;
+				map__json_stpcpy_at(dst, (const u8 *) (key_scratch.ptr + i), hex);
+
+				const int len = (int) (dst - tmp);
+				printf("%.*s", len, tmp);
+			}
+
+			putchar('"');
+		}
+		else
+			put_vstring( ((vstring) { .ptr = key_scratch.ptr, .len = key_scratch.len }) );
+
+		printf(" => ");
+
+		if (val_is_str) {
+			putchar('"');
+			for (u64 i = 0; i < val_scratch.len; i++) {
+				char *dst = tmp;
+				map__json_stpcpy_at(dst, (const u8 *) (val_scratch.ptr + i), hex);
+
+				const int len = (int) (dst - tmp);
+				printf("%.*s", len, tmp);
+			}
+
+			putchar('"');
+		}
+		else
+			put_vstring( ((vstring) { .ptr = val_scratch.ptr, .len = val_scratch.len }) );
+
+		putchar('\n');
+	); // foreach
+
+	free(key_scratch.ptr);
+	free(val_scratch.ptr);
 }
 
 #ifndef MAP_NODEFINE_CLEANUP_ARRAY

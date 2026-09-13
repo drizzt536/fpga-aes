@@ -11,13 +11,11 @@
 	#define DEBUG false
 #endif
 
-// TODO: consider adding `dump $x` type of thing to only dump one variable.
-
 #include "dsl-main.h" // <stdlib.h>, <stdint.h>, <string.h>, <stdio.h>, "map.h", "va-if.h", "setjmp.h"
 
-static const char *const version_text = "v1.0.2";
+static const char *const version_str = "v1.0.3";
 
-static const char *const help_text = 
+static const char *const help_str =
 	"Calculator - Help"
 	"\n"
 	"\nCOMMANDS"
@@ -315,13 +313,13 @@ u8 main(u32 argc, char **argv)
 			(line.len == _strlen("-h")     && *(u16 *) line.ptr == MC16('-h')) ||
 			(line.len == _strlen("-?")     && *(u16 *) line.ptr == MC16('-?'))
 		) {
-			puts(help_text);
+			puts(help_str);
 			free(line.ptr); // so ASan shuts up.
 			return 0;
 		}
 
 		if (line.len == _strlen("--version") && *(u64 *) line.ptr == MC64('--ve','rsio') && line.ptr[8] == 'n') {
-			puts(version_text);
+			puts(version_str);
 			free(line.ptr);
 			return 0;
 		}
@@ -414,18 +412,30 @@ try_root_start:
 					goto advance;
 				}
 				else if (*(u32 *) tmp_line.ptr == MC32('help')) {
-					puts(help_text);
+					puts(help_str);
 					goto advance;
 				}
 			}
-			else if (tmp_line.len == 7) {
-				if (*(u32 *) tmp_line.ptr == MC32('vers')
-					&& *(u16 *) (tmp_line.ptr + 4) == MC16('io')
-					&& tmp_line.ptr[6] == 'n'
-				) {
-					puts(version_text);
-					goto advance;
+			else if (tmp_line.len >= 6 && *(u32 *) tmp_line.ptr == MC32('dump')
+				&& *(u16 *) (tmp_line.ptr + 4) == MC16(' $')
+			) {
+				vstring varname = tmp_line;
+				varname.ptr += _strlen("dump $");
+				varname.len -= _strlen("dump $");
+
+				if (*varname.ptr == '{') {
+					varname.ptr += _strlen("{");
+					varname.len -= _strlen("{}");
 				}
+
+				var_t *var = dsl_get_var(varname);
+				if (var == nullptr)
+					puts("var doesn't exist");
+				else
+					dsl_dump_var(var);
+
+				putchar('\n');
+				goto advance;
 			}
 			else if (tmp_line.len >= 5 && *(u32 *) tmp_line.ptr == MC32('del ') && tmp_line.ptr[4] == '$') {
 				vstring varname = tmp_line;
@@ -455,6 +465,15 @@ try_root_start:
 				else if (*(u32 *) tmp_line.ptr == MC32('clea') && tmp_line.ptr[4] == 'r') {
 					// clear visible screen, clear scrollback, and reset cursor
 					printf("\e[2J\e[3J\e[H");
+					goto advance;
+				}
+			}
+			else if (tmp_line.len == 7) {
+				if (*(u32 *) tmp_line.ptr == MC32('vers')
+					&& *(u16 *) (tmp_line.ptr + 4) == MC16('io')
+					&& tmp_line.ptr[6] == 'n'
+				) {
+					puts(version_str);
 					goto advance;
 				}
 			}

@@ -4,7 +4,6 @@
 	# Windows only: w64devkit (for GCC), Powershell Core
 	# Linux only: GMP shared object, gcc, objcopy
 
-
 ifndef MARGS
 	MARGS := -march=x86-64-v2
 endif
@@ -34,7 +33,13 @@ LD_LINUX ?= /lib64/ld-linux-x86-64.so.2
 GCC_FLAGS	:=  -nostdlib -fno-asynchronous-unwind-tables -fno-ident -fms-extensions \
 				-flive-range-shrinkage -fipa-pta -fshort-enums -fweb -fwrapv -masm=intel \
 				-Iinclude $(MARGS)
-LD_FLAGS    :=  -Ofast -Llib -L"$(shell dirname "$$(gcc -print-libgcc-file-name)")"
+LD_FLAGS    :=  -Ofast -Llib
+
+ifeq ($(UNAME_S),Windows_NT)
+	WIN_LIBS := lib/libgcc-win32.a lib/libgmp-win32.a lib/libc-win32.a
+else
+	LD_FLAGS += -L"$(shell dirname "$$(gcc -print-libgcc-file-name)")"
+endif
 
 # decide later on the following:
 #   -fprefetch-loop-arrays
@@ -77,8 +82,14 @@ endif
 
 ifeq ($(UNAME_S),Windows_NT)
 	LD_FLAGS	+= --warn-common --no-seh --exclude-all-symbols
-	LD_LIBS		:= -lgcc -lgmp-win32 -lcryptbase -lkernel32 -lucrtbase
+	LD_LIBS		:= -lgcc-win32 -lgmp-win32 -lcryptbase -lkernel32
 	NASM_FLAGS  := -fwin64 -DWINDOWS
+
+	ifeq ($(DEBUG),extra)
+		LD_LIBS += -lucrtbased
+	else
+		LD_LIBS += -lc-win32
+	endif
 else
 	# Arch doesn't ship the static stuff with GMP, and I cannot be bothered to compile it myself
 	# so I will just allow GMP's shared object to be a dependency on Linux.
@@ -106,28 +117,24 @@ ifndef DEBUG
 endif
 
 ifeq ($(UNAME_S),Windows_NT)
-main.exe: main.o crt-stubs.o
+main.exe: main.o crt-stubs.o $(WIN_LIBS)
 	ld $^ $(LD_FLAGS) $(LD_LIBS) -o $@
 
-calc.exe: calc.o crt-stubs.o
+calc.exe: calc.o crt-stubs.o $(WIN_LIBS)
 	ld $^ $(LD_FLAGS) $(LD_LIBS) -o $@
 else # UNAME == linux
 main: main.o crt-stubs.o
 	ld $^ $(LD_FLAGS) $(LD_LIBS) -o $@
-ifneq ($(DEBUG),off)
+ifeq ($(DEBUG),off)
 	objcopy --remove-section=.eh_frame --remove-section=.eh_frame_hdr main main
 endif
 
 calc: calc.o crt-stubs.o
 	ld $^ $(LD_FLAGS) $(LD_LIBS) -o $@
-ifneq ($(DEBUG),off)
+ifeq ($(DEBUG),off)
 	objcopy --remove-section=.eh_frame --remove-section=.eh_frame_hdr calc calc
 endif # DEBUG
 endif # UNAME
-
-ifeq ($(UNAME_S),Windows_NT)
-else
-endif
 
 main.o: main.c $(wildcard include/*.h) Makefile
 	gcc -c $< $(GCC_FLAGS) $(GCC_ERRFLAGS) -o $@
@@ -140,6 +147,12 @@ crt-stubs.o: crt-stubs.nasm Makefile
 ifneq ($(DEBUG),off)
 	strip -S $@
 endif
+
+ifeq ($(UNAME_S),Windows_NT)
+$(WIN_LIBS) include/gmp.h:
+	pwsh -nop -noni -nol ./setup-libs.ps1
+endif
+
 
 clean:
 	@# TODO: figure out if there are other valgrind files.

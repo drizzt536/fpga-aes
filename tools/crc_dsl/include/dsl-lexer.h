@@ -363,6 +363,14 @@ static token_list dsl_lex(vstring expr) {
 	if (tokens.cap < 4)
 		tokens.cap = 4;
 
+	// NOTE: the SOF token is here because a lot of the switch cases rely on the previous token,
+	//       but if the first real token starts at index 0, then token -1 doesn't exist and is
+	//       an access violation, so to avoid having to do bounds checks everywhere, token 0 is
+	//       SOF, and that allows the linked list to also be circular, so token 0 is both SOF
+	//       and EOF at the same time. This allows for token list iteration to be done via the
+	//       indices instead of via the pointers, because if .next is a pointer you have null
+	//       for if there is no next, but if .next is an index, you need another sentinel, and
+	//       since 0 is SOF/EOF, it becomes the sentinel.
 	tokens.array = malloc(tokens.cap * sizeof(token_t));
 	tokens.count = 1;
 
@@ -391,7 +399,7 @@ static token_list dsl_lex(vstring expr) {
 				break;
 			case '(':
 				if unlikely (tok_is_primary(prev_token)) {
-					eprintf("%s followed immediately by %s is invalid.", "LITERAL or VAR", "'('");
+					eprintf("%s followed immediately by %s is invalid (at %s %zu)", "index", "LITERAL or VAR", "'('", i);
 					dsl_panic(EXCEPT_ERR_LEXER);
 				}
 
@@ -407,17 +415,17 @@ static token_list dsl_lex(vstring expr) {
 				break;
 			case ')':
 				if unlikely (depth == 0) {
-					eprintf("')' with no corresponding '(' is invalid.");
+					eprintf("')' with no corresponding '(' is invalid (at index %zu).", i);
 					dsl_panic(EXCEPT_ERR_LEXER);
 				}
 
 				if unlikely (prev_token.type == TOKEN_LPAREN) {
-					eprintf("%s followed immediately by %s is invalid.", "'('", "')'");
+					eprintf("%s followed immediately by %s is invalid (at %s %zu).", "index", "'('", "')'", i);
 					dsl_panic(EXCEPT_ERR_LEXER);
 				}
 
 				if unlikely (tok_is_op(prev_token)) {
-					eprintf("%s followed immediately by %s is invalid.", "OPERATOR", "')'");
+					eprintf("%s followed immediately by %s is invalid (at %s %zu).", "index", "OPERATOR", "')'", i);
 					dsl_panic(EXCEPT_ERR_LEXER);
 				}
 
@@ -475,7 +483,8 @@ static token_list dsl_lex(vstring expr) {
 				else if (tok_is_primary(prev_token) || prev_token.type == TOKEN_RPAREN) {
 					// NOTE: this check has to happen here because `~` is the only token that is always interpreted
 					//       as unary AND can be changed to nothing if there are multiple copies.
-					eprintf("%s followed immediately by %s is invalid.", "LITERAL, VAR, or ')'", "UNARY OPERATOR");
+					eprintf("%s followed immediately by %s is invalid (at %s %zu).",
+						"LITERAL, VAR, or ')'", "UNARY OPERATOR", "index", i);
 					dsl_panic(EXCEPT_ERR_LEXER);
 				}
 				else
@@ -605,7 +614,7 @@ static token_list dsl_lex(vstring expr) {
 			{
 			case '0' ... '9':
 				if unlikely (i > 0 && line_isspace(expr.ptr[i - 1]) && tok_is_primary(prev_token)) {
-					eprintf("concatenation by juxtaposition with whitespace separation is invalid.");
+					eprintf("concatenation by juxtaposition with whitespace separation is invalid (at index %zu).", i);
 					dsl_panic(EXCEPT_ERR_LEXER);
 				}
 
@@ -620,7 +629,7 @@ static token_list dsl_lex(vstring expr) {
 					if (expr.ptr[j] == '_') {
 						if unlikely (expr.ptr[j - 1] == '_') {
 							// no j > 0 check because at least one increment is guaranteed before this point
-							eprintf("integer literal cannot %s.", "have consecutive underscores");
+							eprintf("integer literal cannot %s (at index %zu).", "have consecutive underscores", i);
 							dsl_panic(EXCEPT_ERR_LEXER);
 						}
 						// else ignore it
@@ -632,7 +641,7 @@ static token_list dsl_lex(vstring expr) {
 				j -= 1;
 
 				if unlikely (expr.ptr[j] == '_') {
-					eprintf("integer literal cannot %s.", "end with an underscore");
+					eprintf("integer literal cannot %s (at index %zu).", "end with an underscore", i);
 					dsl_panic(EXCEPT_ERR_LEXER);
 				}
 
@@ -658,7 +667,7 @@ static token_list dsl_lex(vstring expr) {
 
 			case '$': {
 				if unlikely (i > 0 && line_isspace(expr.ptr[i - 1]) && tok_is_primary(prev_token)) {
-					eprintf("concatenation by juxtaposition with whitespace separation is invalid.");
+					eprintf("concatenation by juxtaposition with whitespace separation is invalid (at index %zu).", i);
 					dsl_panic(EXCEPT_ERR_LEXER);
 				}
 
@@ -676,7 +685,7 @@ static token_list dsl_lex(vstring expr) {
 					char *const end = memchr(expr.ptr + i, '}', expr.len - i);
 
 					if unlikely (end == nullptr) {
-						eprintf("unclosed bracketed variable.");
+						eprintf("unclosed bracketed variable at index %zu.", i);
 						dsl_panic(EXCEPT_ERR_LEXER);
 					}
 
@@ -704,7 +713,7 @@ static token_list dsl_lex(vstring expr) {
 				var_t *const var = dsl_get_var(token.atom);
 
 				if unlikely (var == nullptr) {
-					eprintf("variable '$%.*s' does not exist.", (int) token.atom.len, token.atom.ptr);
+					eprintf("variable '$%.*s' does not exist (at index %zu).", (int) token.atom.len, token.atom.ptr, i);
 					dsl_panic(EXCEPT_ERR_LEXER);
 				}
 
@@ -751,7 +760,7 @@ static token_list dsl_lex(vstring expr) {
 						// there are no intermediate values at this point.
 					default:
 					#if DEBUG
-						eprintf("+/- previous token has an unknown type: %u.", prev_token.type);
+						eprintf("+/- previous token has an unknown type: %u (at index %zu).", prev_token.type, i);
 						dsl_panic(EXCEPT_ERR_LEXER);
 					#else
 						unreachable();
@@ -801,6 +810,10 @@ static token_list dsl_lex(vstring expr) {
 	} // for
 
 	if unlikely (depth != 0) {
+		// NOTE: it isn't really feasible to tell the user the index of which parentheses is/are not closed
+		//       since that would require a separate allocation for a stack, and it that would require an
+		//       extra `dsl_except.live_allocs` slot and extra growth heuristics, when they can just figure
+		//       it out themselves just fine.
 		eprintf("expression contains %zu unclosed parentheses.", depth);
 		dsl_panic(EXCEPT_ERR_LEXER);
 	}
@@ -814,32 +827,37 @@ static token_list dsl_lex(vstring expr) {
 
 			if (cur == TOKEN_LITERAL || cur == TOKEN_VAR) {
 				if unlikely (prev == TOKEN_RPAREN) {
-					eprintf("%s followed immediately by %s is invalid.", "')'", "LITERAL or VAR");
+					eprintf("%s followed immediately by %s is invalid (at %s %zu).",
+						"')'", "LITERAL or VAR", "token", i);
 					dsl_panic(EXCEPT_ERR_LEXER);
 				}
 			}
 			else if (cur == TOKEN_OP_UNARY) {
 				if unlikely (prev == TOKEN_LITERAL || prev == TOKEN_VAR || prev == TOKEN_RPAREN) {
-					eprintf("%s followed immediately by %s is invalid.",
-						"LITERAL, VAR, or ')'", "UNARY OPERATOR");
+					eprintf("%s followed immediately by %s is invalid (at %s %zu).",
+						"LITERAL, VAR, or ')'", "UNARY OPERATOR", "token", i);
 					dsl_panic(EXCEPT_ERR_LEXER);
 				}
 			}
 			else if (cur == TOKEN_OP_BINARY) {
 				if unlikely (prev == TOKEN_OP_BINARY) {
-					eprintf("%s followed immediately by %s is invalid.", "BINARY OPERATOR", "BINARY OPERATOR");
+					eprintf("%s followed immediately by %s is invalid (at %s %zu).",
+						"BINARY OPERATOR", "BINARY OPERATOR", "token", i);
 					dsl_panic(EXCEPT_ERR_LEXER);
 				}
 				else if unlikely (prev == TOKEN_OP_UNARY) {
-					eprintf("%s followed immediately by %s is invalid.", "UNARY OPERATOR", "BINARY OPERATOR");
+					eprintf("%s followed immediately by %s is invalid (at %s %zu).",
+						"UNARY OPERATOR", "BINARY OPERATOR", "token", i);
 					dsl_panic(EXCEPT_ERR_LEXER);
 				}
 				else if unlikely (prev == TOKEN_LPAREN) {
-					eprintf("%s followed immediately by %s is invalid.", "'('", "BINARY OPERATOR");
+					eprintf("%s followed immediately by %s is invalid (at %s %zu).",
+						"'('", "BINARY OPERATOR", "token", i);
 					dsl_panic(EXCEPT_ERR_LEXER);
 				}
 				else if unlikely (prev == TOKEN_SOF) {
-					eprintf("%s followed immediately by %s is invalid.", "SOF", "BINARY OPERATOR");
+					eprintf("%s followed immediately by %s is invalid (at %s %zu).",
+						"SOF", "BINARY OPERATOR", "token", i);
 					dsl_panic(EXCEPT_ERR_LEXER);
 				}
 			} // if-else
